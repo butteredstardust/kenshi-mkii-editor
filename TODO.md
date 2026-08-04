@@ -660,6 +660,12 @@ hard blocker for several other Phase 3 tasks.
   string rejected byte-identically; an item sid that isn't in the target
   character's own inventory rejected byte-identically.
 
+  **Superseded in part by the Gear redesign (see 2.4 below).** The "Move"
+  button described above no longer exists: `setItemSection()` is now a thin
+  wrapper over `saveService.updateItem()`, and the row commits every change
+  through one "Apply". The service-level collision rule and all the tests
+  above are unchanged.
+
 - [x] **Restrict "Move to" to slots the item's KIND can actually occupy.**
   The original 2.1 implementation offered every one of the 11 documented
   slots for every item — a shirt could be "moved" into a weapon slot, and the
@@ -1214,6 +1220,68 @@ manufacturer. The picker must filter to {2, 3, 4}.
   a picker, since there is nothing to write into the save.
 
 ---
+
+### 2.4 Gear page redesign (user-reported: quantity broken, controls confusing)
+
+- [x] **`quantity` had no mutation at all.** It could only be set when an item
+  was first created, so the Gear table rendered it as read-only text and the
+  user's report that "quantity does not work" was exactly right — there was no
+  code path to change it. Fixed by `saveService.updateItem()`.
+
+- [x] **`saveService.updateItem()` — one staged edit covering slot, level,
+  quality, quantity and weapon grade.** `setItemSection()`/`setItemQuality()` are now
+  thin wrappers over it, so the collision/displacement rule still lives in
+  exactly one place (`displaceIntoSlot`). Route:
+  `PUT .../inventory/:itemSid`. Combining is not cosmetic:
+  `mutationService.mutate()` treats each call as one staged edit against one
+  pre-edit snapshot and takes one backup, so the old two-button row meant two
+  gate passes, two backups, and a window where disk held a half-applied state.
+  All validation runs before any mutation, so a partly-valid patch can never
+  half-edit a record. Tests: quantity set/rejected (non-stackable, 0, negative,
+  fractional), combined slot+level+quantity asserting ONE changed file and ONE
+  receipt, unknown-field and empty-patch rejection, and weapon re-grading.
+
+- [x] **Weapon grade is now editable on an existing item**, not just at
+  creation. Being able to pick Meitou when adding a katana but not when editing
+  one was exactly the kind of asymmetry that made the page confusing.
+  `materialSid` names a ladder entry (a type-50 sid) and `company sid` is
+  resolved from it and written in lockstep — the pair IS the grade (2.2(i)), so
+  they can never be written out of step. Rejected on non-weapons.
+
+- [x] **UI redesign.** What was wrong, and what replaced it:
+  - *Two write buttons per row ("Move" for the slot select, "Set" for the
+    number boxes) with no visual link to their controls.* Now every control is a
+    pending edit and **one "Apply" per row** commits them together. It stays
+    **disabled until something actually differs from disk**, so pressing it can
+    never produce the mutation gate's "edit produced no change" error, which
+    read like a bug for what looked like a valid action.
+  - *A "preset…" dropdown that only quick-filled a box, beside a raw `level`
+    number and a raw `quality` number.* Now **one named control per concept**,
+    chosen by kind (2.2(e)): armour gets the named tier ladder, weapons get the
+    grade ladder, trade goods get neither. The raw `level`/`quality` numbers
+    moved behind a per-row **"More"** disclosure — relocated, never dropped,
+    since removing reachable capability to tidy a view is not a redesign.
+  - *Raw on-disk slot keys shown as labels.* Now human labels (`Body armour`,
+    `Hip (weapon)`, `In backpack`) with the raw key still the written value.
+  - **Slot icons** (inline SVG in `ICON_PATHS`, not an icon font) encode which
+    slot a row occupies, making a long inventory scannable by shape. Recorded as
+    an explicit carve-out in `docs/ui-style-guide.md` §1: informational glyphs
+    are allowed, an icon duplicating an adjacent label is not.
+  - Fixed a **pre-existing** layout bug found while checking 560px:
+    `.workspace` grid items had the default `min-width: auto`, so the widest
+    item table dragged the page into horizontal scroll (§2.7) instead of
+    scrolling inside its own `.table-wrap`. Reproduced with the new section
+    closed, so it predates this work.
+
+  **Verified by driving the real app** against a *copy* of the save (second
+  server instance via `pathService` overrides + `KENSHI_MKII_PORT`), not just by
+  reading the code: quantity 1 -> 77 persisted; a Naginata re-graded to Meitou
+  AND moved to hip in one Apply, with the Katana displaced to Carried and
+  `company sid` following the grade; exactly one backup per Apply. Checked at
+  1400px and 560px. The live save was never written to.
+
+  **Still not covered:** no automated UI tests (no browser harness in this
+  repo), so `app.mjs` regressions won't be caught by `npm test`.
 
 ## Phase 3 — Everything else from the guide
 
