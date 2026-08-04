@@ -1317,3 +1317,182 @@ test('a rejected edit leaves the save untouched', async (t) => {
     paths.setOverrides({});
   }
 });
+
+// ---------------------------------------------------------- updateItem ----
+//
+// The Gear row's single "Apply" button calls this: slot, level, quality and
+// quantity in ONE staged edit. `quantity` in particular had no mutation at all
+// before — it could only be set when an item was first created, so the Gear
+// page showed it as read-only text and "quantity didn't work".
+
+test('updateItem sets quantity on a stackable item', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(4); // trade goods: the stackable typecode
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
+
+  try {
+    const result = await mutation.mutate(scratch.dir, 'test: set quantity',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, { quantity: 42 }));
+    assert.deepStrictEqual(result.changedFiles, [path.join('platoon', found.platoonFile)]);
+
+    const { bySid } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+    assert.strictEqual(bySid.get(found.itemSid).ints.get('quantity'), 42);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem rejects quantity > 1 on a non-stackable item, save byte-identical', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(2) || findItemOfType(3); // weapons/armour never stack
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon/armour item found'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: stack a weapon',
+        (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, { quantity: 5 })),
+      /not stackable/,
+    );
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem rejects quantity 0, negative and non-integer, save byte-identical', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(4);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    for (const bad of [0, -3, 2.5]) {
+      await assert.rejects(
+        mutation.mutate(scratch.dir, `test: quantity ${bad}`,
+          (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, { quantity: bad })),
+        /quantity must be a positive integer/,
+      );
+    }
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+// The reason updateItem exists rather than the UI firing two requests: one
+// mutation-gate pass, one backup, and no intermediate state on disk.
+test('updateItem applies slot, level and quantity together in ONE staged edit', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(4);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
+
+  try {
+    const result = await mutation.mutate(scratch.dir, 'test: combined item edit',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid,
+        { section: 'backpack_content', level: 7, quantity: 9 }));
+
+    // ONE file touched, ONE backup, one receipt — not three separate writes.
+    assert.deepStrictEqual(result.changedFiles, [path.join('platoon', found.platoonFile)]);
+    assert.strictEqual(result.receipts.length, 1);
+
+    const { bySid } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+    const rec = bySid.get(found.itemSid);
+    assert.strictEqual(rec.strings.get('section'), 'backpack_content');
+    assert.strictEqual(rec.ints.get('level'), 7);
+    assert.strictEqual(rec.ints.get('quantity'), 9);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem rejects an unknown field and an empty patch, save byte-identical', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(4);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: unknown field',
+        (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, { qty: 5 })),
+      /unknown field\(s\) qty/,
+    );
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: empty patch',
+        (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, {})),
+      /provide at least one of/,
+    );
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+// Being able to choose "Meitou" when CREATING a weapon but not when editing
+// one is the asymmetry that made the Gear page confusing. Grade is the
+// (company sid, material sid) pair, and the two must move together.
+test('updateItem re-grades a weapon, writing material and company sid together', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const found = findItemOfType(2);
+  const grades = gamedata.weaponGrades();
+  if (!found || !grades.length) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon item or no grade ladder'); }
+  const top = grades[grades.length - 1];
+
+  try {
+    await mutation.mutate(scratch.dir, 'test: re-grade weapon',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, { materialSid: top.modelSid }));
+
+    const { bySid } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+    const rec = bySid.get(found.itemSid);
+    assert.strictEqual(rec.strings.get('material sid'), top.modelSid);
+    assert.strictEqual(rec.strings.get('company sid'), top.companySid, 'company sid must move with material sid');
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem rejects a grade on a non-weapon and an unknown grade sid, save byte-identical', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const armour = findItemOfType(3);
+  const weapon = findItemOfType(2);
+  if (!armour || !weapon) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('need one armour and one weapon item'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: grade an armour',
+        (staging) => saveService.updateItem(staging, armour.platoonFile, armour.sid, armour.itemSid, { materialSid: '913-gamedata.base' })),
+      /is not a weapon/,
+    );
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: bogus grade',
+        (staging) => saveService.updateItem(staging, weapon.platoonFile, weapon.sid, weapon.itemSid, { materialSid: 'not-a-real-grade' })),
+      /is not a known weapon grade/,
+    );
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});

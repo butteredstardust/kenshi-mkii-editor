@@ -27,6 +27,12 @@ one user on one machine. That drives every decision below:
   not look like a button that reveals a panel. See §3.
 - **Nothing is decorative.** No gradients, shadows, animations, icon fonts, or
   illustrative flourish. If a pixel isn't carrying information, delete it.
+  **Inline SVG glyphs are allowed where they carry information** — the equip-slot
+  icons in the Gear rows encode which slot a row occupies, so they replace text
+  rather than dress it up, and make a 30-item inventory scannable by shape. Add
+  them to `ICON_PATHS` in `app.mjs`, size them in `em`, and draw them in
+  `currentColor` so they inherit tone instead of introducing a colour. An icon
+  that merely sits next to a label it duplicates is decoration — delete it.
 
 ## 2. The hard rules
 
@@ -138,6 +144,26 @@ early request can't overwrite a newer one. Only the final write re-renders.
 Picker selection state belongs in `state`, keyed by `"<file>::<sid>"` like
 `trainChoice` — otherwise the re-render after a successful write clears the
 search and the user starts over to add a second item.
+
+### One row, one commit
+
+A repeated row that can edit several fields gets **one** write button, not one
+per field. The Gear row previously had "Move" (slot) beside "Set" (level and
+quality) and it was genuinely unclear which button owned which control. Make
+every control in the row a pending edit and commit them together:
+
+- Give each control `data-field` and `data-initial`, diff against `data-initial`
+  to build the patch, and keep the button **disabled until something actually
+  differs**. Otherwise the button's only effect is a mutation-gate "edit
+  produced no change" error, which reads like a bug.
+- Send one request. `mutationService` treats each call as one staged edit
+  against one snapshot and takes one backup, so two buttons meant two gate
+  passes and a moment where disk held a state the user never asked for.
+- Prefer **one named control per concept** over raw save fields. Kenshi's item
+  "quality" is `ints.level` on a tier ladder for armour but a company/material
+  pair for weapons, so the row shows the named tier or the named grade, and the
+  raw numbers live behind a per-row "More" disclosure. Never make a field
+  unreachable to tidy the default view — move it, don't drop it.
 
 ## 5. Copy
 

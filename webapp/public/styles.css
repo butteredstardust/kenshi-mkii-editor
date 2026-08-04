@@ -287,6 +287,26 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .receipt--ok { border-left-color: var(--ok); }
 .receipt--error { border-left-color: var(--danger); color: #edb9ad; }
 
+/* ---------------------------------------------------------------- icons -- */
+
+/* Inline SVG glyphs, NOT an icon font (§1 forbids those). Each one encodes
+ * which equip slot a row occupies, so it replaces text rather than decorating
+ * it, and makes a 30-item inventory scannable by shape. Sized in `em` so it
+ * tracks the surrounding text, and drawn in `currentColor` so it inherits tone
+ * (including .muted / .critical) instead of introducing its own colour. */
+.icon {
+  width: 1.05em; height: 1.05em; flex: none;
+  vertical-align: -0.15em; color: var(--muted);
+}
+
+/* Icon + name on one baseline, name allowed to truncate rather than push the
+ * row's controls out of the card. */
+.item-name { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; }
+
+/* The per-row "More" disclosure holding raw level/quality values. Recessed so
+ * it reads as attached to the row above rather than as another item. */
+.item-advanced > td { background: var(--sunken); }
+
 /* --------------------------------------------------------------- picker -- */
 
 /* Scrolling result list for a search that can match hundreds of rows (the

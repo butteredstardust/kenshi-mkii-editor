@@ -47,6 +47,12 @@ export const API = {
   setItemQuality: (name, file, sid, itemSid, body) => request('PUT',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}/quality`,
     body),
+  // Unified per-item edit: slot, level, quality, quantity and/or weapon grade
+  // in ONE staged write. This is what the Gear row's single "Apply" sends;
+  // setItemSection/setItemQuality above are the narrower legacy routes.
+  updateItem: (name, file, sid, itemSid, body) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}`,
+    body),
   // Item-template search for the "Add item" picker. Filtered server-side to
   // template typecodes 2/3/4 — the save-side type-42 ITEM record is an
   // instance, not something you can pick from.

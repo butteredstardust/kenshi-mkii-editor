@@ -109,6 +109,42 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quali
     (staging) => saveService.setItemQuality(staging, req.params.file, req.params.sid, req.params.itemSid, { level, quality }));
 }));
 
+// Unified per-item edit: slot, level, quality and/or quantity in ONE staged
+// edit (one mutation-gate pass, one backup). This is what the Gear row's
+// single "Apply" button calls; the narrower /section and /quality routes above
+// remain as thin wrappers over the same primitive.
+router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { section, level, quality, quantity, materialSid } = req.body || {};
+  for (const [key, value] of Object.entries({ section, materialSid })) {
+    if (value !== undefined && (typeof value !== 'string' || !value)) {
+      const e = new Error(`"${key}", if given, must be a non-empty string`); e.status = 400; throw e;
+    }
+  }
+  for (const [key, value] of Object.entries({ level, quality, quantity })) {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+      const e = new Error(`"${key}", if given, must be a number`); e.status = 400; throw e;
+    }
+  }
+  if (section === undefined && level === undefined && quality === undefined
+    && quantity === undefined && materialSid === undefined) {
+    const e = new Error('body must include at least one of section, level, quality, quantity, materialSid');
+    e.status = 400;
+    throw e;
+  }
+  // Only forward the keys actually supplied — updateItem() distinguishes
+  // "leave untouched" from "set", and an explicit `undefined` would still be
+  // an own key on the object it validates.
+  const patch = {};
+  if (section !== undefined) patch.section = section;
+  if (level !== undefined) patch.level = level;
+  if (quality !== undefined) patch.quality = quality;
+  if (quantity !== undefined) patch.quantity = quantity;
+  if (materialSid !== undefined) patch.materialSid = materialSid;
+  return mutation.mutate(save.dir, `update item ${req.params.itemSid}`,
+    (staging) => saveService.updateItem(staging, req.params.file, req.params.sid, req.params.itemSid, patch));
+}));
+
 // Add a new item to a character's inventory (TODO.md 2.2). Body shape
 // validated here (400 on garbage), same as every other route; the deeper
 // domain validation (template resolves, typecode 2/3/4, stackability,

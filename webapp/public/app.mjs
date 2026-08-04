@@ -44,6 +44,14 @@ async function boot() {
     : `<span class="ok">ready</span> <span class="muted">· ${esc(state.env.saves.length)} save(s) · ${esc(state.env.saveRoot || 'no save folder found')}</span>`;
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
+  // The grade ladder backs the Gear row's weapon "Quality" select, which is
+  // rendered synchronously, so it has to be here rather than fetched lazily.
+  // It is one small request (38 rows) and almost every squad carries a weapon.
+  try {
+    state.weaponGrades = (await API.weaponGrades()).grades;
+  } catch {
+    state.weaponGrades = []; // ladder is an enhancement; rows fall back to raw fields
+  }
   render();
 }
 
@@ -249,49 +257,138 @@ const LEVEL_PRESETS = [
   [5, 'Prototype'], [20, 'Shoddy'], [40, 'Standard'], [60, 'High'], [80, 'Specialist'], [95, 'Masterwork'],
 ];
 
+/**
+ * Slot glyphs. Inline SVG, not an icon font (style guide §1): each one encodes
+ * WHICH slot a row occupies, so it carries information the text would
+ * otherwise have to repeat, and it makes a long inventory scannable by shape
+ * instead of by reading every row. `currentColor` so they inherit tone.
+ */
+const ICON_PATHS = {
+  head: '<path d="M3.5 9.5a4.5 4.5 0 0 1 9 0v3h-9z"/><path d="M3.5 10.5h9"/>',
+  shirt: '<path d="M6 2.5 2.5 4.5 4 7l2-1.2v7.7h4V5.8L12 7l1.5-2.5L10 2.5 8 4z"/>',
+  armour: '<path d="M4 3h8v5.5A4 4 0 0 1 8 13a4 4 0 0 1-4-4.5z"/><path d="M8 3v10"/>',
+  legs: '<path d="M4 2.5h8l-.6 11H9.2L8 7l-1.2 6.5H4.6z"/>',
+  boots: '<path d="M4.5 2.5h3v6.5l5 2v2.5h-8z"/>',
+  weapon: '<path d="M13.5 2.5 7 9"/><path d="M5 9.5 6.5 11"/><path d="m2.5 13.5 2.2-.6 1.1-1.1-1.6-1.6-1.1 1.1z"/>',
+  belt: '<path d="M2 6h12v4H2z"/><path d="M6.5 6v4M9.5 6v4"/>',
+  backpack: '<path d="M4 5.5h8v8H4z"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5"/><path d="M6 9.5h4"/>',
+  bag: '<path d="M3 5.5h10l-1 8H4z"/><path d="M6 5.5V4.2a2 2 0 0 1 4 0v1.3"/>',
+};
+
+// Human labels for the raw on-disk `section` strings. Display only — every
+// value written back is the raw key, never the label (see itemSlotSelect).
+const SLOT_LABELS = {
+  main: 'Carried', head: 'Head', shirt: 'Shirt', armour: 'Body armour',
+  legs: 'Legs', boots: 'Boots', back: 'Back (weapon)', hip: 'Hip (weapon)',
+  belt: 'Belt', backpack_attach: 'Backpack (worn)', backpack_content: 'In backpack',
+};
+
+// Which glyph stands for which `strings.section` value.
+const SLOT_ICONS = {
+  head: 'head', shirt: 'shirt', armour: 'armour', legs: 'legs', boots: 'boots',
+  back: 'weapon', hip: 'weapon', belt: 'belt',
+  backpack_attach: 'backpack', backpack_content: 'backpack', main: 'bag',
+};
+
+function icon(name, label) {
+  const d = ICON_PATHS[name];
+  if (!d) return '';
+  return `<svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+    stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"
+    role="img" aria-label="${esc(label || name)}">${d}</svg>`;
+}
+
 function itemSlotSelect(it) {
   // Options come straight from the server's allowedSections (services/itemSlots.js)
   // — the client never recomputes compatibility itself. Fall back to the full
   // list only if an older/unpatched API response omits the field.
   const options = it.allowedSections || ITEM_SLOTS;
-  return `<select class="item-slot-select" data-sid="${esc(it.sid)}">
-    ${options.map((slot) => `<option value="${esc(slot)}" ${it.section === slot ? 'selected' : ''}>${esc(slot)}</option>`).join('')}
+  return `<select class="item-slot-select" data-sid="${esc(it.sid)}"
+      data-initial="${esc(it.section || '')}" aria-label="Slot" ${dis()}>
+    ${options.map((slot) => `<option value="${esc(slot)}" ${it.section === slot ? 'selected' : ''}>${esc(SLOT_LABELS[slot] || slot)}</option>`).join('')}
   </select>`;
 }
 
+/**
+ * One inventory row.
+ *
+ * REDESIGN NOTE (previous version had a "Move" button and a "Set" button side
+ * by side, plus a preset dropdown, a raw `level` box and a raw `quality` box):
+ * every control here is a PENDING edit, and one "Apply" per row commits all of
+ * them in a single staged write via `PUT .../inventory/:itemSid`. That is not
+ * just tidier — `mutationService` treats each call as one edit against one
+ * snapshot and takes one backup, so two buttons meant two gate passes and an
+ * intermediate on-disk state nobody asked for.
+ *
+ * "Quality" is now ONE named control per kind rather than two raw numbers,
+ * because the underlying field genuinely differs by kind (TODO.md 2.2(e)):
+ * a weapon's recognisable grade is the company/material pair ("Meitou"), while
+ * armour's is `ints.level` on a named tier ladder. The raw numbers are still
+ * reachable, one click away under "More", so nothing became unreachable.
+ */
 function itemRow(it) {
-  const hasQuality = it.level != null || it.quality != null;
+  const glyph = SLOT_ICONS[it.section] || 'bag';
+  const isWeapon = it.kindType === 2;
+  const hasLevel = it.level != null;
+  const grades = state.weaponGrades || [];
+
+  const qtyCell = it.stackable
+    ? `<input type="number" class="item-field w-sm" data-field="quantity" step="1" min="1"
+        value="${esc(it.quantity ?? 1)}" data-initial="${esc(it.quantity ?? 1)}" aria-label="Quantity" ${dis()}>`
+    : `<span class="muted">${it.quantity > 1 ? `×${esc(it.quantity)}` : '1'}</span>`;
+
+  let qualityCell = '<span class="muted">—</span>';
+  if (isWeapon && grades.length) {
+    qualityCell = `<select class="item-field" data-field="materialSid" data-initial="${esc(it.materialSid || '')}" aria-label="Grade" ${dis()}>
+      ${it.materialSid && !grades.some((g) => g.modelSid === it.materialSid)
+    ? `<option value="${esc(it.materialSid)}" selected>${esc(it.material || 'current')}</option>` : ''}
+      ${grades.map((g) => `<option value="${esc(g.modelSid)}" ${g.modelSid === it.materialSid ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+    </select>`;
+  } else if (hasLevel) {
+    const named = LEVEL_PRESETS.some(([v]) => v === it.level);
+    qualityCell = `<select class="item-field" data-field="level" data-initial="${esc(it.level)}" aria-label="Quality tier" ${dis()}>
+      ${named ? '' : `<option value="${esc(it.level)}" selected>Level ${esc(it.level)}</option>`}
+      ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${v === it.level ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
+    </select>`;
+  }
+
   return `<tr data-sid="${esc(it.sid)}">
-    <td class="col-item">${esc(it.name)}${it.catalog?.category ? `<div class="muted">${esc(it.catalog.category)}</div>` : ''}</td>
-    <td class="n">${it.quantity > 1 ? `×${esc(it.quantity)}` : ''}</td>
-    <td class="muted">${esc(it.section || '—')}</td>
-    <td class="shrink">${hasQuality ? `
-      <select class="item-level-preset">
-        <option value="">preset…</option>
-        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}">${esc(label)} (${esc(v)})</option>`).join('')}
-      </select>
-      <input type="number" class="item-level-input w-sm" step="1" min="0"
-        value="${esc(it.level ?? '')}" placeholder="level">
-      <input type="number" class="item-quality-input w-sm" step="0.1" min="0"
-        value="${esc(inputNum(it.quality))}" placeholder="quality">
-    ` : '<span class="muted">—</span>'}</td>
+    <td class="col-item"><span class="item-name">${icon(glyph, it.section)}<span>${esc(it.name)}</span></span>
+      ${it.catalog?.category ? `<div class="muted">${esc(it.catalog.category)}</div>` : ''}</td>
+    <td class="n shrink">${qtyCell}</td>
     <td class="shrink">${itemSlotSelect(it)}
-      <span class="muted item-collision-note"></span></td>
+      <div class="muted item-collision-note"></div></td>
+    <td class="shrink">${qualityCell}</td>
     <td class="shrink"><span class="actions">
-      <button class="btn move-item-btn" data-sid="${esc(it.sid)}" ${dis()}>Move</button>
-      ${hasQuality ? `<button class="btn set-quality-btn" data-sid="${esc(it.sid)}" ${dis()}>Set</button>` : ''}
+      <button class="btn apply-item-btn" data-sid="${esc(it.sid)}" disabled>Apply</button>
+      <button class="btn btn--ghost btn--xs more-item-btn" aria-expanded="false"
+        title="Raw level and quality values">More</button>
     </span></td>
+  </tr>
+  <tr class="item-advanced" data-advanced-for="${esc(it.sid)}" hidden>
+    <td colspan="5">
+      <div class="field-row">
+        <label class="field">Level
+          <input type="number" class="item-field w-sm" data-field="level" step="1" min="0"
+            value="${esc(it.level ?? '')}" data-initial="${esc(it.level ?? '')}" ${dis()}></label>
+        <label class="field">Quality
+          <input type="number" class="item-field w-sm" data-field="quality" step="0.1" min="0"
+            value="${esc(inputNum(it.quality))}" data-initial="${esc(inputNum(it.quality))}" ${dis()}></label>
+        <span class="hint">Raw save fields. For armour, Level is the same value the tier above sets.
+          ${isWeapon ? 'For weapons, Level is separate from the grade and does not follow from it.' : ''}</span>
+      </div>
+    </td>
   </tr>`;
 }
 
 function itemTable(items, emptyText) {
   // Deliberately NOT .table--compact: that cap suits the read-mostly body-part
-  // table, but this row carries two selects and two number inputs, and under a
-  // 46rem cap the item-name column collapses and wraps every name to 4 lines.
+  // table, but this row carries a select per concept, and under a 46rem cap the
+  // item-name column collapses and wraps every name to 4 lines.
   return `<div class="table-wrap"><table class="data-table"><thead><tr>
-      <th class="col-item">Item</th><th class="n">Qty</th><th>Slot</th><th>Level / quality</th><th>Move to</th><th></th>
+      <th class="col-item">Item</th><th class="n">Qty</th><th>Slot</th><th>Quality</th><th></th>
     </tr></thead>
-    <tbody>${items.map(itemRow).join('') || `<tr><td colspan="6" class="muted">${esc(emptyText)}</td></tr>`}</tbody>
+    <tbody>${items.map(itemRow).join('') || `<tr><td colspan="5" class="muted">${esc(emptyText)}</td></tr>`}</tbody>
   </table></div>`;
 }
 
@@ -415,13 +512,12 @@ function gearCard(c, file) {
       ${c.isLeader ? '<span class="badge badge--accent">leader</span>' : ''}
       <span class="muted">${esc(c.origin)}</span>
     </div>
-    <p class="hint">"Move to" only offers slots this item's kind is actually compatible with (weapons can't go in a
-      body-armour slot, and vice versa). Moving into a body/equip slot already occupied replaces the current
-      occupant, which is sent back to Carried (main) in the same write. The editor cannot check whether this
-      character's race can actually wear/wield an item (e.g. a shirt on a hiver) — the save edit succeeds either
-      way even if the game won't honour it.${anyWidened ? ' Some items below are of an unrecognised kind, so every '
-      + 'slot is offered for them rather than risk hiding a legitimate one — the editor can\'t vouch for '
-      + 'compatibility on those.' : ''}</p>
+    <p class="hint">Change anything on a row, then press Apply — slot, quantity and quality are written together in
+      one edit. Slot only lists what this item's kind can actually occupy, and moving into an occupied body slot
+      sends the current occupant back to Carried. The editor can't tell whether this character's race can really
+      wear or wield an item (a shirt on a hiver, say) — that edit still saves, the game just won't honour
+      it.${anyWidened ? ' Some items here are of an unrecognised kind, so every slot is offered rather than risk '
+      + 'hiding a legitimate one; compatibility isn\'t vouched for on those.' : ''}</p>
 
     ${addItemSection(c, file)}
 
@@ -730,51 +826,79 @@ function wire() {
       return run(limbs, 'limbs flag cleared', () => API.restoreLimbs(state.save, file, sid), true);
     };
 
-    // Gear: quick-fill Level presets (writes the number in, does not submit).
-    card.querySelectorAll('.item-level-preset').forEach((presetSel) => {
-      presetSel.onchange = () => {
-        if (!presetSel.value) return;
-        const row = presetSel.closest('tr');
-        row.querySelector('.item-level-input').value = presetSel.value;
-        presetSel.value = '';
+    // Gear: "More" reveals the raw level/quality fields for one row.
+    card.querySelectorAll('.more-item-btn').forEach((b) => {
+      b.onclick = () => {
+        const itemSid = b.closest('tr').dataset.sid;
+        const adv = card.querySelector(`tr[data-advanced-for="${CSS.escape(itemSid)}"]`);
+        const open = adv.hidden;
+        adv.hidden = !open;
+        b.setAttribute('aria-expanded', String(open));
       };
     });
 
-    // Gear: name what a slot move will displace, before the write happens.
+    // Gear: every control in a row is a PENDING edit; one Apply per row sends
+    // them together. The button stays disabled until something actually
+    // differs from what's on disk, so "Apply" never means "write the same
+    // values back" (which the mutation gate would reject as a no-op anyway,
+    // reporting a confusing error for what looked like a valid action).
     const gearChar = findCharacter(file, sid);
-    card.querySelectorAll('.item-slot-select').forEach((select) => {
-      const updateNote = () => {
-        const note = select.parentElement.querySelector('.item-collision-note');
-        if (!note) return;
-        const target = select.value;
+
+    const collectPatch = (row) => {
+      const patch = {};
+      // A row's advanced `level` input and its quality <select> both target
+      // `level`. Later wins, and the advanced input is later in the DOM, so an
+      // explicitly typed raw value takes precedence over the tier dropdown.
+      const itemSid = row.dataset.sid;
+      const fields = [
+        ...row.querySelectorAll('.item-field'),
+        ...card.querySelectorAll(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-field`),
+      ];
+      for (const el of fields) {
+        if (el.value === '' || el.value === el.dataset.initial) continue;
+        patch[el.dataset.field] = el.dataset.field === 'materialSid' ? el.value : Number(el.value);
+      }
+      const slot = row.querySelector('.item-slot-select');
+      if (slot && slot.value !== slot.dataset.initial) patch.section = slot.value;
+      return patch;
+    };
+
+    const refreshRowState = (row) => {
+      const applyBtn = row.querySelector('.apply-item-btn');
+      if (!applyBtn) return;
+      const changed = Object.keys(collectPatch(row)).length > 0;
+      applyBtn.disabled = !changed || !canWrite();
+
+      // Name what a slot change will displace, before the write happens.
+      const slot = row.querySelector('.item-slot-select');
+      const note = row.querySelector('.item-collision-note');
+      if (slot && note) {
+        const target = slot.value;
         const isBucket = target === 'main' || target === 'backpack_content';
         const occupant = !isBucket && gearChar
-          ? (gearChar.inventory || []).find((it) => it.section === target && it.sid !== select.dataset.sid)
+          ? (gearChar.inventory || []).find((it) => it.section === target && it.sid !== row.dataset.sid)
           : null;
         note.textContent = occupant ? `replaces ${occupant.name}` : '';
-      };
-      select.onchange = updateNote;
-      updateNote();
-    });
+      }
+    };
 
-    card.querySelectorAll('.move-item-btn').forEach((b) => {
-      b.onclick = () => {
-        const row = card.querySelector(`tr[data-sid="${b.dataset.sid}"]`);
-        const section = row.querySelector('.item-slot-select').value;
-        return run(b, 'item moved', () => API.setItemSection(state.save, file, sid, b.dataset.sid, section), true);
-      };
-    });
+    card.querySelectorAll('tbody tr[data-sid]').forEach((row) => {
+      const itemSid = row.dataset.sid;
+      const controls = [
+        ...row.querySelectorAll('.item-field, .item-slot-select'),
+        ...card.querySelectorAll(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-field`),
+      ];
+      controls.forEach((el) => {
+        el.oninput = () => refreshRowState(row);
+        el.onchange = () => refreshRowState(row);
+      });
+      refreshRowState(row);
 
-    card.querySelectorAll('.set-quality-btn').forEach((b) => {
-      b.onclick = () => {
-        const row = card.querySelector(`tr[data-sid="${b.dataset.sid}"]`);
-        const levelInput = row.querySelector('.item-level-input');
-        const qualityInput = row.querySelector('.item-quality-input');
-        const body = {};
-        if (levelInput && levelInput.value !== '') body.level = Number(levelInput.value);
-        if (qualityInput && qualityInput.value !== '') body.quality = Number(qualityInput.value);
-        if (Object.keys(body).length === 0) return showReceipt(receipt, new Error('No level/quality value entered.'));
-        return run(b, 'item quality set', () => API.setItemQuality(state.save, file, sid, b.dataset.sid, body), true);
+      const applyBtn = row.querySelector('.apply-item-btn');
+      if (applyBtn) applyBtn.onclick = () => {
+        const patch = collectPatch(row);
+        if (Object.keys(patch).length === 0) return showReceipt(receipt, new Error('Nothing changed on this row.'));
+        return run(applyBtn, 'item updated', () => API.updateItem(state.save, file, sid, itemSid, patch), true);
       };
     });
 

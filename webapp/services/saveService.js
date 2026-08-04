@@ -134,6 +134,15 @@ function itemOf(rec) {
     base: asText(baseSid || ''),
     name: gamedata.nameOf(baseSid),
     material: gamedata.nameOf(s.get('material sid'), ''),
+    // Weapon grade: the named tier a player recognises ("Meitou") is the
+    // (company sid, material sid) pair, not `level` (TODO.md 2.2(i)). Raw
+    // `materialSid` is surfaced so the Gear row's grade <select> can preselect
+    // the item's current entry; null for non-weapons, which have no ladder.
+    materialSid: asText(s.get('material sid') || ''),
+    // Whether the template can stack at all — decides whether the Gear row
+    // offers a quantity control (TODO.md 2.2(d)). Not derivable client-side.
+    stackable: !!(gamedata.lookup(baseSid) || {}).stackable,
+    kindType: (gamedata.lookup(baseSid) || {}).type ?? null,
     section,
     quantity: rec.ints.get('quantity') ?? 1,
     quality: rec.floats.get('quality') ?? null,
@@ -799,38 +808,163 @@ function displaceIntoSlot(bag, bySid, excludeSid, targetSection) {
  * rather than risk locking a modded item the editor has never seen.
  */
 function setItemSection(saveDir, platoonFile, characterSid, itemSid, targetSection) {
-  if (!ITEM_SLOTS.includes(targetSection)) {
-    throw new Error(`section must be one of: ${ITEM_SLOTS.join(', ')}`);
+  return updateItem(saveDir, platoonFile, characterSid, itemSid, { section: targetSection });
+}
+
+// Every field updateItem() understands. Unknown keys are rejected rather than
+// ignored, for the same reason addItem() rejects them: silently dropping a
+// misnamed field would write a *different* item than the caller asked for and
+// still report success.
+const UPDATE_ITEM_FIELDS = new Set(['section', 'level', 'quality', 'quantity', 'materialSid']);
+
+/**
+ * Set any combination of an item's slot, level, quality and quantity in ONE
+ * staged edit.
+ *
+ * This is the primitive; `setItemSection()` and `setItemQuality()` are thin
+ * wrappers so their routes and tests keep working. Combining matters, and is
+ * not just a convenience: `mutationService.mutate()` treats each call as one
+ * staged edit against one pre-edit snapshot and creates one backup, so a UI
+ * row that changes slot AND quantity would otherwise need two sequential
+ * writes, each re-opening the mutation gate, with the save briefly in a state
+ * the user never asked for if the second failed.
+ *
+ * Every field is optional and independently settable (same shape as
+ * setHunger()); omitting one leaves it untouched. All validation happens
+ * before ANY mutation, so a partially-valid request can never produce a
+ * partially-edited record.
+ *
+ * `quantity` is the field the Gear UI was missing entirely — it could only be
+ * set when the item was first created. Per TODO.md 2.2(d), a quantity above 1
+ * is rejected unless the item's gamedata template is stackable; no maximum is
+ * documented anywhere in the data (live stacks run to 100), so there is no
+ * upper clamp.
+ */
+function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
+  const unknown = Object.keys(opts).filter((k) => !UPDATE_ITEM_FIELDS.has(k));
+  if (unknown.length) {
+    throw new Error(`updateItem: unknown field(s) ${unknown.join(', ')} — supported: ${[...UPDATE_ITEM_FIELDS].join(', ')}`);
+  }
+  const { section, level, quality, quantity, materialSid } = opts;
+  if (section === undefined && level === undefined && quality === undefined
+    && quantity === undefined && materialSid === undefined) {
+    throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid');
   }
 
   const { relFile, parsed, bag, bySid, itemRec } = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
 
   const currentSection = asText(itemRec.strings.get('section') || '');
   const baseSid = itemRec.strings.get('base data sid');
-  const { sections: allowed } = itemSlots.allowedSections(baseSid, currentSection);
-  if (!allowed.includes(targetSection)) {
-    throw new Error(`"${gamedata.nameOf(baseSid, asText(baseSid || itemSid))}" cannot move into slot "${targetSection}" — allowed slots: ${allowed.join(', ')}`);
+  const itemName = gamedata.nameOf(baseSid, asText(baseSid || itemSid));
+
+  // ---- validate everything before touching the record (AGENTS.md §4) ----
+  if (section !== undefined) {
+    if (!ITEM_SLOTS.includes(section)) {
+      throw new Error(`section must be one of: ${ITEM_SLOTS.join(', ')}`);
+    }
+    const { sections: allowed } = itemSlots.allowedSections(baseSid, currentSection);
+    if (!allowed.includes(section)) {
+      throw new Error(`"${itemName}" cannot move into slot "${section}" — allowed slots: ${allowed.join(', ')}`);
+    }
   }
 
-  // Displaced item's "before" section is trivially `targetSection` itself —
-  // that's the definition of "occupying the slot we're about to move into" —
-  // so it's safe to read after displaceIntoSlot() has already flipped it.
-  const displaced = displaceIntoSlot(bag, bySid, itemSid, targetSection);
+  let levelValue;
+  if (level !== undefined) {
+    if (!itemRec.ints.has('level')) throw new Error(`item "${itemSid}" has no "level" int field`);
+    levelValue = Number(level);
+    if (!Number.isInteger(levelValue) || levelValue < 0) throw new Error('level must be a non-negative integer');
+  }
 
+  let qualityValue;
+  if (quality !== undefined) {
+    if (!itemRec.floats.has('quality')) throw new Error(`item "${itemSid}" has no "quality" float field`);
+    qualityValue = Number(quality);
+    if (!Number.isFinite(qualityValue) || qualityValue < 0) throw new Error('quality must be a non-negative finite number');
+  }
+
+  let quantityValue;
+  if (quantity !== undefined) {
+    if (!itemRec.ints.has('quantity')) throw new Error(`item "${itemSid}" has no "quantity" int field`);
+    quantityValue = Number(quantity);
+    if (!Number.isInteger(quantityValue) || quantityValue < 1) throw new Error('quantity must be a positive integer');
+    if (quantityValue > 1) {
+      // The template, not the item record, is what says whether stacking is
+      // legal — an unresolvable template is left permissive, matching how
+      // itemSlots.js treats a kind it cannot identify rather than locking a
+      // modded item this editor has never seen.
+      const tmpl = gamedata.lookup(baseSid);
+      if (tmpl && !tmpl.stackable) {
+        throw new Error(`"${itemName}" is not stackable (see TODO.md 2.2(d)) — quantity must be 1`);
+      }
+    }
+  }
+
+  // Weapon grade: the named tier a player actually recognises ("Meitou") is
+  // the (company sid, material sid) PAIR, not `level` — TODO.md 2.2(i). The
+  // caller picks a ladder entry by its type-50 model sid and the company is
+  // resolved from it, so the two can never be written out of step. Offered
+  // here as well as in addItem() because being able to choose Meitou when
+  // creating a weapon but not when editing one is exactly the sort of
+  // asymmetry that makes this page confusing.
+  let grade = null;
+  if (materialSid !== undefined) {
+    if (typeof materialSid !== 'string' || !materialSid) {
+      throw new Error('materialSid must be a non-empty string (a weapon grade type-50 sid)');
+    }
+    const tmpl = gamedata.lookup(baseSid);
+    if (!tmpl || tmpl.type !== 2) {
+      throw new Error(`"${itemName}" is not a weapon — grade (materialSid) only applies to weapons`);
+    }
+    grade = gamedata.weaponGrades().find((g) => g.modelSid === materialSid);
+    if (!grade) throw new Error(`"${materialSid}" is not a known weapon grade (type-50) sid`);
+  }
+
+  // ---- apply ----
   const before = {
     section: currentSection,
-    displacedSid: displaced ? displaced.sid : null,
-    displacedSection: displaced ? targetSection : null,
+    level: itemRec.ints.get('level') ?? null,
+    quality: itemRec.floats.get('quality') ?? null,
+    quantity: itemRec.ints.get('quantity') ?? null,
+    materialSid: asText(itemRec.strings.get('material sid') || ''),
+    companySid: asText(itemRec.strings.get('company sid') || ''),
+    displacedSid: null,
+    displacedSection: null,
   };
 
-  itemRec.strings.set('section', targetSection);
+  let displaced = null;
+  if (section !== undefined) {
+    // Displaced item's "before" section is trivially `section` itself — that's
+    // the definition of occupying the slot we're moving into — so it's safe to
+    // read after displaceIntoSlot() has already flipped it.
+    displaced = displaceIntoSlot(bag, bySid, itemSid, section);
+    before.displacedSid = displaced ? displaced.sid : null;
+    before.displacedSection = displaced ? section : null;
+    itemRec.strings.set('section', section);
+  }
+  if (levelValue !== undefined) itemRec.ints.set('level', levelValue);
+  if (qualityValue !== undefined) itemRec.floats.set('quality', qualityValue);
+  if (quantityValue !== undefined) itemRec.ints.set('quantity', quantityValue);
+  if (grade) {
+    // Both keys already exist on every live type-42 record (TODO.md 2.2(a)),
+    // so this never mints a new key — and they are written together, never
+    // one without the other.
+    itemRec.strings.set('material sid', grade.modelSid);
+    itemRec.strings.set('company sid', grade.companySid);
+  }
 
   return {
     file: relFile,
     bytes: writeFile(parsed),
     before,
     after: {
-      section: targetSection,
+      name: itemName,
+      section: asText(itemRec.strings.get('section') || ''),
+      level: itemRec.ints.get('level') ?? null,
+      quality: itemRec.floats.get('quality') ?? null,
+      quantity: itemRec.ints.get('quantity') ?? null,
+      materialSid: asText(itemRec.strings.get('material sid') || ''),
+      companySid: asText(itemRec.strings.get('company sid') || ''),
+      grade: grade ? { modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank } : null,
       displacedSid: displaced ? displaced.sid : null,
       displacedSection: displaced ? 'main' : null,
     },
@@ -848,32 +982,7 @@ function setItemSection(saveDir, platoonFile, characterSid, itemSid, targetSecti
  */
 function setItemQuality(saveDir, platoonFile, characterSid, itemSid, { level, quality } = {}) {
   if (level === undefined && quality === undefined) throw new Error('setItemQuality: provide level and/or quality');
-
-  const { relFile, parsed, itemRec } = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
-
-  let levelValue;
-  let qualityValue;
-  if (level !== undefined) {
-    if (!itemRec.ints.has('level')) throw new Error(`item "${itemSid}" has no "level" int field`);
-    levelValue = Number(level);
-    if (!Number.isInteger(levelValue) || levelValue < 0) throw new Error('level must be a non-negative integer');
-  }
-  if (quality !== undefined) {
-    if (!itemRec.floats.has('quality')) throw new Error(`item "${itemSid}" has no "quality" float field`);
-    qualityValue = Number(quality);
-    if (!Number.isFinite(qualityValue) || qualityValue < 0) throw new Error('quality must be a non-negative finite number');
-  }
-
-  const before = { level: itemRec.ints.get('level') ?? null, quality: itemRec.floats.get('quality') ?? null };
-  if (levelValue !== undefined) itemRec.ints.set('level', levelValue);
-  if (qualityValue !== undefined) itemRec.floats.set('quality', qualityValue);
-
-  return {
-    file: relFile,
-    bytes: writeFile(parsed),
-    before,
-    after: { level: itemRec.ints.get('level') ?? null, quality: itemRec.floats.get('quality') ?? null },
-  };
+  return updateItem(saveDir, platoonFile, characterSid, itemSid, { level, quality });
 }
 
 /**
@@ -1000,5 +1109,5 @@ module.exports = {
   T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
   resolveCharacter, setStats, setStat, trainCharacter,
   healPart, damagePart, setHunger, revive, restoreLimbs,
-  setItemSection, setItemQuality, addItem,
+  setItemSection, setItemQuality, updateItem, addItem,
 };
