@@ -56,6 +56,10 @@ class Reader {
   constructor(buf, offset = 0) {
     this.buf = buf;
     this.o = offset;
+    // NaN bit preservation — see F(). `nan` is a Map(floatOrdinal -> raw u32)
+    // installed per record by the codec; null means "don't bother tracking".
+    this.nan = null;
+    this.fOrd = 0;
   }
 
   get remaining() { return this.buf.length - this.o; }
@@ -67,9 +71,31 @@ class Reader {
     return v;
   }
 
+  /**
+   * Read a float, remembering the exact bits of any NaN.
+   *
+   * Kenshi writes NaN floats into saves — 225 to 333 of them per quick.save,
+   * nearly all in a type-108 spatial cache's instance positions. Most are QUIET
+   * NaNs and survive a round trip untouched, because a float32 -> double ->
+   * float32 trip through a JS number preserves the sign and the payload. What
+   * it does NOT preserve is the "is this NaN signalling" bit: the hardware sets
+   * the quiet bit on the widening conversion, so a signalling NaN comes back
+   * out as `0x...ff` where the file had `0x...bf`. One bit, one byte, and the
+   * byte-identical round trip that is this codec's entire safety argument
+   * fails.
+   *
+   * So each NaN's raw bits are stored against the ORDINAL of the float within
+   * its record (`fOrd`), and Writer.F() puts them back. Keying by ordinal
+   * rather than by "the Nth NaN" means editing one float away from NaN cannot
+   * shift the others. A record that isn't in the table — a freshly minted or
+   * cloned one — just writes a canonical NaN, which is correct: nothing
+   * requires new records to reproduce bits they never had.
+   */
   F() {
     if (this.o + 4 > this.buf.length) throw new RangeError(`F past EOF at ${this.o}`);
     const v = this.buf.readFloatLE(this.o);
+    if (this.nan && Number.isNaN(v)) this.nan.set(this.fOrd, this.buf.readUInt32LE(this.o));
+    this.fOrd++;
     this.o += 4;
     return v;
   }
@@ -108,6 +134,10 @@ class Writer {
   constructor(initial = 1 << 16) {
     this.buf = Buffer.allocUnsafe(initial);
     this.o = 0;
+    // The read side's NaN table for the record currently being written, and
+    // the ordinal counter that indexes it. See Reader.F().
+    this.nan = null;
+    this.fOrd = 0;
   }
 
   _need(n) {
@@ -120,7 +150,15 @@ class Writer {
   }
 
   L(v) { this._need(4); this.buf.writeInt32LE(v | 0, this.o); this.o += 4; }
-  F(v) { this._need(4); this.buf.writeFloatLE(v, this.o); this.o += 4; }
+  /** Write a float, restoring a NaN's original bits when we have them (Reader.F). */
+  F(v) {
+    this._need(4);
+    const raw = this.nan && Number.isNaN(v) ? this.nan.get(this.fOrd) : undefined;
+    if (raw === undefined) this.buf.writeFloatLE(v, this.o);
+    else this.buf.writeUInt32LE(raw, this.o);
+    this.fOrd++;
+    this.o += 4;
+  }
   B(v) { this._need(1); this.buf[this.o++] = v ? 1 : 0; }
 
   S(v) {

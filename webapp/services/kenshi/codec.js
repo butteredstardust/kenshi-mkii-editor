@@ -30,7 +30,17 @@ const { Reader, Writer } = require('./binary');
 
 const FILETYPE = { SAVE: 15, MOD: 16, MOD_V2: 17 };
 
+/**
+ * Per-record NaN bit tables (see Reader.F()). Kept in a WeakMap rather than on
+ * the record so it stays invisible to everything that reads, diffs or clones a
+ * record — a caller must not have to know this exists to round-trip a file, and
+ * a record that never had NaNs never gets an entry.
+ */
+const NAN_BITS = new WeakMap();
+
 function readRecord(r) {
+  r.nan = new Map();
+  r.fOrd = 0;
   const rec = {
     instanceCount: r.L(),
     type: r.L(),
@@ -70,10 +80,14 @@ function readRecord(r) {
     rec.instances.push(inst);
   }
 
+  if (r.nan.size) NAN_BITS.set(rec, r.nan);
+  r.nan = null;
   return rec;
 }
 
 function writeRecord(w, rec) {
+  w.nan = NAN_BITS.get(rec) || null;
+  w.fOrd = 0;
   w.L(rec.instanceCount);
   w.L(rec.type);
   w.L(rec.id);
@@ -97,6 +111,7 @@ function writeRecord(w, rec) {
     for (const row of rows) { w.S(row.target); w.L(row.v0); w.L(row.v1); w.L(row.v2); }
   }
 
+
   w.L(rec.instances.length);
   for (const inst of rec.instances) {
     w.S(inst.id);
@@ -106,6 +121,7 @@ function writeRecord(w, rec) {
     w.L(inst.states.length);
     for (const s of inst.states) w.S(s);
   }
+  w.nan = null;
 }
 
 /**
