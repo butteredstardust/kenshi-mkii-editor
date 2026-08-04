@@ -4,13 +4,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { readFile, writeFile } = require('./kenshi/codec');
-const { asText } = require('./kenshi/binary');
+const { asText, fromText, byteLength } = require('./kenshi/binary');
 const paths = require('./pathService');
 const gamedata = require('./gamedataService');
 const archetypes = require('./archetypes');
+const recruits = require('./recruits');
 const itemCatalog = require('./itemCatalogService');
 const itemSlots = require('./itemSlots');
 const itemFactory = require('./itemFactory');
+const characterFactory = require('./characterFactory');
 const ids = require('./kenshi/ids');
 
 /**
@@ -64,6 +66,10 @@ const T = {
   AI: 67,
   FACTION: 37,
   GAME_STATE: 56,
+  // Per-squad metadata, one record in quick.save per .platoon file. Carries
+  // `strings['faction name']`, `ints['char count']` and
+  // `filenames['content file']` (the platoon path) — see playerSquadRecords().
+  SQUAD_META: 34,
 };
 
 const BODY_SLOTS = 7;
@@ -308,9 +314,52 @@ function resolveCharacter(saveDir, platoonFile, characterSid) {
   };
 }
 
-function playerPlatoonFiles(dir, faction) {
+/**
+ * The quick.save SQUAD_META (34) records belonging to `faction`.
+ *
+ * One type-34 record exists per `.platoon` file in the save, keyed to it by
+ * `filenames['content file']` (e.g. "platoon/Nameless_0.platoon") and tagged
+ * with `strings['faction name']`. This is the authoritative squad list; the
+ * `<Faction>_<n>.platoon` filename convention is a consequence of it, not the
+ * other way round.
+ */
+function playerSquadRecords(world, faction) {
+  if (!faction) return [];
+  return world.records.filter((r) => r.type === T.SQUAD_META
+    && asText(r.strings.get('faction name') || '') === faction);
+}
+
+/**
+ * Absolute paths of the player faction's `.platoon` files.
+ *
+ * Resolved through quick.save's SQUAD_META records rather than by matching the
+ * `<Faction>_<n>.platoon` filename prefix. That matters because
+ * renamePlayerFaction() exists: renaming the faction rewrites the display name
+ * in quick.save but deliberately does NOT rename files on disk (a platoon
+ * file's name is baked into its own record sid, `platoon stringID` and
+ * `content file`, and mutationService installs files, it does not move them).
+ * A prefix match would report "no player squad" the moment the user renamed
+ * their faction. The prefix scan survives only as a fallback for a save whose
+ * type-34 records don't name a content file.
+ *
+ * `world` is optional; it is passed in by callers that have already parsed
+ * quick.save so the file isn't read twice.
+ */
+function playerPlatoonFiles(dir, faction, world = null) {
   const pdir = path.join(dir, 'platoon');
   if (!faction || !fs.existsSync(pdir)) return [];
+
+  const parsed = world || readSaveFile(dir, 'quick.save');
+  const out = [];
+  for (const rec of playerSquadRecords(parsed, faction)) {
+    const rel = asText(rec.filenames.get('content file') || '');
+    const m = /^platoon[/\\]([^/\\]+\.platoon)$/.exec(rel);
+    if (!m) continue; // e.g. a dead squad whose content file is the bare "platoon/"
+    const abs = path.join(pdir, m[1]);
+    if (fs.existsSync(abs) && !out.includes(abs)) out.push(abs);
+  }
+  if (out.length) return out.sort();
+
   return fs.readdirSync(pdir)
     .filter((f) => f.startsWith(`${faction}_`) && f.endsWith('.platoon'))
     .sort()
@@ -324,7 +373,7 @@ function status(saveName) {
 
   const world = readSaveFile(save.dir, 'quick.save');
   const summary = worldSummary(world);
-  const squads = playerPlatoonFiles(save.dir, summary.faction).map((f) => {
+  const squads = playerPlatoonFiles(save.dir, summary.faction, world).map((f) => {
     const { characters } = readPlatoon(f);
     return { file: path.basename(f), characters };
   });
@@ -460,14 +509,50 @@ function trainCharacter(saveDir, platoonFile, characterSid, { archetype, sub, mo
   // Resolve (and thus validate) the archetype/sub BEFORE touching the record,
   // so an unknown id is rejected without reading or parsing anything.
   const { skills: archetypeSkills } = archetypes.resolveSkills(archetype, sub);
-  const archetypeSet = new Set(archetypeSkills);
 
   const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
   const rec = records.stats;
   if (!rec) throw new Error(`${platoonFile}: character "${characterSid}" has no STATS record (type 25)`);
 
+  const result = applyStatSpread(rec, { archetypeSkills, mode, rng });
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    ...result,
+  };
+}
+
+/**
+ * Write a coherent stat spread across a STATS (25) record: attributes to a flat
+ * value, the archetype's own skills rolled in one band and every other skill in
+ * a lower one.
+ *
+ * Extracted so "Train as archetype" and "Add squad member" produce stats the
+ * same way — a recruit rolled as a Veteran Soldier and a character trained as a
+ * Soldier should differ in tier, not in method. The ranges are parameters
+ * precisely because addSquadMember() varies them by power tier
+ * (services/recruits.js); trainCharacter()'s defaults are the values it has
+ * always used.
+ *
+ * Only ever writes keys already present in `rec.floats` (iterating the Map
+ * directly, never a hardcoded key list), so a non-human character with a
+ * smaller skill set — or a modded one with extra keys — is handled without
+ * minting a float key the game may not read.
+ *
+ * `mode: 'raise'` never lowers an existing value; `'set'` overwrites.
+ */
+function applyStatSpread(rec, {
+  archetypeSkills = [],
+  attribute = 45,
+  archRange = [45, 95],
+  otherRange = [15, 40],
+  mode = 'raise',
+  rng = Math.random,
+} = {}) {
+  const archetypeSet = new Set(archetypeSkills);
   const round1 = (v) => Math.round(v * 10) / 10;
-  const roll = (min, max) => round1(min + rng() * (max - min));
+  const roll = ([min, max]) => round1(min + rng() * (max - min));
 
   const before = {};
   const after = {};
@@ -484,23 +569,15 @@ function trainCharacter(saveDir, platoonFile, characterSid, { archetype, sub, mo
 
   for (const a of ATTRIBUTES) {
     if (!rec.floats.has(a)) continue; // e.g. a non-human character missing an attribute
-    applyOne(a, 45);
+    applyOne(a, attribute);
   }
 
   for (const key of rec.floats.keys()) {
     if (key === 'xp' || key === 'free attribute points' || ATTRIBUTES.includes(key)) continue;
-    const isArchetypeSkill = archetypeSet.has(key);
-    const [min, max] = isArchetypeSkill ? [45, 95] : [15, 40];
-    applyOne(key, roll(min, max));
+    applyOne(key, roll(archetypeSet.has(key) ? archRange : otherRange));
   }
 
-  return {
-    file: relFile,
-    bytes: writeFile(parsed),
-    before,
-    after,
-    changedCount,
-  };
+  return { before, after, changedCount };
 }
 
 /**
@@ -1105,8 +1182,446 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   };
 }
 
+// ---------------------------------------------------------------- naming --
+
+// Names are length-prefixed byte strings with no documented cap. 63 UTF-8 bytes
+// is this editor's own conservative choice (TODO.md 1.3 proposed it): long
+// enough for any realistic name, short enough that the game's UI will not have
+// to truncate something the user cannot see they typed.
+const MAX_NAME_BYTES = 63;
+
+/**
+ * Validate and encode user-supplied display text for a record string field.
+ *
+ * Returns the latin1-carried form the codec writes. Rejects control characters
+ * outright — a newline or NUL inside a name is not something the game's UI can
+ * render back, and NUL in particular would be invisible in every readback this
+ * editor performs, so it must never reach a save.
+ */
+function encodeName(text, label = 'name') {
+  if (typeof text !== 'string') throw new Error(`${label} must be a string`);
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error(`${label} must not be empty`);
+  for (const ch of trimmed) {
+    const code = ch.codePointAt(0);
+    if (code < 0x20 || code === 0x7f) throw new Error(`${label} must not contain control characters`);
+  }
+  const bytes = byteLength(trimmed);
+  if (bytes > MAX_NAME_BYTES) {
+    throw new Error(`${label} must be at most ${MAX_NAME_BYTES} bytes (this one is ${bytes})`);
+  }
+  return { text: trimmed, encoded: fromText(trimmed), bytes };
+}
+
+/**
+ * Rename a character: `strings.name` on the CHAR_STATE (36) record.
+ *
+ * The STATS (25) record's own header `name` is written too. That field is not a
+ * Map entry and is not a per-character field in general — on an untouched NPC
+ * it holds the origin template's name ("Cannibal", shared by every character
+ * spawned from it) — but on a character the player has actually named, the game
+ * itself writes the character's name there (a live player character's STATS
+ * record reads "Dai"). Writing it keeps a renamed character consistent with how
+ * the game stores its own, and matches the FCS guide's "also update the name on
+ * the STATS entry" advice.
+ */
+function renameCharacter(saveDir, platoonFile, characterSid, newName) {
+  const { text, encoded } = encodeName(newName, 'name');
+
+  const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
+  const state = records.state;
+  if (!state) throw new Error(`${platoonFile}: character "${characterSid}" has no CHAR_STATE record (type 36)`);
+  if (!state.strings.has('name')) throw new Error(`${platoonFile}: character "${characterSid}" has no "name" string field`);
+
+  const before = asText(state.strings.get('name') || '');
+  if (before === text) throw new Error(`this character is already named "${text}"`);
+
+  state.strings.set('name', encoded);
+  const statsRec = records.stats;
+  const statsBefore = statsRec ? asText(statsRec.name) : null;
+  if (statsRec) statsRec.name = encoded;
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    before: { name: before, statsRecordName: statsBefore },
+    after: { name: text, statsRecordName: statsRec ? text : null },
+  };
+}
+
+/**
+ * Rename the player faction — the name shown on the squad, and the only
+ * squad-level name a Kenshi save actually stores.
+ *
+ * There is NO per-squad display-name field. A full sweep of a live save
+ * (quick.save + all 23 `.platoon` files) for any string key or value resembling
+ * a squad name found exactly three places the player's chosen name is written:
+ *
+ *   1. GAME_STATE (56) `strings['pfaction name']` — the canonical one.
+ *   2. Every SQUAD_META (34) record of that faction, `strings['faction name']`.
+ *   3. The player's FACTION (37) record's header `name`.
+ *
+ * All three are rewritten together, because leaving any of them behind would
+ * make the save internally inconsistent about who the player is (and this
+ * editor's own squad lookup keys off 1 matching 2 — see playerPlatoonFiles()).
+ *
+ * What is deliberately NOT touched: the SQUAD_META record's `sid`, header
+ * `name`, `strings['platoon stringID']` and `filenames['content file']`, and
+ * the `.platoon` filenames themselves. Those four are one identity —
+ * "Nameless_0" — and renaming them would mean renaming files on disk, which
+ * mutationService cannot do (it installs changed file *contents*; it never
+ * moves, creates or deletes a path). A squad whose file is still called
+ * `Nameless_0.platoon` after the faction becomes "The Wolves" is cosmetically
+ * odd in the save folder and completely correct in the game.
+ */
+function renamePlayerFaction(saveDir, newName) {
+  const { text, encoded } = encodeName(newName, 'faction name');
+
+  const world = readSaveFile(saveDir, 'quick.save');
+  const gs = gameStateOf(world);
+  const before = asText(gs.strings.get('pfaction name') || '');
+  if (!gs.strings.has('pfaction name')) {
+    throw new Error('this save\'s game-state record has no "pfaction name" field');
+  }
+  if (before === text) throw new Error(`the player faction is already named "${text}"`);
+
+  const squadRecords = playerSquadRecords(world, before);
+  gs.strings.set('pfaction name', encoded);
+  for (const rec of squadRecords) rec.strings.set('faction name', encoded);
+
+  // The FACTION (37) record is identified by its header name matching the old
+  // faction name. Only renamed when that is unambiguous — two factions sharing
+  // a display name would make "which one is the player's" a guess, and a wrong
+  // guess would rename an unrelated faction.
+  const factionMatches = world.records.filter((r) => r.type === T.FACTION && asText(r.name) === before);
+  const renamedFactionRecord = factionMatches.length === 1;
+  if (renamedFactionRecord) factionMatches[0].name = encoded;
+
+  return {
+    file: 'quick.save',
+    bytes: writeFile(world),
+    before: { name: before },
+    after: {
+      name: text,
+      squadRecords: squadRecords.map((r) => asText(r.sid)),
+      renamedFactionRecord,
+      factionRecordMatches: factionMatches.length,
+    },
+  };
+}
+
+// ------------------------------------------------------- new squad member --
+
+/**
+ * Read every character cluster in a save's platoon files, tagged with its race.
+ *
+ * The race lives in the APPEARANCE (66) record's `extra` section, category
+ * "race", as a single row whose `target` is the race stringID — not in any
+ * key/value Map (Phase 0 finding, see TODO.md 1.5). This is the donor pool
+ * addSquadMember() clones from and the source of the race list the UI offers:
+ * the editor only ever offers races it can actually produce from this save.
+ */
+function scanCharacters(saveDir) {
+  const pdir = path.join(saveDir, 'platoon');
+  if (!fs.existsSync(pdir)) return [];
+  const out = [];
+  for (const file of fs.readdirSync(pdir).filter((f) => f.endsWith('.platoon')).sort()) {
+    let parsed;
+    try {
+      parsed = readFile(fs.readFileSync(path.join(pdir, file)));
+    } catch {
+      continue; // an unparseable platoon is not a donor; status() would surface it
+    }
+    const bySid = new Map(parsed.records.map((r) => [r.sid, r]));
+    const squad = parsed.records.find((r) => r.type === T.SQUAD);
+    if (!squad) continue;
+    for (const inst of squad.instances) {
+      const states = inst.states.map((s) => bySid.get(s)).filter(Boolean);
+      const pick = (type) => states.find((r) => r.type === type) || null;
+      const appearance = pick(T.APPEARANCE);
+      if (!appearance) continue;
+      const raceRow = (appearance.extra.get('race') || [])[0];
+      if (!raceRow || !raceRow.target) continue;
+      out.push({
+        file, parsed, instance: inst, states,
+        raceSid: raceRow.target,
+        state: pick(T.CHAR_STATE),
+        medical: pick(T.MEDICAL),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Rank a candidate donor by how healthy it is. Higher is better; `null` means
+ * "not a usable donor at all".
+ *
+ * This matters because a clone inherits the donor's MEDICAL record wholesale.
+ * healMedical() resets flesh/stun/bandage/KO and the death flags, but `blood`
+ * has no defensible "full" value to write (it ranges -67.8 to 183.2 across a
+ * live save), so the only way to avoid handing the player a recruit who
+ * immediately bleeds out is to clone someone who is already fine.
+ */
+function donorScore(candidate) {
+  const m = candidate.medical;
+  if (!m) return null;
+  if (m.bools.get('dead') || m.bools.get('coma') || m.bools.get('incapacitated')) return null;
+  const flesh = [];
+  for (let i = 0; i < BODY_SLOTS; i++) {
+    if (m.floats.has(`hit${i}`)) flesh.push(m.floats.get(`flesh${i}`) ?? 0);
+  }
+  if (!flesh.length) return null;
+  const max = Math.max(...flesh);
+  if (max <= 0) return null;
+  const worstRatio = Math.min(...flesh) / max;
+  const blood = m.floats.get('blood') ?? 0;
+  if (blood <= 0) return null;
+  // Intactness dominates; blood breaks ties. Both are only ever compared
+  // against other candidates, so the absolute scale is unimportant.
+  return worstRatio * 1000 + Math.min(blood, 100);
+}
+
+/** Races this save can actually supply a donor for, most-populous first. */
+function availableRaces(saveDir) {
+  const byRace = new Map();
+  for (const c of scanCharacters(saveDir)) {
+    let entry = byRace.get(c.raceSid);
+    if (!entry) {
+      entry = { sid: c.raceSid, name: gamedata.nameOf(c.raceSid), count: 0, donors: 0 };
+      byRace.set(c.raceSid, entry);
+    }
+    entry.count += 1;
+    if (donorScore(c) !== null) entry.donors += 1;
+  }
+  // Sorted by donor count, not head count: `donors` is the number the UI shows
+  // and the only one that says anything about whether this race is a good bet
+  // to recruit. `count` breaks ties.
+  return [...byRace.values()]
+    .filter((r) => r.donors > 0)
+    .sort((a, b) => (b.donors - a.donors) || (b.count - a.count));
+}
+
+/**
+ * Pick the race to preselect in the UI.
+ *
+ * "Greenlander" is the requested default, but it is a name this install's data
+ * may not use at all — the human race in this save resolves to the name
+ * "Human" (`17-gamedata.quack`), because vanilla data was consolidated over the
+ * years and the Greenlander/Scorchlander split is not how every install's
+ * records are named. So the default is resolved by preference order against
+ * whatever the save actually contains, and falls back to the most populous
+ * race rather than to nothing.
+ */
+const DEFAULT_RACE_PREFERENCE = [/^greenlander$/i, /greenlander/i, /^human$/i, /human/i];
+
+function defaultRace(races) {
+  for (const pattern of DEFAULT_RACE_PREFERENCE) {
+    const hit = races.find((r) => pattern.test(r.name));
+    if (hit) return hit;
+  }
+  return races[0] || null;
+}
+
+/** Resolve a platoon file to its parsed contents plus its SQUAD (30) record. */
+function resolveSquad(saveDir, platoonFile) {
+  if (typeof platoonFile !== 'string'
+    || !/^[^/\\]+\.platoon$/.test(platoonFile)
+    || platoonFile.includes('..')) {
+    throw new Error(`invalid platoon file name "${platoonFile}"`);
+  }
+  const relFile = path.join('platoon', platoonFile);
+  const abs = path.join(saveDir, relFile);
+  if (!fs.existsSync(abs)) throw new Error(`no platoon file "${platoonFile}" in this save`);
+
+  const parsed = readFile(fs.readFileSync(abs));
+  const squad = parsed.records.find((r) => r.type === T.SQUAD);
+  if (!squad) throw new Error(`${platoonFile}: no squad record (type 30)`);
+  return { relFile, parsed, squad };
+}
+
+/** The quick.save SQUAD_META (34) record describing one platoon file, or null. */
+function squadMetaFor(world, platoonFile) {
+  const wanted = `platoon/${platoonFile}`;
+  return world.records.find((r) => r.type === T.SQUAD_META
+    && asText(r.filenames.get('content file') || '').replace(/\\/g, '/') === wanted) || null;
+}
+
+/**
+ * Add a brand-new member to a squad — the largest mutation in this editor, and
+ * the only one that writes two files.
+ *
+ * The new character is CLONED from an existing character of the requested race
+ * somewhere in this same save; see services/characterFactory.js for why that is
+ * the only responsible way to produce a race-correct MEDICAL body plan and
+ * APPEARANCE record without deriving the game's own character-instantiation
+ * rules. The donor is picked for health, never for identity: its name, faction,
+ * leader flag, bounties, wounds and inventory are all discarded.
+ *
+ * Ids: seven are minted from this platoon file's own header `nextId` — six
+ * state records plus one more for the squad instance's handle id. That
+ * seventh is not a typo: a character instance's `id` is sid-shaped
+ * ("32--INGAME") and, across all 282 character instances of a live save, is
+ * never any record's sid — the ids they consume appear as exact gaps in each
+ * file's record-id sequence. See services/kenshi/ids.js.
+ *
+ * Counts kept in lockstep, all three of which the game maintains itself:
+ *   - the SQUAD (30) record's `ints['char count']`
+ *   - the quick.save SQUAD_META (34) record's `ints['char count']`
+ *   - GAME_STATE (56) `ints.members`
+ * `instanceCount` on the SQUAD record is deliberately NOT touched — 23 of 25
+ * live squad records carry 0 against 2-19 real instances, so ids.addInstance()
+ * only keeps it in lockstep where the file already did (AGENTS.md §3).
+ *
+ * @param {string} saveDir
+ * @param {string} platoonFile           e.g. "Nameless_0.platoon"
+ * @param {object} opts
+ * @param {string} opts.name             display name for the new member
+ * @param {string} opts.raceSid          a race stringID from availableRaces()
+ * @param {string} opts.archetype        archetype id (services/archetypes.js)
+ * @param {string} opts.sub              sub-archetype id
+ * @param {string} [opts.tier='capable'] power tier id (services/recruits.js)
+ * @param {function} [opts.rng]          injectable for deterministic tests
+ */
+function addSquadMember(saveDir, platoonFile, {
+  name, raceSid, archetype, sub, tier = 'capable', rng = Math.random,
+} = {}) {
+  // Validate everything cheap and everything that can throw on bad input BEFORE
+  // parsing a 4 MB save (same discipline as addItem()).
+  const { text: charName, encoded } = encodeName(name, 'name');
+  const { skills: archetypeSkills, main, sub: subEntry } = archetypes.resolveSkills(archetype, sub);
+  const spread = recruits.tier(tier);
+  if (typeof raceSid !== 'string' || !raceSid) throw new Error('raceSid must be a non-empty string');
+
+  const { relFile, parsed, squad } = resolveSquad(saveDir, platoonFile);
+
+  // --- pick a donor -------------------------------------------------------
+  const candidates = scanCharacters(saveDir)
+    .filter((c) => c.raceSid === raceSid)
+    .map((c) => ({ c, score: donorScore(c) }))
+    .filter((x) => x.score !== null);
+  if (!candidates.length) {
+    const raceName = gamedata.nameOf(raceSid, raceSid);
+    throw new Error(
+      `no healthy ${raceName} character exists anywhere in this save to model a new member on. `
+      + 'This editor builds a new character by cloning one of that race out of the save itself '
+      + '(that is the only way to get a correct per-race body plan and appearance record), so a '
+      + 'race with no living example in the save cannot be recruited.',
+    );
+  }
+  // Preference order: (1) anyone undamaged enough that the choice between them
+  // is cosmetic, (2) among those, a donor already in the target platoon, (3)
+  // health. Ordering health above locality would routinely clone an NPC out of
+  // another faction's squad just because they were 1% less bruised than the
+  // player's own character of the same race — and the clone inherits the
+  // donor's origin template, which is what the roster shows as "origin".
+  const HEALTHY = 900; // donorScore(): every part within 90% of the best one
+  candidates.sort((a, b) => (Number(b.score >= HEALTHY) - Number(a.score >= HEALTHY))
+    || (Number(b.c.file === platoonFile) - Number(a.c.file === platoonFile))
+    || (b.score - a.score));
+  const donor = candidates[0].c;
+
+  // --- affiliation --------------------------------------------------------
+  const world = readSaveFile(saveDir, 'quick.save');
+  const meta = squadMetaFor(world, platoonFile);
+  let ownerFactionSid = meta ? asText(meta.strings.get('faction stringID') || '') : '';
+  if (!ownerFactionSid) {
+    // Fall back to what an existing member of this same squad carries.
+    const bySid = new Map(parsed.records.map((r) => [r.sid, r]));
+    for (const inst of squad.instances) {
+      const st = inst.states.map((s) => bySid.get(s)).find((r) => r && r.type === T.CHAR_STATE);
+      const owner = st ? asText(st.strings.get('owner faction ID') || '') : '';
+      if (owner) { ownerFactionSid = owner; break; }
+    }
+  }
+
+  // --- build the six state records ---------------------------------------
+  const { records: newStates, meta: buildMeta } = characterFactory.buildStateRecords(donor.states, {
+    name: charName,
+    ownerFactionSid: ownerFactionSid || undefined,
+    applyStats: (statsRec) => applyStatSpread(statsRec, {
+      archetypeSkills,
+      attribute: spread.attribute,
+      archRange: spread.archRange,
+      otherRange: spread.otherRange,
+      mode: 'set',
+      rng,
+    }),
+  });
+
+  // --- mint identities ----------------------------------------------------
+  for (const rec of newStates) ids.addRecord(parsed, rec);
+  const handleSid = ids.mintSid(ids.nextRecordId(parsed));
+
+  // Spawn on top of an existing member so the new character lands wherever the
+  // squad currently is, rather than at the squad's last recorded map position
+  // (which can be stale) or at the world origin.
+  const anchor = squad.instances[0] || null;
+  const pos = anchor ? [...anchor.pos] : [...((meta && meta.vec3.get('position')) || [0, 0, 0])];
+  const rot = anchor ? [...anchor.rot] : [1, 0, 0, 0];
+
+  ids.addInstance(squad, donor.instance.target, {
+    id: handleSid,
+    pos,
+    rot,
+    states: newStates.map((r) => r.sid),
+  });
+
+  // Incremented, not recomputed from `instances.length`: if the file's own two
+  // numbers already disagree, that disagreement is the game's, and "correcting"
+  // it would be this editor inventing a value (the same reasoning
+  // ids.addInstance() applies to `instanceCount`).
+  const squadCountBefore = squad.ints.get('char count');
+  if (squad.ints.has('char count')) squad.ints.set('char count', squadCountBefore + 1);
+
+  // --- quick.save side ----------------------------------------------------
+  const gs = gameStateOf(world);
+  const metaCountBefore = meta ? meta.ints.get('char count') : null;
+  if (meta && meta.ints.has('char count')) meta.ints.set('char count', metaCountBefore + 1);
+  const membersBefore = gs.ints.get('members');
+  if (gs.ints.has('members')) gs.ints.set('members', membersBefore + 1);
+
+  const receipt = {
+    character: {
+      sid: handleSid,
+      name: charName,
+      nameBytes: encoded.length,
+      raceSid,
+      raceName: gamedata.nameOf(raceSid, raceSid),
+      origin: gamedata.nameOf(donor.instance.target, donor.instance.target),
+      archetype: main.label,
+      sub: subEntry.label,
+      tier,
+      position: pos,
+      stateSids: newStates.map((r) => r.sid),
+    },
+    donor: {
+      file: donor.file,
+      sid: donor.instance.id,
+      name: donor.state ? asText(donor.state.strings.get('name') || '') : '',
+      inheritedBlood: buildMeta.medical ? buildMeta.medical.blood : null,
+    },
+    counts: {
+      squadCharCount: { before: squadCountBefore ?? null, after: squad.ints.get('char count') ?? null },
+      squadMetaCharCount: { before: metaCountBefore, after: meta ? meta.ints.get('char count') ?? null : null },
+      worldMembers: { before: membersBefore ?? null, after: gs.ints.get('members') ?? null },
+    },
+    clearedBountyKeys: buildMeta.clearedBountyKeys || [],
+  };
+
+  // Two files, one staged edit — mutationService verifies and installs both or
+  // neither, which is the whole reason it accepts an array.
+  return [
+    { file: relFile, bytes: writeFile(parsed), ...receipt },
+    { file: 'quick.save', bytes: writeFile(world) },
+  ];
+}
+
 module.exports = {
   T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
+  playerPlatoonFiles, playerSquadRecords, scanCharacters, availableRaces, defaultRace,
+  resolveSquad, squadMetaFor, encodeName, MAX_NAME_BYTES,
+  renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread,
   resolveCharacter, setStats, setStat, trainCharacter,
   healPart, damagePart, setHunger, revive, restoreLimbs,
   setItemSection, setItemQuality, updateItem, addItem,

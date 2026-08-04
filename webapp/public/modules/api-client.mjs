@@ -24,6 +24,23 @@ export const API = {
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/stats`,
     { stats }),
   archetypes: () => request('GET', '/api/archetypes'),
+  // Rename one character (CHAR_STATE strings.name + the STATS record header name).
+  renameCharacter: (name, file, sid, newName) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/name`,
+    { name: newName }),
+  // Rename the squad — really the player faction, the only squad-level name a
+  // Kenshi save stores. Platoon filenames are intentionally left as they are.
+  renameFaction: (name, newName) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/faction/name`, { name: newName }),
+  // Races this save can supply a donor for, plus the one to preselect. A new
+  // member is cloned from an existing character of the chosen race, so the list
+  // is what the save contains, not every race in the game's data.
+  races: (name) => request('GET', `/api/saves/${encodeURIComponent(name)}/races`),
+  // Editorial "roll a recruit" catalogue (services/recruits.js), in the spirit
+  // of the wiki's Unique Recruits page.
+  recruits: () => request('GET', '/api/recruits'),
+  addSquadMember: (name, file, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters`, body),
   trainCharacter: (name, file, sid, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/train`,
     body),

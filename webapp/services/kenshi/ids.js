@@ -132,29 +132,43 @@ function addRecord(file, rec) {
  * assuming this one. See AGENTS.md §3, corrected from its earlier blanket
  * "duplicates the instances section count" claim.
  *
- * Per TODO.md 2.2(c), an instance `id` is NOT a sid — it is a small ordinal
- * string counted within that one container ("1", "2", ...). The next
+ * Per TODO.md 2.2(c), an INVENTORY instance's `id` is NOT a sid — it is a small
+ * ordinal string counted within that one container ("1", "2", ...). The next
  * ordinal is derived from the existing instance ids' max numeric value + 1,
  * falling back to `instances.length + 1` if any existing id is non-numeric
  * (so a container with weird/foreign ids doesn't collide with itself), never
  * assuming the existing ids are dense or already in order.
+ *
+ * A SQUAD (30) instance is the exception and must pass `opts.id` explicitly:
+ * its ids are sid-shaped character handles ("32--INGAME"), minted from the
+ * file's own id counter, not ordinals — measured across all 23 platoon files of
+ * a live save, all 282 character-instance ids are of that shape and NOT ONE of
+ * them is any record's sid (the ids they consume show up as exact gaps in the
+ * file's record-id sequence). So a new squad member burns an id of its own on
+ * top of the six it spends on its state records. See
+ * services/characterFactory.js.
  */
 function addInstance(containerRec, target, opts = {}) {
   if (!containerRec || !Array.isArray(containerRec.instances)) {
     throw new Error('addInstance: containerRec.instances must be an array');
   }
 
-  let ordinal;
-  const allNumeric = containerRec.instances.every((inst) => /^\d+$/.test(String(inst.id)));
-  if (!allNumeric) {
-    ordinal = containerRec.instances.length + 1;
-  } else {
-    const numericIds = containerRec.instances.map((inst) => Number(inst.id));
-    ordinal = (numericIds.length ? Math.max(...numericIds) : 0) + 1;
+  let id = opts.id;
+  if (id === undefined) {
+    const allNumeric = containerRec.instances.every((inst) => /^\d+$/.test(String(inst.id)));
+    if (!allNumeric) {
+      id = String(containerRec.instances.length + 1);
+    } else {
+      const numericIds = containerRec.instances.map((inst) => Number(inst.id));
+      id = String((numericIds.length ? Math.max(...numericIds) : 0) + 1);
+    }
+  }
+  if (containerRec.instances.some((inst) => inst.id === id)) {
+    throw new Error(`addInstance: instance id "${id}" is already used in this container`);
   }
 
   const inst = {
-    id: String(ordinal),
+    id: String(id),
     target,
     pos: opts.pos !== undefined ? opts.pos : [0, 0, 0],
     rot: opts.rot !== undefined ? opts.rot : [1, 0, 0, 0],

@@ -26,6 +26,32 @@ function asText(s) {
   return Buffer.compare(Buffer.from(decoded, 'utf8'), buf) === 0 ? decoded : s;
 }
 
+/**
+ * The exact inverse of `asText()`: takes UTF-8 display text (a name typed into
+ * the editor, arriving through JSON) and returns the latin1-carried string the
+ * codec writes byte-for-byte.
+ *
+ * This is the ONLY correct way to put user text into a record. Assigning the
+ * raw JS string instead writes `Buffer.from(s, 'latin1')`, which silently
+ * truncates every code point above U+00FF to its low byte — "Ō" (U+014C) would
+ * land on disk as 0x4C, the letter "L". Round-tripping through UTF-8 bytes
+ * instead means `asText(fromText(x)) === x` for any string, which is what the
+ * game itself does with names typed in its own UI (the display strings in a
+ * live save decode cleanly as UTF-8).
+ *
+ * `byteLength()` is the companion check: string fields are length-prefixed in
+ * BYTES, so a caller enforcing a maximum name length must measure the encoded
+ * form, not `String.length`.
+ */
+function fromText(text) {
+  return Buffer.from(String(text ?? ''), 'utf8').toString(ENC);
+}
+
+/** Byte length of `text` once encoded by fromText(). */
+function byteLength(text) {
+  return Buffer.byteLength(String(text ?? ''), 'utf8');
+}
+
 class Reader {
   constructor(buf, offset = 0) {
     this.buf = buf;
@@ -112,4 +138,4 @@ class Writer {
   done() { return this.buf.subarray(0, this.o); }
 }
 
-module.exports = { Reader, Writer, asText, ENC };
+module.exports = { Reader, Writer, asText, fromText, byteLength, ENC };

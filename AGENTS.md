@@ -30,10 +30,14 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `server.js` | Express boot, loopback bind, CSP, CSRF gate |
 | `services/kenshi/binary.js` | `Reader`/`Writer` primitives (`L`/`F`/`?`/`S`), `asText()` |
 | `services/kenshi/codec.js` | Record container: `readFile` / `writeFile`, header probe |
+| `services/kenshi/ids.js` | Minting: `nextRecordId`, `mintSid`, `addRecord`, `addInstance` |
 | `services/pathService.js` | Locates saves, install dir, workshop dir, backup root |
 | `services/gamedataService.js` | `stringID → name` index across all data files, disk-cached |
 | `services/saveService.js` | Domain model: world summary, squads, characters, items |
 | `services/itemSlots.js` | Item/slot compatibility rules for `setItemSection()` and the Gear UI's `allowedSections` |
+| `services/itemFactory.js` | Shape of a minted type-42 ITEM record |
+| `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
+| `services/recruits.js` | "Roll a recruit" catalogue — editorial, like `archetypes.js`, not save-derived |
 | `services/backupService.js` | Whole-directory versioned backups with hash manifests |
 | `services/mutationService.js` | The write gate: game check, staging, verify, rollback |
 | `routes/api/*.js` | HTTP surface, one file per domain, mounted by `routes/api/index.js` |
@@ -101,6 +105,30 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 - **stringIDs are not paths.** `changes_otto.mod` and `gamedata.quack` do not
   exist on disk; their records live in `gamedata.base`. Resolve through the flat
   index, never the filename.
+- **User text goes in through `fromText()`, never as a raw JS string.** `asText()`
+  is the read side; `binary.fromText()` is its exact inverse and the only correct
+  write side. Assigning the plain string instead writes it as latin1, silently
+  truncating every code point above U+00FF to its low byte — "Ō" lands on disk
+  as "L". Measure length caps with `byteLength()`: string fields are
+  length-prefixed in **bytes**.
+- **A character-instance id is not a record sid.** In an INVENTORY (41) record
+  the instances are ordinals ("1", "2", …); in a SQUAD (30) record they are
+  sid-shaped handles ("32--INGAME") minted from that file's own id counter, and
+  across all 282 character instances of a live save **not one of them is any
+  record's sid** — the ids they consume show up as exact gaps in the file's
+  record-id sequence. So a new squad member burns **seven** ids: six state
+  records plus its own handle. `ids.addInstance()` takes an explicit `id` for
+  this case and refuses a duplicate.
+- **A squad has no name; the player faction does.** A full sweep of a live save
+  found the player's chosen name in exactly three places, all in `quick.save`:
+  GAME_STATE (56) `strings['pfaction name']`, each SQUAD_META (34)
+  `strings['faction name']`, and the player FACTION (37) record's header `name`.
+  Rename all three together. **Do not rename platoon files** — a squad's file
+  identity is its type-34 `sid`/header `name`/`platoon stringID`/`content file`
+  quartet, and `mutationService` installs file *contents*; it never moves,
+  creates or deletes a path. `saveService.playerPlatoonFiles()` therefore
+  resolves squads through the type-34 records, not by matching the
+  `<Faction>_<n>.platoon` filename prefix, so a rename cannot orphan the roster.
 - **Record ids are per-file and ephemeral.** Each filetype-15 file has its own
   `nextId`; the same id names unrelated records in different files, and the game
   re-mints every id on every save. Never treat an id as identity or persist one.
@@ -142,6 +170,11 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | PUT | `/api/saves/:name/money` | Set player cats (goes through the mutation gate) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/stats` | Set one or more attributes/skills on a character's STATS record (bulk, one staged edit; `{ stats: { statKey: value } }`) |
 | GET | `/api/archetypes` | "Train as archetype" catalogue (id/label tree of mains and subs), for the UI dropdowns |
+| GET | `/api/recruits` | "Roll a recruit" catalogue (`services/recruits.js`) — name, race preference, archetype/sub, power tier, blurb. Editorial, not derived from game data |
+| GET | `/api/saves/:name/races` | `{ races, default }` — the races this save can supply a **living donor** for (`{ sid, name, count, donors }`, most donors first) plus the one the UI should preselect. A new member is cloned from an existing character, so this is what the save contains, never all of gamedata |
+| PUT | `/api/saves/:name/platoons/:file/characters/:sid/name` | Rename a character: `strings.name` on CHAR_STATE (36) **and** the STATS (25) record's header `name`, which is where the game keeps a named character's name. `{ name }`, ≤ 63 UTF-8 bytes, control characters rejected, encoded through `binary.fromText()` |
+| PUT | `/api/saves/:name/faction/name` | Rename the squad — i.e. the **player faction**, the only squad-level name a save stores. One write to `quick.save` covering GAME_STATE `pfaction name`, every player SQUAD_META (34) `faction name`, and the player FACTION (37) record's header name. Platoon **filenames are deliberately not renamed** (see below) |
+| POST | `/api/saves/:name/platoons/:file/characters` | Add a squad member. `{ name, raceSid, archetype, sub, tier? }`. **The only two-file mutation in the app** — the `.platoon` and `quick.save` in one staged edit. See `services/characterFactory.js` |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/train` | "Train as archetype": one staged edit setting all 4 attributes to 45, archetype skills to random 45–95, everything else to random 15–40; `{ archetype, sub, mode? }` (`mode: 'raise'` default never lowers an existing stat, `'set'` overwrites) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n` | Heal a body part: set `flesh<n>` (or `"full"`), zero `bandage<n>`/`stun<n>` by default; `{ flesh, bandage?, stun? }` |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n/damage` | Limb loss (destructive, no lower clamp on `flesh`); same body shape as heal, UI must confirm before calling |

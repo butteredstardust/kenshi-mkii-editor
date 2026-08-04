@@ -160,7 +160,7 @@ mistaking the leading one for the start of a section produces a parse that
 | 9 | faction world-controller (`num plats`, `updatetime`) |
 | 25 | **character stats** — one float per skill and attribute |
 | 30 | **squad** — `char count` + one instance per character |
-| 34 | squad metadata (world file) |
+| 34 | **squad metadata** (world file) — one per `.platoon`: `faction name`, `char count`, `platoon stringID`, `content file` |
 | 36 | **character state** — `name`, `is leader`, `personality`, `age` |
 | 37 | **faction** — `relation<n>` floats + `relationSID<n>` targets |
 | 41 | **inventory container** — one instance per item |
@@ -189,6 +189,26 @@ squad (30)
 Resolve each `states[]` entry through a `stringId → record` map of the same
 platoon file, then dispatch on typecode. `inventory (41)` is one more hop: its
 instances point at `item (42)` records.
+
+The squad instance's own `id` deserves a note, because it is not what the
+analogous field in an inventory record is. An `inventory (41)` instance id is a
+small ordinal counted inside that container ("1", "2", …). A `squad (30)`
+instance id is **sid-shaped** ("32--INGAME") and is minted from the same
+per-file id counter as records — but it is **not a record**. Across all 282
+character instances of a live save, no instance id matched any record's sid, and
+the ids they consume appear as exact gaps in each file's record-id sequence
+(`Nameless_0.platoon` holds records 31, 33–50, 52–60; its two character
+instances are 32 and 51). Anything adding a character must allocate one id for
+the handle on top of one per state record.
+
+A character's **race** is likewise not where you would look for it: it is in the
+`appearance (66)` record's *extra data* section, category `"race"`, as a single
+row whose `target` is the race's stringID (typecode 7). It is not a key in
+`bools`/`floats`/`ints`/`strings`. The rest of that record, and the
+`medical (57)` record's `hit<n>`/`sid<n>` body plan, vary per race in ways not
+derived here — which is why `services/characterFactory.js` builds a new
+character by cloning an existing one of the wanted race rather than
+synthesising those structures.
 
 ### Body-part health
 

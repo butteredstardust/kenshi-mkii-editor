@@ -48,6 +48,57 @@ router.post('/saves/:name/platoons/:file/characters/:sid/train', handle(async (r
       { archetype, sub, mode: mode === 'set' ? 'set' : 'raise' }));
 }));
 
+// Rename a character (TODO.md 1.3): `strings.name` on CHAR_STATE, plus the
+// STATS record's header name for FCS parity. Length/encoding validation lives
+// in saveService.encodeName() — the route only rejects a non-string body.
+router.put('/saves/:name/platoons/:file/characters/:sid/name', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const newName = req.body?.name;
+  if (typeof newName !== 'string') {
+    const e = new Error('body must include "name" (string)'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `rename ${req.params.sid} to ${newName}`,
+    (staging) => saveService.renameCharacter(staging, req.params.file, req.params.sid, newName));
+}));
+
+// Rename the squad — i.e. the player faction, the only squad-level name a save
+// actually stores. Writes quick.save only; platoon FILENAMES are deliberately
+// left alone (see saveService.renamePlayerFaction).
+router.put('/saves/:name/faction/name', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const newName = req.body?.name;
+  if (typeof newName !== 'string') {
+    const e = new Error('body must include "name" (string)'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `rename player faction to ${newName}`,
+    (staging) => saveService.renamePlayerFaction(staging, newName));
+}));
+
+// Races this save can actually supply a donor for, plus the one the UI should
+// preselect. Read-only; scans every .platoon file (see availableRaces()).
+router.get('/saves/:name/races', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const races = saveService.availableRaces(save.dir);
+  return { races, default: saveService.defaultRace(races) };
+}));
+
+// Add a new member to a squad (two-file write: the .platoon and quick.save).
+router.post('/saves/:name/platoons/:file/characters', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { name, raceSid, archetype, sub, tier } = req.body || {};
+  for (const [key, value] of Object.entries({ name, raceSid, archetype, sub })) {
+    if (typeof value !== 'string' || !value) {
+      const e = new Error(`body must include "${key}" (non-empty string)`); e.status = 400; throw e;
+    }
+  }
+  if (tier !== undefined && (typeof tier !== 'string' || !tier)) {
+    const e = new Error('"tier", if given, must be a non-empty string'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `add ${name} to ${req.params.file}`,
+    (staging) => saveService.addSquadMember(staging, req.params.file,
+      { name, raceSid, archetype, sub, ...(tier === undefined ? {} : { tier }) }));
+}));
+
 function findSaveOr404(name) {
   const save = paths.findSave(name);
   if (!save) { const e = new Error(`no save named "${name}"`); e.status = 404; throw e; }

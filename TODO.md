@@ -519,7 +519,7 @@ squad (30) → instance → state records structure already read by
 
 ### 1.3 Character state (type 36 — CHAR_STATE)
 
-- [ ] **Rename a character**: `strings.name` on type 36. Optionally also
+- [x] **Rename a character**: `strings.name` on type 36. Optionally also
   update the STATS record's `name` field for FCS-parity (guide: "recommended
   to also update the name on the STATS entry" — but that was an FCS
   navigation convenience, not a game requirement; confirm via Phase 0 whether
@@ -535,6 +535,15 @@ squad (30) → instance → state records structure already read by
   §2).
   Test: round-trip with an ASCII name and with one non-ASCII latin1 byte,
   assert exact byte preservation.
+
+  **Implemented** — see "Rename a squad, rename a character, add a squad
+  member" in the Editor-only additions section at the end of this file for the
+  full write-up. Short version: `saveService.renameCharacter()` writes both
+  `strings.name` on type 36 and the type-25 record's *header* `name` (the
+  guide's advice turned out to describe real game behaviour, not just an FCS
+  convenience); the 63-byte cap and the latin1 encoding both live in
+  `saveService.encodeName()` / `binary.fromText()`; the UI is an "Identity"
+  section on the character card rather than a click-to-edit `<h3>`.
 
 - [ ] **Personality**: `ints.personality` on type 36 (already read by
   `readPlatoon()` as `personality`). Function: `saveService.setPersonality`.
@@ -1591,3 +1600,135 @@ numbered into Phase 1/2/3.
   the round trip holds; `mode: 'raise'` does not lower a pre-set 99 value;
   an unknown archetype or sub id is rejected and leaves the save
   byte-identical.
+
+- [x] **Rename a squad, rename a character, add a squad member.** The three
+  Squad-page gaps a save editor is expected to cover, shipped together because
+  they share one investigation.
+
+  **Rename a character** (this also closes Phase 1.3's first task).
+  `saveService.renameCharacter(saveDir, platoonFile, sid, newName)` writes
+  `strings.name` on CHAR_STATE (36) and the STATS (25) record's **header**
+  `name`. Phase 0 recorded that type 25 has no `name` *string key* and that its
+  header name carries the origin template's name — both true, but incomplete:
+  on a character the player has actually named, the game itself writes the
+  character's name there (a live player character's STATS record reads "Dai",
+  not "start- Homeless"). So the FCS guide's "also update the name on the STATS
+  entry" is real behaviour, not just an FCS navigation convenience, and it is
+  written. Route: `PUT .../characters/:sid/name`. UI: an "Identity" section at
+  the top of the character card — not a click-to-edit `<h3>` as originally
+  sketched, because this writes through the mutation gate and needs the same
+  field/Apply/receipt shape as every other write here.
+  Validation lives in `saveService.encodeName()`: non-empty after trim, no
+  control characters, at most 63 UTF-8 bytes (this editor's own conservative
+  cap), encoded through the new `binary.fromText()` — the exact inverse of
+  `asText()`. That helper is the point of the latin1 discipline on the write
+  side: assigning a raw JS string writes it as latin1 and silently truncates
+  every code point above U+00FF to its low byte, so "Ōkami" would land on disk
+  as "Lkami". Tested with a non-ASCII name specifically for that.
+
+  **Rename a squad.** There is no per-squad name field in a Kenshi save. A
+  sweep of a live save (quick.save + all 23 `.platoon` files) for any string
+  key or value resembling one found the player's chosen name in exactly three
+  places, all in `quick.save`: GAME_STATE (56) `strings['pfaction name']`,
+  every player SQUAD_META (34) `strings['faction name']`, and the player
+  FACTION (37) record's header `name`. So "rename squad" is "rename the player
+  faction", and `saveService.renamePlayerFaction()` rewrites all three in one
+  edit — the FACTION record only when its header name matches unambiguously,
+  since two factions sharing a display name would make the choice a guess.
+  Deliberately NOT renamed: the type-34 record's `sid`, header `name`,
+  `strings['platoon stringID']` and `filenames['content file']`, and the
+  `.platoon` filenames. Those four are one identity ("Nameless_0"), and changing
+  them means renaming files, which `mutationService` cannot do — it installs
+  changed file *contents*; it never moves, creates or deletes a path.
+  Consequence, and the reason this needed a second change:
+  `playerPlatoonFiles()` used to find the player's squads by matching the
+  `<Faction>_<n>.platoon` filename prefix, which would have reported "no player
+  squad" the instant the faction was renamed. It now resolves them through the
+  type-34 records' `content file`, keeping the prefix scan only as a fallback.
+  Route: `PUT /api/saves/:name/faction/name`.
+
+  **Add a squad member.** `saveService.addSquadMember(saveDir, platoonFile,
+  { name, raceSid, archetype, sub, tier, rng })` — the only two-file mutation in
+  the app (the `.platoon` and `quick.save`, one staged edit), and the first
+  thing to exercise `mutate()`'s array form, previously unused.
+
+  The new character is **cloned from a living character of the requested race
+  already in the save**, then stripped back to nothing but its species. That is
+  a design choice, not a shortcut: a character is a SQUAD instance plus six
+  state records whose contents are race-dependent in ways this editor has not
+  derived — MEDICAL's `hit<n>`/`flesh<n>`/`sid<n>` body plan, APPEARANCE's
+  race-specific slider keys and its `extra['race']` row, STATS' skill key set.
+  Synthesising those from a type-7 race template would mean re-deriving the
+  game's own character instantiation; cloning takes every one of them from data
+  the game itself wrote. Race is never rewritten — the donor is chosen *by*
+  race, so body plan and appearance are consistent by construction, which also
+  sidesteps Phase 1.5's blocked "change race" problem entirely.
+  Sanitised on the clone (`services/characterFactory.js`): name, `owner faction
+  ID`, `is leader` false, `slavestate` 0, every bounty family deleted
+  (`amount<n>`/`bountyexp<n>`/`claim<n>`/`crimes<n>`/`bountyfac<n>`), every
+  `flesh<n>` raised to the donor's own highest part with `bandage`/`stun`/
+  `bleeding`/`KO`/`hung` zeroed and the four death flags cleared, `ints.limbs`
+  deleted (same "delete the key, don't interpret the bitmask" rule as
+  `restoreLimbs()`). AI (67) and INVENTORY (41) are **minted, not cloned** —
+  280 of the 282 live AI records are exactly `{ bools: { jobs } }` and the two
+  exceptions carry a job handle a new character must not inherit; the inventory
+  starts empty and gear is added through the existing Gear page.
+  `blood` is left as the donor's: it ranges -67.8 to 183.2 across a live save,
+  so there is no defensible "full" to write — which is why the donor is picked
+  for health (undamaged first, then a donor already in the target platoon, then
+  raw score) rather than arbitrarily. The receipt names the donor and the blood
+  value inherited.
+  Ids: **seven** are minted from the file's own `nextId` — six state records
+  plus the squad instance's handle. A character instance's `id` is sid-shaped
+  ("32--INGAME") and is *not* a record sid: across all 282 character instances
+  of a live save none matched any record's sid, and the ids they consume appear
+  as exact gaps in each file's record-id sequence (`Nameless_0.platoon` holds
+  records 31, 33-50, 52-60; its two character instances are 32 and 51).
+  `ids.addInstance()` grew an explicit `id` option for this — inventory
+  instances keep their ordinal ids — and now refuses a duplicate.
+  Counts bumped in lockstep: SQUAD (30) `ints['char count']`, SQUAD_META (34)
+  `ints['char count']`, GAME_STATE (56) `ints.members`. The SQUAD record's
+  `instanceCount` is left alone: 23 of 25 live squad records carry 0 against
+  real instances, and `addInstance()` only keeps it in step where the file
+  already did.
+  Routes: `POST /api/saves/:name/platoons/:file/characters`, plus `GET
+  /api/saves/:name/races` (the races this save can supply a *living donor* for,
+  with donor counts, and the one to preselect) and `GET /api/recruits`.
+  UI: a "Squad" panel above the roster with two collapsed sections, "Rename
+  squad" and "Add member". Add member offers a ready-made recruit dropdown and
+  a "Surprise me" button backed by `services/recruits.js` — an editorial
+  catalogue in the spirit of the wiki's Unique Recruits page (name, race
+  preference, archetype/sub, power tier, blurb), carrying the same "not derived
+  from game data, safe to rebalance" caveat as `archetypes.js`. A recruit's race
+  is a *preference* matched against the races the save actually has, never a
+  requirement: a save with no Shek in it still recruits Ruka, as whatever race
+  is selected, and says so in the blurb line.
+  **Default race:** requested as Greenlander, resolved by preference order
+  (`/^greenlander$/` -> `/greenlander/` -> `/^human$/` -> `/human/` -> most
+  donors), because "Greenlander" is not a name every install's data uses — on
+  this one the human race resolves to "Human" (`17-gamedata.quack`), vanilla
+  data having been consolidated over the years.
+  Stat spread reuses "Train as archetype": `applyStatSpread()` was extracted out
+  of `trainCharacter()` so both roll stats the same way, with the power tier
+  supplying the ranges (Green 20 / 20-45 / 5-20 .. Legend 70 / 75-95 / 25-50).
+  Tests (`webapp/test/squad.test.js`, 11 of them): `encodeName`'s limits and the
+  latin1 round trip for a non-ASCII name; rename character (both records, one
+  file, no record added or removed) and its four rejections; rename faction (all
+  three places, quick.save only, and the platoon files still resolving
+  afterwards under the new name while keeping their old filenames) and its
+  rejections; `availableRaces` invariants and `defaultRace`'s preference order;
+  the recruit catalogue validating against real archetype/sub/tier ids; add
+  member asserting two changed files, +6 records, +7 `nextId`, no duplicate
+  id/sid/instance handle, `instanceCount` untouched, the member reading back
+  healthy/leaderless/empty-handed with the requested race and tier spread, no
+  surviving bounty key, and both quick.save counters moved; and seven
+  add-member rejections including a `../quick.save` path escape, each asserting
+  the save is byte-identical afterwards.
+
+  **Untested, and not testable offline:** whether Kenshi accepts a
+  cloned-and-renumbered character on load. Phase 0's evidence — the game
+  re-mints every id and rewrites every sid on its own next save — makes
+  "accepts, then renumbers" by far the most likely outcome, but that is
+  inference, not observation. Every add still takes an automatic backup first,
+  and the round trip proves only that the file is internally consistent under
+  this codec.

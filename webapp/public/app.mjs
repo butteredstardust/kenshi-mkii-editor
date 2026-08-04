@@ -16,6 +16,13 @@ const envEl = document.getElementById('env');
 const state = {
   env: null, save: null, status: null, current: 'squad', selected: null, filter: '',
   archetypes: [], // catalogue for "train as archetype" dropdowns, fetched once at boot
+  recruits: [], // "roll a recruit" catalogue (editorial — see services/recruits.js)
+  races: null, // { races, default } for THIS save — a new member is cloned from
+  // an existing character, so the list is what the save contains, not all of gamedata.
+  // "Add member" form state, kept here so the re-render after a successful add
+  // doesn't wipe what the user typed for the next one (same reason as trainChoice).
+  addMember: null,
+  squadReceipt: null, // receipt for the squad-level panel, survives its re-render
   pendingReceipt: null, // survives the re-render a mutation triggers (see wire())
   trainChoice: null, // { key, archetype, sub } — likewise survives the re-render
   // "Add item" picker state, keyed like trainChoice so it survives the
@@ -44,6 +51,8 @@ async function boot() {
     : `<span class="ok">ready</span> <span class="muted">· ${esc(state.env.saves.length)} save(s) · ${esc(state.env.saveRoot || 'no save folder found')}</span>`;
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
+  state.recruits = await API.recruits().catch(() => []);
+  await loadRaces();
   // The grade ladder backs the Gear row's weapon "Quality" select, which is
   // rendered synchronously, so it has to be here rather than fetched lazily.
   // It is one small request (38 rows) and almost every squad carries a weapon.
@@ -53,6 +62,21 @@ async function boot() {
     state.weaponGrades = []; // ladder is an enhancement; rows fall back to raw fields
   }
   render();
+}
+
+/**
+ * Race list for the current save. Per-save, not global: "Add member" clones an
+ * existing character of the chosen race out of this save, so a race with no
+ * living example here genuinely cannot be recruited (see
+ * services/characterFactory.js).
+ */
+async function loadRaces() {
+  if (!state.save) { state.races = null; return; }
+  try {
+    state.races = await API.races(state.save);
+  } catch {
+    state.races = { races: [], default: null }; // panel renders its own explanation
+  }
 }
 
 /** True when writes are possible right now. Every mutation control uses this. */
@@ -559,6 +583,27 @@ function renderGear() {
     </div>`;
 }
 
+/**
+ * Rename one character. Its own section rather than a click-to-edit `<h3>`,
+ * because this writes through the mutation gate like everything else here and
+ * so needs the same shape: a labelled field, one primary Apply, a receipt.
+ */
+function identitySection(c) {
+  return `<details class="section">
+    <summary>Identity</summary>
+    <div class="section-body">
+      <div class="field-row">
+        <label class="field field--grow">Name
+          <input type="text" class="char-name" maxlength="63"
+            value="${esc(c.name)}" data-initial="${esc(c.name)}" ${dis()}></label>
+        <button class="btn btn--primary rename-char" ${dis()}>Apply</button>
+      </div>
+      <p class="hint">Up to 63 bytes. The name is written to this character's state record and to their stats
+        record, which is where the game keeps it for a character you have named.</p>
+    </div>
+  </details>`;
+}
+
 function characterCard(c, file) {
   const m = c.medical || {};
   const flags = ['dead', 'unconscious', 'coma', 'incapacitated'].filter((k) => m[k]);
@@ -576,6 +621,7 @@ function characterCard(c, file) {
       <span>bleeding ${num(m.bleeding, 2)}</span>
       <span>hunger ${num(m.hunger, 2)}</span>
     </div>
+    ${identitySection(c)}
     ${c.medical ? healthSection(m) : ''}
     ${c.stats ? statsSection(c) : ''}
     ${inventorySection(c)}
@@ -646,6 +692,126 @@ function rosterNav(groups) {
   </nav>`;
 }
 
+// ----------------------------------------------------------- Squad panel --
+
+/**
+ * Squad-level actions: rename the squad, add a member. Both are squad-scoped
+ * rather than character-scoped, so they live in their own panel above the
+ * master–detail workspace instead of being bolted onto a character card.
+ *
+ * Each action is its own `<details class="section">` so each can own one
+ * `.btn--primary` without the two fighting over the panel's single primary slot
+ * (style guide §3), and so the panel is two collapsed lines until used.
+ */
+function renameSquadSection(s) {
+  return `<details class="section">
+    <summary>Rename squad</summary>
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field field--grow">Name
+          <input type="text" id="faction-name" maxlength="63"
+            value="${esc(s.world.faction)}" data-initial="${esc(s.world.faction)}" ${dis()}></label>
+        <button class="btn btn--primary" id="save-faction-name" ${dis()}>Apply</button>
+      </div>
+      <p class="hint">A Kenshi save has no per-squad name — the name on your squad is the player faction's,
+        so this rewrites it in the game state, on every one of your squad records and on your faction record,
+        together. Platoon filenames on disk keep their old prefix; that is cosmetic and the game does not
+        mind. Up to 63 bytes.</p>
+    </div>
+  </details>`;
+}
+
+function addMemberSection(groups) {
+  const races = (state.races && state.races.races) || [];
+  const form = state.addMember || {};
+  if (!races.length) {
+    return `<details class="section">
+      <summary>Add member</summary>
+      <div class="section-body">
+        <p class="hint">No usable race found in this save. A new member is built by cloning a living
+          character of the chosen race out of this save — that is the only way to get a correct per-race
+          body plan and appearance record — so there is nothing to model one on here.</p>
+      </div>
+    </details>`;
+  }
+
+  // Preselect the server's suggested race rather than whatever happens to sort
+  // first — availableRaces() orders by donor count, defaultRace() by species.
+  const raceSid = form.raceSid || (state.races.default && state.races.default.sid) || races[0].sid;
+  const files = groups.map((g) => g.file);
+  const recruitOptions = (state.recruits || []).map((r) => `<option value="${esc(r.id)}" ${form.recruitId === r.id ? 'selected' : ''}>${esc(r.name)} — ${esc(r.subLabel)}, ${esc(r.tierLabel)}</option>`).join('');
+  const cats = state.archetypes || [];
+  const main = cats.find((a) => a.id === form.archetype) || cats[0];
+  const subs = main ? main.subs : [];
+
+  return `<details class="section" ${form.open ? 'open' : ''}>
+    <summary>Add member</summary>
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field field--grow">Ready-made recruit
+          <select id="recruit-pick">
+            <option value="">choose…</option>
+            ${recruitOptions}
+          </select></label>
+        <button class="btn" id="roll-recruit">Surprise me</button>
+      </div>
+      <p class="hint" id="recruit-blurb">${esc(form.blurb || '')}</p>
+
+      <div class="field-row">
+        <label class="field field--grow">Name
+          <input type="text" id="member-name" maxlength="63" placeholder="e.g. Ruka"
+            value="${esc(form.name || '')}" ${dis()}></label>
+        <label class="field">Race
+          <select id="member-race" ${dis()}>
+            ${races.map((r) => `<option value="${esc(r.sid)}" ${raceSid === r.sid ? 'selected' : ''}>${esc(r.name)} (${esc(r.donors)})</option>`).join('')}
+          </select></label>
+      </div>
+
+      <div class="field-row">
+        <label class="field">Specialisation
+          <select id="member-archetype" ${dis()}>
+            ${cats.map((a) => `<option value="${esc(a.id)}" ${main && a.id === main.id ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}
+          </select></label>
+        <label class="field">Focus
+          <select id="member-sub" ${dis()}>
+            ${subs.map((x) => `<option value="${esc(x.id)}" ${form.sub === x.id ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}
+          </select></label>
+        <label class="field">Experience
+          <select id="member-tier" ${dis()}>
+            ${TIER_OPTIONS.map(([id, label]) => `<option value="${esc(id)}" ${(form.tier || 'capable') === id ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+          </select></label>
+        ${files.length > 1 ? `<label class="field">Squad
+          <select id="member-file" ${dis()}>
+            ${files.map((f) => `<option value="${esc(f)}" ${form.file === f ? 'selected' : ''}>${esc(f.replace(/\.platoon$/, ''))}</option>`).join('')}
+          </select></label>` : ''}
+        <button class="btn btn--primary" id="add-member" ${dis()}>Add member</button>
+      </div>
+
+      <p class="hint">The new character is cloned from a living character of that race already in this save,
+        then stripped back to nothing but their species: name, faction, leader flag, bounties, wounds and
+        inventory are all discarded and the stats are rolled from the specialisation and experience above.
+        The number beside each race is how many characters in this save could be used as the model.
+        They arrive at the squad's current position carrying nothing — give them gear on the Gear page.
+        This writes two files (the platoon and <code>quick.save</code>) in one edit.</p>
+    </div>
+  </details>`;
+}
+
+// Power tiers, mirroring services/recruits.js TIERS. Display only — the id is
+// what gets sent, and the server rejects one it doesn't know.
+const TIER_OPTIONS = [
+  ['green', 'Green'], ['capable', 'Capable'], ['veteran', 'Veteran'], ['legend', 'Legend'],
+];
+
+function squadPanel(s, groups) {
+  return `<section class="panel" id="squad-panel">
+    <div class="panel-head"><h2>Squad</h2></div>
+    ${renameSquadSection(s)}
+    ${addMemberSection(groups)}
+    <pre class="receipt" id="squad-receipt" hidden></pre>
+  </section>`;
+}
+
 function renderSquad() {
   const r = buildRoster();
   if (!r) return '<p>No save found.</p>';
@@ -660,6 +826,7 @@ function renderSquad() {
       <span class="muted">${esc(s.world.money)} cats</span>
       <span class="muted">${esc(all.length)} member(s)</span>
     </section>
+    ${squadPanel(s, groups)}
     <div class="workspace">
       ${rosterNav(groups)}
       <div id="detail">${sel ? characterCard(sel.c, sel.file) : '<div class="empty-state">Select a character to edit.</div>'}</div>
@@ -724,13 +891,151 @@ async function refresh() {
   state.status = await API.saveStatus(state.save);
 }
 
+/**
+ * Squad-level actions (rename squad, add member).
+ *
+ * Both re-render on success — a rename changes the summary bar and a new member
+ * changes the roster — so the receipt is stashed in state and re-attached by the
+ * next pass, the same trick the character cards use.
+ */
+function wireSquadPanel() {
+  const panel = document.getElementById('squad-panel');
+  if (!panel) return;
+  const receipt = document.getElementById('squad-receipt');
+
+  if (state.squadReceipt) {
+    showReceipt(receipt, state.squadReceipt.result, { label: state.squadReceipt.label });
+    state.squadReceipt = null;
+  }
+
+  const run = (btn, label, fn) => runMutation(btn, receipt, label, fn, async (result) => {
+    await refresh();
+    await loadRaces();
+    state.squadReceipt = { result, label };
+    render();
+  });
+
+  const factionInput = document.getElementById('faction-name');
+  const factionBtn = document.getElementById('save-faction-name');
+  if (factionBtn && factionInput) factionBtn.onclick = () => {
+    const value = factionInput.value.trim();
+    if (!value || value === factionInput.dataset.initial) {
+      return showReceipt(receipt, new Error('Enter a different squad name first.'));
+    }
+    return run(factionBtn, `squad renamed to ${value}`, () => API.renameFaction(state.save, value));
+  };
+
+  // ---- add member ----
+  const nameInput = document.getElementById('member-name');
+  if (!nameInput) return;
+  const raceSel = document.getElementById('member-race');
+  const archSel = document.getElementById('member-archetype');
+  const subSel = document.getElementById('member-sub');
+  const tierSel = document.getElementById('member-tier');
+  const fileSel = document.getElementById('member-file');
+  const recruitSel = document.getElementById('recruit-pick');
+  const blurb = document.getElementById('recruit-blurb');
+  const groups = (state.status ? state.status.squads : []).map((q) => q.file);
+
+  // The form lives in state so the re-render after a successful add keeps the
+  // last choices — adding a second recruit shouldn't mean re-picking everything.
+  const form = () => {
+    state.addMember = state.addMember || {};
+    return state.addMember;
+  };
+  const remember = () => Object.assign(form(), {
+    open: true,
+    name: nameInput.value,
+    raceSid: raceSel.value,
+    archetype: archSel.value,
+    sub: subSel.value,
+    tier: tierSel.value,
+    file: fileSel ? fileSel.value : groups[0],
+  });
+
+  const populateSubs = () => {
+    const main = (state.archetypes || []).find((a) => a.id === archSel.value);
+    subSel.innerHTML = (main ? main.subs : [])
+      .map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('');
+  };
+
+  archSel.onchange = () => { populateSubs(); remember(); };
+  [nameInput, raceSel, subSel, tierSel, fileSel].forEach((el) => {
+    if (el) el.onchange = remember;
+  });
+  nameInput.oninput = remember;
+
+  // Restore the stored sub AFTER repopulating, since the option list depends on
+  // the archetype (same ordering problem as the Train selects).
+  const stored = state.addMember;
+  if (stored && stored.sub) {
+    const main = (state.archetypes || []).find((a) => a.id === archSel.value);
+    if (main && main.subs.some((x) => x.id === stored.sub)) subSel.value = stored.sub;
+  }
+
+  /**
+   * Apply a catalogue entry to the form. `race` on a recruit is a preference
+   * matched against the races this save actually has — never a hard
+   * requirement, because a save with no Shek in it must still be able to
+   * recruit Ruka (as a Human, say) rather than fail.
+   */
+  const applyRecruit = (r) => {
+    if (!r) return;
+    nameInput.value = r.name;
+    const races = (state.races && state.races.races) || [];
+    const match = races.find((x) => x.name.toLowerCase().includes(r.race.toLowerCase()));
+    if (match) raceSel.value = match.sid;
+    archSel.value = r.archetype;
+    populateSubs();
+    subSel.value = r.sub;
+    tierSel.value = r.tier;
+    blurb.textContent = match
+      ? r.blurb
+      : `${r.blurb} (no ${r.race} in this save — using ${raceSel.selectedOptions[0]?.textContent || 'the selected race'}.)`;
+    Object.assign(form(), { recruitId: r.id, blurb: blurb.textContent });
+    remember();
+  };
+
+  if (recruitSel) recruitSel.onchange = () => {
+    applyRecruit((state.recruits || []).find((r) => r.id === recruitSel.value));
+  };
+  const rollBtn = document.getElementById('roll-recruit');
+  if (rollBtn) rollBtn.onclick = () => {
+    const list = state.recruits || [];
+    if (!list.length) return;
+    const r = list[Math.floor(Math.random() * list.length)];
+    if (recruitSel) recruitSel.value = r.id;
+    applyRecruit(r);
+  };
+
+  const addBtn = document.getElementById('add-member');
+  if (addBtn) addBtn.onclick = () => {
+    const name = nameInput.value.trim();
+    if (!name) return showReceipt(receipt, new Error('Give the new member a name first.'));
+    const file = fileSel ? fileSel.value : groups[0];
+    if (!file) return showReceipt(receipt, new Error('This save has no player squad to add to.'));
+    remember();
+    return run(addBtn, `${name} joined`, () => API.addSquadMember(state.save, file, {
+      name,
+      raceSid: raceSel.value,
+      archetype: archSel.value,
+      sub: subSel.value,
+      tier: tierSel.value,
+    }));
+  };
+}
+
 function wire() {
   const sel = document.getElementById('save-select');
   if (sel) sel.onchange = async () => {
     state.save = sel.value;
+    state.addMember = null; // race sids and platoon files are per-save
     await refresh();
+    await loadRaces();
     render();
   };
+
+  wireSquadPanel();
 
   const money = document.getElementById('save-money');
   if (money) money.onclick = () => runMutation(
@@ -777,6 +1082,17 @@ function wire() {
         }
       },
     );
+
+    const renameBtn = card.querySelector('.rename-char');
+    if (renameBtn) renameBtn.onclick = () => {
+      const input = card.querySelector('.char-name');
+      const value = input.value.trim();
+      if (!value || value === input.dataset.initial) {
+        return showReceipt(receipt, new Error('Enter a different name first.'));
+      }
+      // Re-renders: the name shows in the card head, the roster and the filter.
+      return run(renameBtn, `renamed to ${value}`, () => API.renameCharacter(state.save, file, sid, value), true);
+    };
 
     const statsBtn = card.querySelector('.save-stats');
     if (statsBtn) statsBtn.onclick = () => {

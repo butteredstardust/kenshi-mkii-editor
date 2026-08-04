@@ -6,6 +6,7 @@ const paths = require('../../services/pathService');
 const gamedata = require('../../services/gamedataService');
 const mutation = require('../../services/mutationService');
 const archetypes = require('../../services/archetypes');
+const recruits = require('../../services/recruits');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -95,5 +96,9 @@ router.get('/gamedata/weapon-grades', handle(async () => ({
 // Non-mutating catalogue for the "train as archetype" UI dropdowns — the
 // mapping lives once in services/archetypes.js, not duplicated client-side.
 router.get('/archetypes', handle(async () => archetypes.catalogue()));
+
+// "Roll a recruit" catalogue for the Add member panel. Editorial, not derived
+// from game data — see services/recruits.js.
+router.get('/recruits', handle(async () => recruits.catalogue()));
 
 module.exports = router;
