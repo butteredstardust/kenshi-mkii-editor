@@ -1,0 +1,18 @@
+# Line endings are pinned rather than left to the machine's core.autocrlf,
+# because two files here actually care:
+#
+#  - *.bat must be CRLF. cmd.exe misparses an LF-only batch file (a REM line
+#    turns into an unknown command), which is how stop.bat first failed.
+#  - everything else is LF, so a checkout on another machine doesn't rewrite
+#    source and produce a diff that is nothing but line endings.
+#
+# Nothing here affects the save codec: it reads bytes off disk with its own
+# latin1 handling and never goes through git.
+
+* text=auto eol=lf
+
+*.bat text eol=crlf
+
+# Reference data shipped with the app - normalising these gains nothing and a
+# whitespace-only rewrite would obscure real changes.
+webapp/data/*.json -text
