@@ -24,9 +24,9 @@ const gamedata = require('./gamedataService');
  */
 
 // Template typecodes this can mint an ITEM record for: 2 weapon, 3 armour,
-// 4 trade goods, 46 backpack, 107 crossbow. Never 42 — that IS the item
-// instance (2.2(g)).
-const TEMPLATE_TYPES = [2, 3, 4, 46, 107, 111];
+// 4 trade goods, 46 backpack, 107 crossbow, 111 robotic limb, 102 map. Never
+// 42 — that IS the item instance (2.2(g)).
+const TEMPLATE_TYPES = [2, 3, 4, 46, 107, 111, 102];
 
 // Robotic limbs (type 111) are the one kind with extra float keys: all 11 live
 // ones carry `wear`, `stun` and `dam` ahead of the usual `charges`/`quality`,
@@ -40,7 +40,9 @@ const LIMB_FLOATS = ['wear', 'stun', 'dam'];
 // type-46 sweep, for backpacks: all 42 live backpack items carry exactly
 // `color sid, material sid, company sid, section, base data sid`, no `uniform`.
 function isEquippableTemplateType(type) {
-  return type !== 4 && type !== 46;
+  // Types 4 (trade goods), 46 (backpack) and 102 (map) carry no `uniform` key —
+  // confirmed on every live example of each.
+  return type !== 4 && type !== 46 && type !== 102;
 }
 
 /**
@@ -125,6 +127,7 @@ function buildItemRecord(templateSid, opts = {}) {
   else if (tmpl.type === 46) itemFunction = 4; // 42/42 live backpacks
   else if (tmpl.type === 107) itemFunction = 0; // 7/7 live crossbows
   else if (tmpl.type === 111) itemFunction = 0; // 11/11 live robotic limbs
+  else if (tmpl.type === 102) itemFunction = 0; // 39/39 live maps
   else {
     // Type 4: copy the template's own `ints['item function']` (cached on the
     // gamedata index entry as `itemFunction`). Matched the live item on every
@@ -171,7 +174,13 @@ function buildItemRecord(templateSid, opts = {}) {
     // (2.2(h)); `company sid` is always empty (universal on all 882+503 live
     // type-3/4 records, all 42 live type-46 ones, and all 7 type-107 ones —
     // a crossbow's `material sid` names its model, e.g. "Handheld Crossbow").
-    materialSid = materialOverride || gamedata.materialCandidates(templateSid)[0] || '';
+    //
+    // Type 102 (map) is the exception: its template DOES carry an
+    // extra['material'] row ("Item_Map"), but all 39 live map items have an
+    // EMPTY `material sid`. Follow the items, not the template.
+    materialSid = tmpl.type === 102
+      ? (materialOverride || '')
+      : (materialOverride || gamedata.materialCandidates(templateSid)[0] || '');
     companySid = '';
   }
 
@@ -184,9 +193,10 @@ function buildItemRecord(templateSid, opts = {}) {
     // (1, 404/503) — no quality control is offered for type 4 at all.
     levelValue = 0;
     qualityValue = 1;
-  } else if (tmpl.type === 46) {
-    // All 42 live backpack items: level 0, quality 100. A backpack has no
-    // quality tier in the UI sense, so `level` is not taken from the caller.
+  } else if (tmpl.type === 46 || tmpl.type === 102) {
+    // All 42 live backpacks and all 39 live maps: level 0, quality 100.
+    // Neither has a quality tier in the UI sense, so `level` is not taken from
+    // the caller.
     levelValue = 0;
     qualityValue = 100;
   } else {

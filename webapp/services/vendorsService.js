@@ -21,7 +21,14 @@ const locations = require('./locationsService');
  *   town (13)  --extra['residents' | 'bar squads' | ...]-->
  *     squad (52)  --extra['vendors']-->
  *       vendor list (49)  --extra['items'|'weapons'|'clothing'|'robotics'|...]-->
- *         item template (2/3/4/46/107/111)
+ *         item template (2/3/4/46/102/107/111)
+ *
+ * EVERY row is listed, addable or not. Dropping the ones this editor can't mint
+ * made the page lie about what a shop sells — and hid a real gap: `maps` was
+ * filtered out as "not an item", when a type-102 map is very much an item (39
+ * live ones sit in the install's own interiors.level files). Only research tech
+ * (21) and weapon manufacturers (51) genuinely are not objects; they are shown
+ * dimmed with the reason. See whyNotAddable().
  *
  * The example resolves exactly: Black Desert City lists a resident squad
  * "Robotics shop (black desert)", whose vendor list "Robotics limb vendor
@@ -55,11 +62,34 @@ const VENDOR_LIST = 49;
 // Categories on a town that name a resident/visiting squad.
 const TOWN_SQUAD_CATS = ['residents', 'default resident', 'bar squads', 'roaming squads'];
 
-// Categories on a vendor list that name something a player could be given.
-// `blueprints`, `maps` and `weapon manufacturers` are deliberately absent —
-// they point at tech (21), map (102) and company (51) records, which are real
-// stock but not item templates this editor can mint.
-const VENDOR_ITEM_CATS = ['items', 'weapons', 'clothing', 'armour blueprints', 'robotics', 'containers', 'crossbows', 'crossbow blueprints', 'trade goods', 'building materials'];
+// Every category on a vendor list that names a THING, addable or not. The page
+// lists all of them: hiding a row because this editor can't mint it makes the
+// shop look like it doesn't sell it, which is worse than saying "sold here,
+// can't be added, and here's why".
+const VENDOR_ITEM_CATS = ['items', 'weapons', 'clothing', 'armour blueprints', 'robotics', 'containers', 'crossbows', 'crossbow blueprints', 'trade goods', 'building materials', 'maps', 'blueprints', 'weapon manufacturers'];
+
+/**
+ * Why a given vendor row can't be turned into an item, or null if it can.
+ *
+ * Both cases were checked rather than assumed — see the type-102 (map) entry in
+ * gamedataService for the one that turned out to be a genuine gap:
+ *
+ *  - **21, research tech.** "Heavy Building Foundations" carries `level`,
+ *    `time`, `production mult`, `category`, `description` — and no weight,
+ *    value, mesh, icon or inventory footprint. Zero of the ~25,000 live ITEM
+ *    records across four saves and 713 install files are backed by one. It is
+ *    a research node: in game you buy an Ancient Science Book (a type-4 item)
+ *    and the book unlocks the node. The node itself is never carried.
+ *  - **51, weapon manufacturer.** "Truth Two" carries `blunt damage mod`,
+ *    `price mod` and `extra['weapon models']`. It is the grade company — this
+ *    editor already models it as the weapon grade ladder. A vendor listing one
+ *    means "stocks weapons of that make", not "sells this object".
+ */
+function whyNotAddable(type) {
+  if (type === 21) return 'research tech, not a carryable item — buy the book that unlocks it';
+  if (type === 51) return 'a weapon manufacturer, not an object — it sets the grade of weapons sold here';
+  return 'not an item template this editor can mint';
+}
 
 let cached = null;
 
@@ -118,14 +148,17 @@ function build() {
         for (const cat of VENDOR_ITEM_CATS) {
           for (const templateSid of (catMap.get(cat) || [])) {
             const tmpl = gamedata.lookup(templateSid);
-            // Only offer what this editor can actually mint — the same six
-            // typecodes the item picker uses. A vendor list also names tech and
-            // map records, which are stock but not addable.
-            if (!tmpl || !gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type)) continue;
+            if (!tmpl) continue; // a row pointing at a record no installed mod defines
             count++;
+            const addable = gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type);
             if (!items.has(templateSid)) {
               items.set(templateSid, {
-                sid: templateSid, name: tmpl.name, type: tmpl.type, category: cat,
+                sid: templateSid,
+                name: tmpl.name,
+                type: tmpl.type,
+                category: cat,
+                addable,
+                ...(addable ? {} : { reason: whyNotAddable(tmpl.type) }),
               });
             }
           }
@@ -153,6 +186,8 @@ function build() {
 
   const stats = {
     shops: shops.length,
+    addableItems: new Set(shops.flatMap((s) => s.items.filter((i) => i.addable).map((i) => i.sid))).size,
+    nonAddableItems: new Set(shops.flatMap((s) => s.items.filter((i) => !i.addable).map((i) => i.sid))).size,
     towns: new Set(shops.map((s) => s.town)).size,
     factions: new Set(shops.map((s) => s.faction).filter(Boolean)).size,
     placedTowns: new Set(shops.filter((s) => s.locationId).map((s) => s.town)).size,

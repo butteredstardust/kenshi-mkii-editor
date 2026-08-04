@@ -31,12 +31,15 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
 //
+// 7: typecode 102 (maps) is an item template, and `stackable` is now read
+// wherever the field exists rather than only on type 4.
+//
 // 6: `dialoguePackages`/`playerDialoguePackages` on type-1 character templates
 // (the character card's read-only dialogue status).
 //
 // 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
 // every weapon-grade row.
-const CACHE_VERSION = 6;
+const CACHE_VERSION = 7;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
 // 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
@@ -55,7 +58,12 @@ const CACHE_VERSION = 6;
 // 107 is the crossbow — a whole weapon class that was unreachable until the
 // loadout work went looking for a ranged archetype and found "Ranger" sitting
 // at a typecode nothing accepted.
-const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46, 107, 111]);
+// 102 is the map ("Map to Mongrel", "Ancient Military Documents"), added after
+// a user asked why a vendor could sell something the editor could not add. It
+// never appears in a save this player owns, but 39 live map items exist in the
+// install's own `interiors.level` files, which is what its minted shape is
+// copied from.
+const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46, 107, 111, 102]);
 
 let index = null;
 let stats = null;
@@ -146,7 +154,12 @@ function build() {
         // those rather than `false`, so callers can tell "not applicable"
         // from "confirmed non-stacking" — kept boolean-or-null to stay small
         // across ~62k cached entries.
-        const stackable = rec.type === 4 ? !!(rec.ints.has('stackable') && rec.ints.get('stackable')) : null;
+        // Read wherever the field exists rather than on a typecode whitelist:
+        // only types 4 (374 templates) and 102 (18) carry `ints.stackable` in
+        // this install, and it is 1 on every one of them, so presence is the
+        // real signal. `null` still means "the template has no such field",
+        // which callers treat as not-applicable rather than as false.
+        const stackable = rec.ints.has('stackable') ? !!rec.ints.get('stackable') : null;
         // `itemFunction` is only meaningful (and only cached) for type-4
         // templates — TODO.md 2.2(b): a minted type-4 item's `ints['item
         // function']` is copied straight from its template's own value (with

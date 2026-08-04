@@ -108,6 +108,9 @@ const TYPECODE_SECTIONS = new Map([
   [46, ['backpack_attach']],
   [107, ['back']],
   [111, []],
+  // Type 102 (map) is carried, never worn: all 39 live map items in the
+  // install's own level files sit in `backpack_content`.
+  [102, []],
 ]);
 
 // Type-4 (trade goods) `ints.slot` -> section, the same trick ARMOUR_SLOT_MAP

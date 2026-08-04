@@ -36,15 +36,17 @@ router.get('/status', handle(async () => {
 router.get('/gamedata', handle(async () => gamedata.indexStats()));
 router.post('/gamedata/rebuild', handle(async () => { gamedata.rebuild(); return gamedata.indexStats(); }));
 
-// The six typecodes that ever back a live ITEM record — established by sweeping
-// all 123 files of a save (6103 items), not by guessing. `kind` is the filter
-// key the picker sends.
+// Every typecode that can back an ITEM record. Six were established by sweeping
+// all 123 files of a save (6103 items); the seventh, maps, never appears in
+// this player's saves but has 39 live examples in the install's own level
+// files. `kind` is the filter key the picker sends.
 const ITEM_KINDS = [
   { kind: 'weapon', type: 2, label: 'Weapons' },
   { kind: 'armour', type: 3, label: 'Armour & clothing' },
   { kind: 'crossbow', type: 107, label: 'Crossbows' },
   { kind: 'backpack', type: 46, label: 'Backpacks' },
   { kind: 'limb', type: 111, label: 'Robotic limbs' },
+  { kind: 'map', type: 102, label: 'Maps' },
   { kind: 'trade goods', type: 4, label: 'Trade goods & supplies' },
 ];
 const ITEM_KIND_NAMES = Object.fromEntries(ITEM_KINDS.map((k) => [k.type, k.kind]));

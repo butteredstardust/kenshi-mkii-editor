@@ -161,7 +161,7 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   `services/personalities.js` from gamedata's type-26 records: 1 Honorable,
   2 Traitorous, 5 Smart, 6 Dumb, 9 Brave, 10 Fearful, 14 Crazy. The record named
   "Random" lists exactly those seven, and no live character uses any other.
-- **An item template is typecode 2, 3, 4, 46, 107 or 111 — never 42.** 42 is the
+- **An item template is typecode 2, 3, 4, 46, 102, 107 or 111 — never 42.** 42 is the
   save-side ITEM *instance*. The two late additions were both whole item classes
   the editor could not reach:
   - **46 (backpack)** — 22 in this install's data; all 42 live type-46-backed
@@ -175,11 +175,20 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   - **111 (robotic limb)** — CARRIED, never worn: all 11 live ones sit in
     `backpack_content`. The one kind with extra float keys: `wear`, `stun`,
     `dam` come BEFORE `charges`/`quality`, and key order is load-bearing.
+  - **102 (map)** — carried, no `uniform` key, `item function: 0`, `level: 0`,
+    `quality: 100`, and an **empty `material sid`** even though its template
+    carries an `extra['material']` row. All 39 live examples agree. Note where
+    they were found: no save this player owns contains a map, so the evidence is
+    in the INSTALL's own `newland/leveldata/*/interiors.level` files. A
+    save-only sweep will wrongly conclude maps are not items.
 
-  **Do not add a typecode here by guesswork.** The list was settled by sweeping
-  all 123 files of a save (6103 ITEM records) for which typecode backs each
-  `base data sid`; `test/equip.test.js` asserts that invariant, so a missing
-  class fails the suite rather than waiting for a bug report. And the supported
+  **Do not add a typecode by guesswork, and do not conclude one is absent from a
+  save sweep alone.** The first six were settled by sweeping all 123 files of a
+  save (6103 ITEM records); `test/equip.test.js` asserts that invariant. But
+  maps were missed by exactly that method — the player had never owned one — and
+  only surfaced when a vendor was found selling something the editor refused to
+  add. When in doubt, check the template for an item's hallmarks: `weight kg`,
+  `value`, an inventory footprint, a mesh and an icon. And the supported
   set lives in `itemFactory.TEMPLATE_TYPES` alone — a second hardcoded copy is
   exactly how backpacks, crossbows and limbs stayed unreachable through
   `addItem()` after bulk equip could already place them.

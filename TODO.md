@@ -2307,3 +2307,51 @@ numbered into Phase 1/2/3.
   lookup round-trips; and the tree groups without dropping or duplicating a
   shop, with every `locationId` resolving in the placement catalogue so the
   Vendors page and the teleport picker agree about which town is which.
+
+- [x] **Maps are items too — and the Vendors page now hides nothing.**
+
+  Prompted by the right question: "what are the items in the inventories that we
+  cannot add? if it's sold by the game vendor then we should be able to add it".
+  The page was silently dropping three record types. Checking each rather than
+  defending the filter found one real gap:
+
+  - **type 102, maps — WRONG to exclude, now addable.** "Map to Mongrel",
+    "Ancient Military Documents". The template has every hallmark of an item:
+    `weight kg`, `value`, `stackable: 1`, `charges`, `quality`, an inventory
+    footprint, a mesh and an icon. It was excluded because the full-save sweep
+    that established the other six typecodes found none — but that was absence
+    of evidence: **this player has never owned a map.** 39 live map items do
+    exist, in the install's own `newland/leveldata/*/interiors.level` files, and
+    all 39 agree on the minted shape: no `uniform` key, `item function: 0`,
+    `level: 0`, `quality: 100`, `charges: 1`, and an **empty `material sid`**
+    despite the template carrying an `extra['material']` row — follow the items,
+    not the template. 18 map templates are now offered, with a "Maps" filter in
+    the picker.
+  - **type 21, research tech — correctly excluded.** "Advanced Outpost
+    Blueprints", "Bolts: Regulars". Carries `level`, `time`, `production mult`,
+    `category`, `description`; no weight, value, mesh, icon or footprint. Zero of
+    ~25,000 live ITEM records across four saves and 713 install files are backed
+    by one. In game you buy an Ancient Science Book (a type-4 item) and the book
+    unlocks the node; the node itself is never carried.
+  - **type 51, weapon manufacturers — correctly excluded.** "Truth Two",
+    "Edgewalkers". Carries `blunt damage mod`, `price mod`,
+    `extra['weapon models']`. It is the grade company, already modelled as the
+    weapon grade ladder. A vendor listing one means "stocks weapons of that
+    make", not "sells this object".
+
+  **And the page stops hiding them.** Dropping a row because the editor cannot
+  mint it made the shop look like it does not sell it — which is exactly what
+  masked the map gap for a whole release. Every vendor row is now listed; the 40
+  that genuinely are not objects are dimmed, have no Add button, and carry the
+  reason inline. 439 distinct addable templates against 40 non-addable, across
+  898 shops.
+
+  `stackable` also stopped being a typecode whitelist: it is now read wherever
+  `ints.stackable` exists, which is types 4 (374 templates) and 102 (18), and is
+  1 on every one of them. Presence is the real signal.
+
+  Tests: `addable` must agree exactly with what `addItem` would accept (an Add
+  button that always fails is worse than no button), every blocked row must
+  carry a reason, and the minted map record is pinned field by field against the
+  39 live ones — including the empty `material sid`, the one place the template
+  and the items disagree.

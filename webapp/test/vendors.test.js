@@ -7,6 +7,8 @@ const paths = require('../services/pathService');
 const vendors = require('../services/vendorsService');
 const gamedata = require('../services/gamedataService');
 const locations = require('../services/locationsService');
+const itemSlots = require('../services/itemSlots');
+const itemFactory = require('../services/itemFactory');
 
 /**
  * Vendor stock is NOT in the save — shops roll their inventory at runtime. It
@@ -34,20 +36,52 @@ test('the vendor chain resolves town -> shop -> stock', (t) => {
   assert.strictEqual(new Set(ids).size, ids.length, 'shop ids must be unique');
 });
 
-test('every item a shop offers is one this editor can actually add', (t) => {
+test('every row is listed, and `addable` agrees with what addItem would accept', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
-  // A vendor list also names tech (21), map (102) and manufacturer (51)
-  // records. Those are real stock but not templates addItem can mint, so
-  // offering them would put a button on the page that always fails.
+  // Nothing is hidden: a shop that sells research tech should SAY so rather
+  // than look like it sells nothing. What must hold is that the `addable` flag
+  // never lies — an Add button that always fails is worse than no button.
+  let addable = 0; let blocked = 0;
   for (const shop of vendors.all()) {
     for (const it of shop.items) {
       const tmpl = gamedata.lookup(it.sid);
       assert.ok(tmpl, `${shop.shop} offers unresolvable ${it.sid}`);
-      assert.ok(gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type),
-        `${shop.shop} offers "${it.name}" (typecode ${tmpl.type}), which addItem would refuse`);
       assert.strictEqual(it.type, tmpl.type);
+      assert.strictEqual(it.addable, gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type),
+        `"${it.name}" (typecode ${tmpl.type}) is marked addable=${it.addable}`);
+      if (it.addable) { addable++; } else { blocked++; assert.ok(it.reason, `${it.name} is blocked with no reason given`); }
     }
   }
+  assert.ok(addable > 0 && blocked > 0, 'expected both addable and non-addable rows');
+});
+
+test('a map is addable — the gap that hiding non-addable rows was masking', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
+  const maps = gamedata.itemTemplates().filter((x) => x.type === 102);
+  if (!maps.length) return t.skip('no typecode-102 templates in this install');
+
+  // A map has every hallmark of an item — weight, value, stackable, icon, mesh,
+  // inventory footprint — and 39 live ones exist in the install's own level
+  // files. It was excluded only because no save this player owns contains one.
+  const { sections, widened } = itemSlots.allowedSections(maps[0].sid, null);
+  assert.deepStrictEqual(sections, ['main', 'backpack_content'], 'a map is carried, never worn');
+  assert.strictEqual(widened, false);
+
+  const { record } = itemFactory.buildItemRecord(maps[0].sid, { section: 'main' });
+  // Copied from all 39 live map items, which agree on every one of these.
+  assert.ok(!record.strings.has('uniform'), 'no live map item has a "uniform" key');
+  assert.strictEqual(record.strings.get('material sid'), '',
+    'a map mints an EMPTY material sid even though its template carries an extra[material] row');
+  assert.strictEqual(record.strings.get('company sid'), '');
+  assert.strictEqual(record.ints.get('item function'), 0);
+  assert.strictEqual(record.ints.get('level'), 0);
+  assert.strictEqual(record.floats.get('quality'), 100);
+  assert.strictEqual(record.floats.get('charges'), 1);
+  assert.deepStrictEqual([...record.floats.keys()], ['charges', 'quality']);
+
+  // And a shop somewhere actually sells one.
+  assert.ok(vendors.all().some((s) => s.items.some((i) => i.type === 102 && i.addable)),
+    'no shop offers an addable map');
 });
 
 test('the union-of-definitions rule is what makes Black Desert City work', (t) => {

@@ -1392,25 +1392,30 @@ function vendorStock(shop) {
   if (!shop) return '<p class="hint">Pick a shop.</p>';
   if (!shop.items.length) return '<p class="hint">This shop stocks nothing this editor can add.</p>';
 
-  const KIND = { 2: 'weapon', 3: 'armour', 4: 'trade goods', 46: 'backpack', 107: 'crossbow', 111: 'limb' };
+  const KIND = { 2: 'weapon', 3: 'armour', 4: 'trade goods', 46: 'backpack', 107: 'crossbow', 111: 'limb', 102: 'map', 21: 'research', 51: 'manufacturer' };
+  const blocked = shop.items.filter((i) => !i.addable).length;
   return `<p class="hint">${esc(shop.shop)} in ${esc(shop.town)} — stock lists:
       ${esc(shop.lists.map((l) => l.name).join(', '))}.
-      What the shop <em>can</em> carry; actual stock is rolled in game.</p>
+      What the shop <em>can</em> carry; actual stock is rolled in game.${blocked
+    ? ` ${esc(blocked)} row(s) are research or manufacturer entries rather than objects, so they have no Add.` : ''}</p>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th class="col-item">Item</th><th>Kind</th><th>From list</th><th class="shrink"></th></tr></thead>
-      <tbody>${shop.items.map((it) => `<tr data-template="${esc(it.sid)}">
-        <td class="col-item"><span class="item-name">${icon(ITEM_KIND_ICONS[it.type] || 'bag', KIND[it.type] || '')}<span>${esc(it.name)}</span></span></td>
-        <td class="muted">${esc(KIND[it.type] || it.type)}</td>
+      <tbody>${shop.items.map((it) => `<tr data-template="${esc(it.sid)}"${it.addable ? '' : ' class="row-muted"'}>
+        <td class="col-item"><span class="item-name">${icon(ITEM_KIND_ICONS[it.type] || 'bag', KIND[it.type] || '')}<span>${esc(it.name)}</span></span>
+          ${it.addable ? '' : `<div class="muted">${esc(it.reason)}</div>`}</td>
+        <td class="muted">${esc(KIND[it.type] || `type ${it.type}`)}</td>
         <td class="muted">${esc(it.category)}</td>
         <td class="shrink"><span class="actions">
-          <button class="btn btn--xs vendor-add" data-template="${esc(it.sid)}" ${dis()}>Add</button>
+          ${it.addable
+    ? `<button class="btn btn--xs vendor-add" data-template="${esc(it.sid)}" ${dis()}>Add</button>`
+    : '<span class="muted">—</span>'}
         </span></td>
       </tr>`).join('')}</tbody>
     </table></div>`;
 }
 
 // Which glyph stands for each item typecode in the vendor table.
-const ITEM_KIND_ICONS = { 2: 'weapon', 3: 'armour', 4: 'bag', 46: 'backpack', 107: 'weapon', 111: 'identity' };
+const ITEM_KIND_ICONS = { 2: 'weapon', 3: 'armour', 4: 'bag', 46: 'backpack', 107: 'weapon', 111: 'identity', 102: 'list', 21: 'stats', 51: 'squad' };
 
 function renderVendors() {
   const r = buildRoster();

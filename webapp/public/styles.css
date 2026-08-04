@@ -587,3 +587,8 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
   font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em;
   color: var(--muted); padding-bottom: var(--s1);
 }
+
+/* A row that is shown for completeness but cannot be acted on — a vendor's
+ * research/manufacturer entries. Dimmed rather than hidden: not listing them
+ * would make the shop look like it doesn't sell them. */
+.row-muted td { opacity: .62; }
