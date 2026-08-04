@@ -66,6 +66,10 @@ const GRADE = {
 const I = {
   // heads
   azuchiHelm: '99176-Azuchi.mod', // Azuchi Blue Heavy Masked Helmet
+  spikedHelm: '2203-gamedata.base',
+  armouredHood: '2200-gamedata.base',
+  stormgoggles: '55395-rebirth.mod',
+  rattanHat: '2185-gamedata.base',
   samuraiHelm: '2145-gamedata.base',
   ancientHelm: '1533510-Newwworld.mod',
   maskedHelm: '2201-gamedata.base',
@@ -89,6 +93,8 @@ const I = {
   clothShirt: '1168-gamedata.base',
   turtleneck: '51643-rebirth.mod',
   gorilloPelt: '23-AntiquityPack.mod',
+  bindings: '2326-gamedata.base', // Martial Artist Bindings
+  blackChainShirt: '577-gamedata.base',
   // body
   empireSamurai: '51708-rebirth.mod',
   samuraiArmour: '2122-gamedata.base',
@@ -105,6 +111,11 @@ const I = {
   ragShirt: '2309-clothes_v1.mod',
   armouredRags: '42052-rebirth.mod',
   crabArmour: '64892-Newwworld.mod',
+  dustcoat: '3061-gamedata.base',
+  policeArmour: '2182-gamedata.base',
+  drifterJacket: '2304-clothes_v1.mod',
+  sleevelessLongcoat: '684-gamedata.base',
+  dyedRobes: '51707-Dialogue.mod',
   // legs
   samuraiLegs: '2150-gamedata.base',
   ancientLegs: '1533511-Newwworld.mod',
@@ -120,6 +131,11 @@ const I = {
   hessianUniform: '2169-gamedata.base',
   ragLoincloth: '2308-clothes_v1.mod',
   ragSkirt: '42260-rebirth.mod',
+  platedDrifterPants: '1532813-Newwworld.mod',
+  hackStopperPants: '64907-Newwworld.mod',
+  giPants: '2193-gamedata.base',
+  dyedTrousers: '51746-Dialogue.mod',
+  cargopants: '550-gamedata.base',
   // boots
   samuraiBoots: '549-gamedata.base',
   ancientBoots: '1533509-Newwworld.mod',
@@ -149,6 +165,7 @@ const I = {
   plank: '902-gamedata.base',
   topper: '474-gamedata.base',
   flatTopper: '901-gamedata.base',
+  polearm: '52301-rebirth.mod',
   // crossbows (typecode 107 — worn on the back, no manufacturer ladder)
   ranger: '66169-Newwworld.mod',
   eaglesCross: '66290-Newwworld.mod',
@@ -174,6 +191,12 @@ const I = {
   stringOfCats: '54549-Newwworld.mod',
   bolts: '95781-rebirth.mod',
   sleepingBag: '56645-rebirth.mod',
+  splintKit: '1435-gamedata.base',
+  waterJug: '12617-nodes_otto.mod',
+  rum: '1015-gamedata.base',
+  bloodrum: '43316-rebirth.mod',
+  chewsticks: '43956-rebirth.mod',
+  lantern: '47185-Dialogue.mod',
 };
 
 // ------------------------------------------------------------- shorthand --
@@ -352,14 +375,114 @@ const LOADOUTS = [
   {
     id: 'martial-artist',
     label: 'Martial Artist',
-    description: 'No weapon at all — light clothes and wrapped hands, for a character who fights unarmed.',
+    description: 'Wrapped hands and gi pants, no weapon at all. What Seto actually wears.',
     tags: ['light', 'unarmed'],
     items: [
-      shirt(I.turtleneck, 40), body(I.dyedRagShirt, 40),
-      legs(I.ninjaPants, 40), boots(I.woodenSandals, 40),
+      shirt(I.bindings, 40), body(I.dyedRagShirt, 40),
+      legs(I.giPants, 40), boots(I.platedLongboots, 40),
       carry(I.aidStandard, 2), carry(I.foodcube, 4),
     ],
     raceNotes: [ANIMAL],
+  },
+  {
+    id: 'abolitionist',
+    label: 'Abolitionist',
+    description: "Tinfist's kit: a dustcoat, plated pants, repair kits and no weapon.",
+    tags: ['light', 'unarmed', 'legendary'],
+    items: [
+      body(I.dustcoat, 80), legs(I.platedDrifterPants, 80), boots(I.drifterBoots, 80),
+      pack(I.mediumPack), carry(I.roboticsKit, 5), carry(I.aidAdvanced, 5),
+    ],
+    raceNotes: [ANIMAL],
+  },
+  {
+    id: 'nightstalker',
+    label: 'Nightstalker',
+    description: "Moll's kit: assassin's rags over dark leather, and a good ninja blade.",
+    tags: ['light', 'stealth'],
+    items: [
+      head(I.armouredHood, 60), shirt(I.darkLeatherShirt, 60), body(I.assassinRags, 60),
+      legs(I.drifterPants, 60), boots(I.drifterBoots, 60),
+      back(I.ninjaBlade, 60, GRADE.industrial),
+      carry(I.aidAdvanced, 3),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'ronin',
+    label: 'Ronin',
+    description: "Savant's kit: police armour and a Meitou nodachi.",
+    tags: ['heavy', 'legendary', 'full'],
+    items: [
+      head(I.rattanHat, 60), shirt(I.darkLeatherShirt, 60), body(I.policeArmour, 80),
+      legs(I.drifterPants, 60), boots(I.platedLongboots, 60),
+      back(I.nodachi, 80, GRADE.meitou),
+      carry(I.aidAdvanced, 3), carry(I.chewsticks, 4),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'bandit-lord',
+    label: 'Bandit Lord',
+    description: "The Dust King's kit: spiked helmet, heart protector, samurai legplates.",
+    tags: ['heavy', 'full'],
+    items: [
+      head(I.spikedHelm, 40), shirt(I.darkLeatherShirt, 40), body(I.heartProtector, 40),
+      legs(I.samuraiLegs, 40), boots(I.samuraiBoots, 40),
+      back(I.fragmentAxe, 40, GRADE.industrial),
+      carry(I.aidStandard, 2), carry(I.rum, 2),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'dust-runner',
+    label: 'Dust Runner',
+    description: "Shryke's kit: stormgoggles, mercenary leathers and a polearm.",
+    tags: ['light', 'travel', 'full'],
+    items: [
+      head(I.stormgoggles, 60), shirt(I.blackChainShirt, 60), body(I.mercLeather, 60),
+      legs(I.stoutHessian, 60), boots(I.drifterBoots, 60),
+      back(I.polearm, 55, GRADE.mk5),
+      pack(I.smallPack), carry(I.chewsticks, 4), carry(I.lantern, 1), carry(I.waterJug, 2),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'robed-scholar',
+    label: 'Robed Scholar',
+    description: "Longen's kit: dyed robes, a lantern and something strong to drink.",
+    tags: ['support'],
+    items: [
+      body(I.dyedRobes, 40), legs(I.dyedTrousers, 40), boots(I.woodenSandals, 40),
+      pack(I.mediumPack), carry(I.bloodrum, 3), carry(I.lantern, 1), carry(I.aidStandard, 2),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'hungry-bandit',
+    label: 'Hungry Bandit',
+    description: "Crumblejon's kit: a drifter's jacket, a horse chopper and an axe.",
+    tags: ['starter'],
+    items: [
+      shirt(I.bindings, 20), body(I.drifterJacket, 20),
+      legs(I.drifterPants, 20), boots(I.drifterBoots, 20),
+      back(I.horseChopper, 20, GRADE.mid), hip(I.fragmentAxe, 20, GRADE.mid),
+      carry(I.bread, 4), carry(I.aidBasic, 1),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
+  },
+  {
+    id: 'shinobi-thief',
+    label: 'Shinobi Thief',
+    description: "Bo's kit: karuta zukin and assassin's rags, with a ninja blade.",
+    tags: ['light', 'stealth', 'full'],
+    items: [
+      head(I.karutaZukin, 40), shirt(I.darkLeatherShirt, 40), body(I.assassinRags, 40),
+      legs(I.ninjaPants, 40), boots(I.drifterBoots, 40),
+      back(I.ninjaBlade, 40, GRADE.catun1),
+      carry(I.rationPack, 4), carry(I.waterJug, 2), carry(I.aidBasic, 2),
+    ],
+    raceNotes: [NO_FEET, ANIMAL],
   },
 
   // ---------------------------------------------------------------- ranged --

@@ -253,3 +253,54 @@ test('a worn backpack reports the contents of its own inventory record', (t) => 
   assert.ok(withContents > 0,
     'no pack reported contents — the second hop through the pack\'s own inventory record is not being followed');
 });
+
+// ------------------------------------------------------- names & recruits --
+
+test('random names come from Kenshi\'s own name files', (t) => {
+  const names = require('../services/names');
+  const s = names.stats();
+  if (!s.total) return t.skip('no Kenshi install / name files found');
+  assert.ok(s.male > 0 && s.female > 0 && s.any > 0, `expected all three pools: ${JSON.stringify(s)}`);
+
+  // Deterministic under an injected rng, same discipline as recruits.roll().
+  assert.strictEqual(names.random({ rng: () => 0 }), names.random({ rng: () => 0 }));
+  const n = names.random();
+  assert.ok(n && typeof n === 'string' && n.trim() === n && !n.includes('\n'));
+
+  // `avoid` must actually avoid.
+  const first = names.random({ rng: () => 0 });
+  assert.notStrictEqual(names.random({ rng: () => 0, avoid: [first] }), first);
+  // Every name taken is not an error — it repeats rather than returning null.
+  const pool = [];
+  for (let i = 0; i < 400; i++) pool.push(names.random());
+  assert.ok(pool.every(Boolean));
+});
+
+test('recruits are grouped, and every group offers a real choice', () => {
+  assert.strictEqual(recruits.validate(), true);
+  const rows = recruits.catalogue();
+  assert.ok(rows.length >= 45, `expected 45+ recruits, got ${rows.length}`);
+
+  const byGroup = new Map();
+  for (const r of rows) {
+    assert.ok(r.group && r.groupLabel, `${r.name} has no group`);
+    byGroup.set(r.group, (byGroup.get(r.group) || 0) + 1);
+  }
+  assert.ok(byGroup.size >= 8, `expected 8+ groups, got ${byGroup.size}`);
+  for (const [g, n] of byGroup) {
+    assert.ok(n >= 4 && n <= 6, `group "${g}" has ${n} recruits; each should offer 4-5`);
+  }
+
+  // The groups the user asked for by name must exist.
+  const labels = new Set(rows.map((r) => r.group));
+  for (const g of ['explorer', 'trader', 'soldier', 'medic']) {
+    assert.ok(labels.has(g), `no "${g}" group`);
+  }
+
+  // Races are matched as substrings against the save's own race names, so a
+  // typo would silently fall back to the default race rather than erroring.
+  const RACE_HINTS = ['human', 'shek', 'skeleton', 'sundemon', 'hive worker', 'hive soldier'];
+  for (const r of rows) {
+    assert.ok(RACE_HINTS.includes(r.race), `${r.name} has unrecognised race hint "${r.race}"`);
+  }
+});

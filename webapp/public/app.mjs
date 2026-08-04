@@ -17,6 +17,7 @@ const state = {
   env: null, save: null, status: null, current: 'squad', selected: null, filter: '',
   archetypes: [], // catalogue for "train as archetype" dropdowns, fetched once at boot
   recruits: [], // "roll a recruit" catalogue (editorial — see services/recruits.js)
+  namePool: [], // plausible names from Kenshi's own namesM/F/MF.txt
   races: null, // { races, default } for THIS save — a new member is cloned from
   // an existing character, so the list is what the save contains, not all of gamedata.
   // "Add member" form state, kept here so the re-render after a successful add
@@ -67,6 +68,9 @@ async function boot() {
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
   state.recruits = await API.recruits().catch(() => []);
+  // Kenshi's own name pool, so a new member is never called nothing. Fetched
+  // once — the files don't change while the app runs.
+  state.namePool = await API.names().then((r) => r.names).catch(() => []);
   state.loadouts = await API.loadouts().catch(() => []);
   // Town positions come from the Kenshi install, not the save, so they are
   // fetched once at boot rather than per save.
@@ -150,7 +154,7 @@ function healthSection(m) {
         <button class="btn btn--primary revive-btn" ${dis()}>Revive</button>
         ${m.limbs != null ? `<button class="btn btn--danger restore-limbs-btn" ${dis()}>Restore limbs</button>` : ''}
       </div>
-      <p class="hint">Revive clears death, KO and coma flags and raises lethally low flesh in the same write — HP overrides the flags on reload, so they must change together.</p>`
+      <p class="hint">Clears the death, KO and coma flags and raises lethal flesh together — HP overrides the flags on reload.</p>`
     : (m.limbs != null ? `<div class="actions"><button class="btn btn--danger restore-limbs-btn" ${dis()}>Restore limbs</button></div>` : '')}
 
       <div class="field-row">
@@ -162,7 +166,7 @@ function healthSection(m) {
             min="0" max="10" step="0.1" value="${esc(inputNum(m.fed))}"></label>
         <button class="btn btn--primary save-hunger" ${dis()}>Apply</button>
       </div>
-      <p class="hint">Hunger runs 0–3. Fed has no documented cap; this editor allows 0–10.</p>
+      <p class="hint">Hunger 0–3. Fed 0–10 (this editor's cap).</p>
 
       <div class="table-wrap"><table class="data-table table--compact">
         <caption>Bars are relative to this character's own undamaged parts, not to <code>hit&lt;n&gt;</code>.</caption>
@@ -214,7 +218,7 @@ function trainSection() {
         </label>
         <button class="btn btn--primary train-btn" ${dis()}>Train</button>
       </div>
-      <p class="hint">Attributes are set to 45. Archetype skills (main + sub) roll 45–95. Every other skill rolls 15–40. Each skill is randomised independently.</p>
+      <p class="hint">Attributes 45, archetype skills 45–95, everything else 15–40.</p>
     </div>
   </details>`;
 }
@@ -257,7 +261,7 @@ function statsSection(c) {
       </details>
       <div class="actions">
         <button class="btn btn--primary save-stats" ${dis()}>Apply stats</button>
-        <span class="hint">Attributes clamp to 0–100. Skills allow -100–100 (untrained skills are stored negative). Values above 100 can bug out in game.</span>
+        <span class="hint">Attributes 0–100, skills -100–100. Above 100 can bug out in game.</span>
       </div>
       ${trainSection()}
     </div>
@@ -318,6 +322,7 @@ const ICON_PATHS = {
   heart: '<path d="M8 13.2C4.5 10.7 2.5 8.9 2.5 6.8A2.8 2.8 0 0 1 8 5.6a2.8 2.8 0 0 1 5.5 1.2c0 2.1-2 3.9-5.5 6.4z"/>',
   stats: '<path d="M2.5 13.5h11"/><path d="M4.5 13.5v-4"/><path d="M8 13.5v-8"/><path d="M11.5 13.5v-6"/>',
   identity: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><circle cx="6" cy="7.5" r="1.4"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7"/><path d="M10 7h3M10 9.5h3"/>',
+  dice: '<rect x="2.5" y="2.5" width="11" height="11" rx="2"/><circle cx="5.6" cy="5.6" r=".9" fill="currentColor"/><circle cx="10.4" cy="10.4" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/>',
   list: '<path d="M5.5 4.5h8M5.5 8h8M5.5 11.5h8"/><path d="M2.5 4.5h.01M2.5 8h.01M2.5 11.5h.01"/>',
   shirt: '<path d="M6 2.5 2.5 4.5 4 7l2-1.2v7.7h4V5.8L12 7l1.5-2.5L10 2.5 8 4z"/>',
   armour: '<path d="M4 3h8v5.5A4 4 0 0 1 8 13a4 4 0 0 1-4-4.5z"/><path d="M8 3v10"/>',
@@ -478,9 +483,7 @@ function addItemSection(c, file) {
           value="${esc(pick ? pick.query || '' : '')}" ${dis()}></label>
       <div class="add-item-results picker-results"></div>
       <div class="add-item-config"></div>
-      <p class="hint">Adds a brand-new item record to this character's inventory. The editor cannot check whether
-        this character's race can actually wear or wield it, and placing an item into an occupied body slot sends
-        the current occupant back to Carried in the same write.</p>
+      <p class="hint">Filling an occupied slot sends the current occupant to Carried. Race fit is not checked.</p>
     </div>
   </details>`;
 }
@@ -552,10 +555,8 @@ function addItemConfig(pick) {
       </span>
     </div>
     <p class="hint add-item-collision"></p>
-    ${t.slotsWidened ? '<p class="hint">This item\'s kind could not be resolved, so every slot is offered rather than'
-      + ' risk hiding a legitimate one — the editor can\'t vouch for compatibility here.</p>' : ''}
-    ${isWeapon ? '<p class="hint">Weapon grade is the manufacturer/material pair (this is what names a Meitou);'
-      + ' Level is a separate field and does not follow from it.</p>' : ''}
+    ${t.slotsWidened ? '<p class="hint">Unrecognised kind — every slot is offered.</p>' : ''}
+    ${isWeapon ? '<p class="hint">Grade is the manufacturer/material pair; Level is separate.</p>' : ''}
   </div>`;
 }
 
@@ -582,8 +583,7 @@ function packBlock(pack) {
         </tr>`).join('')}
       </tbody></table></div>`
     : '<p class="hint">This pack is empty.</p>'}
-      <p class="hint">Pack contents are read-only: they sit in the pack's own inventory record, which this
-        editor does not write to yet.</p>
+      <p class="hint">Read-only — contents live in the pack's own record.</p>
     </div>
   </div>`;
 }
@@ -614,12 +614,9 @@ function gearCard(c, file) {
       ${c.isLeader ? '<span class="badge badge--accent">leader</span>' : ''}
       <span class="muted">${esc(c.origin)}</span>
     </div>
-    <p class="hint">Change anything on a row, then press Apply — slot, quantity and quality are written together in
-      one edit. Slot only lists what this item's kind can actually occupy, and moving into an occupied body slot
-      sends the current occupant back to Carried. The editor can't tell whether this character's race can really
-      wear or wield an item (a shirt on a hiver, say) — that edit still saves, the game just won't honour
-      it.${anyWidened ? ' Some items here are of an unrecognised kind, so every slot is offered rather than risk '
-      + 'hiding a legitimate one; compatibility isn\'t vouched for on those.' : ''}</p>
+    <p class="hint">Change a row, then Apply — everything on it is written in one edit. Filling an occupied slot
+      sends the current occupant to Carried. Race fit is not checked.${anyWidened ? ' Some items here are of an '
+      + 'unrecognised kind, so every slot is offered.' : ''}</p>
 
     ${addItemSection(c, file)}
 
@@ -700,9 +697,7 @@ function bulkPanel(picked) {
       <h3>Equip ${esc(picked.length)} character${picked.length === 1 ? '' : 's'}</h3>
       <button class="btn btn--ghost btn--xs" id="bulk-clear">Clear selection</button>
     </div>
-    <p class="hint">Everything below is written in one edit with one backup, across every squad the
-      selection touches. Items go to whoever is ticked — the editor does not refuse an item on the
-      grounds of race, it tells you afterwards which ones look like a bad fit.</p>
+    <p class="hint">One edit, one backup. Poor race fits are reported, never blocked.</p>
 
     <details class="section" open>
       ${sectionSummary('armour', 'Apply a loadout')}
@@ -811,8 +806,7 @@ function identitySection(c) {
             value="${esc(c.name)}" data-initial="${esc(c.name)}" ${dis()}></label>
         <button class="btn btn--primary rename-char" ${dis()}>Apply</button>
       </div>
-      <p class="hint">Up to 63 bytes. The name is written to this character's state record and to their stats
-        record, which is where the game keeps it for a character you have named.</p>
+      <p class="hint">Up to 63 bytes.</p>
     </div>
   </details>`;
 }
@@ -974,12 +968,28 @@ function renameSquadSection(s) {
             value="${esc(s.world.faction)}" data-initial="${esc(s.world.faction)}" ${dis()}></label>
         <button class="btn btn--primary" id="save-faction-name" ${dis()}>Apply</button>
       </div>
-      <p class="hint">A Kenshi save has no per-squad name — the name on your squad is the player faction's,
-        so this rewrites it in the game state, on every one of your squad records and on your faction record,
-        together. Platoon filenames on disk keep their old prefix; that is cosmetic and the game does not
-        mind. Up to 63 bytes.</p>
+      <p class="hint">Renames the player faction — the only squad-level name a save has. Up to 63 bytes.</p>
     </div>
   </details>`;
+}
+
+/**
+ * A plausible default name, drawn from Kenshi's own name files and skipping
+ * anyone already in the squad. Sticky once chosen, so a re-render doesn't
+ * shuffle the name out from under someone mid-type.
+ */
+function suggestName() {
+  const form = state.addMember || {};
+  if (form.suggested) return form.suggested;
+  const pool = state.namePool || [];
+  if (!pool.length) return '';
+  const taken = new Set((state.status ? state.status.squads : [])
+    .flatMap((q) => q.characters.map((c) => (c.name || '').toLowerCase())));
+  const free = pool.filter((n) => !taken.has(n.toLowerCase()));
+  const from = free.length ? free : pool;
+  const pick = from[Math.floor(Math.random() * from.length)];
+  state.addMember = { ...form, suggested: pick };
+  return pick;
 }
 
 function addMemberSection(groups) {
@@ -1000,7 +1010,18 @@ function addMemberSection(groups) {
   // first — availableRaces() orders by donor count, defaultRace() by species.
   const raceSid = form.raceSid || (state.races.default && state.races.default.sid) || races[0].sid;
   const files = groups.map((g) => g.file);
-  const recruitOptions = (state.recruits || []).map((r) => `<option value="${esc(r.id)}" ${form.recruitId === r.id ? 'selected' : ''}>${esc(r.name)} — ${esc(r.subLabel)}, ${esc(r.tierLabel)}</option>`).join('');
+
+  // Grouped by role: 50 recruits in one flat list is unusable, and the groups
+  // are the point — each offers four or five real alternatives.
+  const byGroup = new Map();
+  for (const r of state.recruits || []) {
+    if (!byGroup.has(r.groupLabel)) byGroup.set(r.groupLabel, []);
+    byGroup.get(r.groupLabel).push(r);
+  }
+  const recruitOptions = [...byGroup.entries()].map(([label, rows]) => `<optgroup label="${esc(label)}">
+      ${rows.map((r) => `<option value="${esc(r.id)}" ${form.recruitId === r.id ? 'selected' : ''}>${esc(r.name)} — ${esc(r.subLabel)}, ${esc(r.tierLabel)}</option>`).join('')}
+    </optgroup>`).join('');
+
   const cats = state.archetypes || [];
   const main = cats.find((a) => a.id === form.archetype) || cats[0];
   const subs = main ? main.subs : [];
@@ -1020,8 +1041,11 @@ function addMemberSection(groups) {
 
       <div class="field-row">
         <label class="field field--grow">Name
-          <input type="text" id="member-name" maxlength="63" placeholder="e.g. Ruka"
-            value="${esc(form.name || '')}" ${dis()}></label>
+          <span class="actions">
+            <input type="text" id="member-name" maxlength="63" placeholder="name"
+              value="${esc(form.name || suggestName())}" ${dis()}>
+            <button class="btn btn--ghost btn--xs" id="reroll-name" title="Another name">${icon('dice', 'Another name')}</button>
+          </span></label>
         <label class="field">Race
           <select id="member-race" ${dis()}>
             ${races.map((r) => `<option value="${esc(r.sid)}" ${raceSid === r.sid ? 'selected' : ''}>${esc(r.name)} (${esc(r.donors)})</option>`).join('')}
@@ -1048,12 +1072,8 @@ function addMemberSection(groups) {
         <button class="btn btn--primary" id="add-member" ${dis()}>Add member</button>
       </div>
 
-      <p class="hint">The new character is cloned from a living character of that race already in this save,
-        then stripped back to nothing but their species: name, faction, leader flag, bounties, wounds and
-        inventory are all discarded and the stats are rolled from the specialisation and experience above.
-        The number beside each race is how many characters in this save could be used as the model.
-        They arrive at the squad's current position carrying nothing — give them gear on the Gear page.
-        This writes two files (the platoon and <code>quick.save</code>) in one edit.</p>
+      <p class="hint">Cloned from a living character of that race in this save (the number beside each race is
+        how many). Arrives at the squad, healthy and carrying nothing.</p>
     </div>
   </details>`;
 }
@@ -1110,9 +1130,7 @@ function teleportSection(groups) {
         <button class="btn btn--danger" id="teleport-go" ${dis()}>Teleport</button>
       </div>
       <p class="hint" id="teleport-note"></p>
-      <p class="hint">Everyone in the squad is placed in a small circle on the town's own recorded position,
-        and the squad's map marker moves with them. Heights come from the world data, so on a slope the game
-        settles them itself. There is no undo beyond the automatic backup.</p>
+      <p class="hint">Moves the whole squad, map marker included. No undo beyond the automatic backup.</p>
     </div>
   </details>`;
 }
@@ -1509,6 +1527,13 @@ function wireSquadPanel() {
   if (recruitSel) recruitSel.onchange = () => {
     applyRecruit((state.recruits || []).find((r) => r.id === recruitSel.value));
   };
+  const rerollName = document.getElementById('reroll-name');
+  if (rerollName) rerollName.onclick = () => {
+    state.addMember = { ...(state.addMember || {}), suggested: null };
+    const next = suggestName();
+    if (next) { nameInput.value = next; remember(); }
+  };
+
   const rollBtn = document.getElementById('roll-recruit');
   if (rollBtn) rollBtn.onclick = () => {
     const list = state.recruits || [];

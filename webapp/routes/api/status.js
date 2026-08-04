@@ -9,6 +9,7 @@ const archetypes = require('../../services/archetypes');
 const recruits = require('../../services/recruits');
 const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
+const names = require('../../services/names');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -102,6 +103,22 @@ router.get('/archetypes', handle(async () => archetypes.catalogue()));
 // "Roll a recruit" catalogue for the Add member panel. Editorial, not derived
 // from game data — see services/recruits.js.
 router.get('/recruits', handle(async () => recruits.catalogue()));
+
+// A pool of plausible names, straight from Kenshi's own namesM/F/MF.txt — the
+// files the game itself draws NPC names from. Fetched once and used to
+// pre-fill the "Add member" name field, so a new character is never called
+// nothing. `?count=` caps at 200.
+router.get('/names', handle(async (req) => {
+  const asked = Number.parseInt(req.query.count, 10);
+  const count = Math.min(Number.isFinite(asked) && asked > 0 ? asked : 40, 200);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const n = names.random({ avoid: out });
+    if (!n) break; // this install has no name files
+    out.push(n);
+  }
+  return { names: out, pools: names.stats() };
+}));
 
 // Named gear sets for bulk equip. Editorial too (services/loadouts.js), and
 // each row carries its items already resolved to names/kinds so the client

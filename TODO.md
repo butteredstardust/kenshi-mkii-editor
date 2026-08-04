@@ -2063,3 +2063,65 @@ numbered into Phase 1/2/3.
 
   Also removed: `scripts/build-locations-catalog.js` and
   `data/locations-catalog.json`, superseded by `services/locationsService.js`.
+
+- [x] **50 grouped recruits, random names from the game's own pools, 9 more
+  loadouts — all from the game's type-1 character records.**
+
+  **The source.** A named Kenshi character (Tinfist, Bugmaster, Moll, ...) is a
+  **type-1 record** in gamedata, and it carries far more than a name:
+  `ints['combat stats']`, `ranged stats`, `stealth stats`, `unarmed stats`,
+  `strength`, `armour grade`, plus `extra['race']`, `extra['clothing']`,
+  `extra['weapons']`, `extra['weapon level']` (the grade *company*) and
+  `extra['inventory']`. That is the game's own answer to "what is this character
+  and what do they wear", and it is what this pass was built on:
+
+      Tinfist      Skeleton   combat/stealth/unarmed/strength all 100, no weapon
+      Bugmaster    Human      combat 95, Cross-grade (Meitou) foreign sabre
+      Moll         Sundemon   combat 90, stealth 90, ninja blade
+      Valamon      Shek       combat 80, strength 40
+      Savant       Sundemon   combat 75, strength 35, Meitou nodachi
+      Dust King    Human      combat 45, spiked helmet + heart protector
+      Seto         Shek       combat 35, martial-artist bindings, no blade
+      Crumblejon   Human      combat 30, horse chopper and fragment axe
+
+  It also **corrected races the earlier editorial guesses got wrong**: Green is
+  a Hive Worker Drone, not a human; Shryke, Savant, Moll and Bo are Sundemons;
+  Seto and Ells are Shek. Tiers now follow the `combat stats` column rather than
+  vibes — Tinfist and Bugmaster are Legends because the data says 100 and 95.
+
+  **Recruits: 20 → 50, in ten archetype groups of five** — Soldiers, Duellists,
+  Shadows, Rangers, Medics & scientists, Artisans, Traders, Explorers,
+  Labourers, Outcasts. `validate()` enforces the group sizes (4-5 each), so a
+  group can't quietly decay to one lonely option, and the UI renders the picker
+  as `<optgroup>`s. Every one of the 50 still resolves to at least one real town
+  in this install.
+
+  **Names: `services/names.js`.** Kenshi ships `namesM.txt` (98), `namesF.txt`
+  (37) and `namesMF.txt` (67) in its data directory and draws every generated
+  NPC name from them, so the editor now does too — 202 names, read as latin1
+  like everything else off this install. The "Add member" name field is
+  pre-filled with one (skipping names already in the squad) and there is a
+  re-roll button; typing over it is the override. A missing install means no
+  suggestion, never a blocked add. Exposed as `GET /api/names?count=`.
+
+  **Loadouts: 29 → 37**, the new ones lifted straight off those characters —
+  Abolitionist (Tinfist's dustcoat and repair kits, no weapon), Nightstalker
+  (Moll), Ronin (Savant's police armour and Meitou nodachi), Bandit Lord (Dust
+  King), Dust Runner (Shryke's stormgoggles and polearm), Robed Scholar
+  (Longen), Hungry Bandit (Crumblejon), Shinobi Thief (Bo) — plus Martial Artist
+  corrected to the Martial Artist Bindings and gi pants Seto actually wears. 18
+  distinct body armours and 20 distinct weapons across the catalogue.
+
+  **UI copy.** Every explanatory hint was cut to one line. The worst offender
+  was the Add member panel, which ran to five sentences about cloning, donor
+  counts, discarded flags and which two files get written; it now reads "Cloned
+  from a living character of that race in this save (the number beside each race
+  is how many). Arrives at the squad, healthy and carrying nothing." The
+  reasoning still lives in the source comments and in this file — the UI just
+  says what the control does. Fourteen hints shortened in total.
+
+  Tests: names are deterministic under an injected rng, honour `avoid`, and
+  never return null once a pool exists; recruits validate their groups, group
+  sizes and race hints (a typo'd race hint would silently fall back to the
+  default race rather than erroring, so it is asserted against the six the save
+  can actually match).

@@ -40,7 +40,8 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
 | `services/locationsService.js` | Town world positions, read from the **install's** `.level` placement data (never the save). Disk-cached |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
-| `services/recruits.js` | "Roll a recruit" catalogue — editorial, like `archetypes.js`, not save-derived |
+| `services/recruits.js` | "Roll a recruit" catalogue: 50 entries in 10 archetype groups. Editorial, but races/tiers of the named ones come from the game's type-1 character records |
+| `services/names.js` | Plausible names, read from Kenshi's own `namesM/F/MF.txt` |
 | `services/backupService.js` | Whole-directory versioned backups with hash manifests |
 | `services/mutationService.js` | The write gate: game check, staging, verify, rollback |
 | `routes/api/*.js` | HTTP surface, one file per domain, mounted by `routes/api/index.js` |
@@ -218,7 +219,8 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | PUT | `/api/saves/:name/money` | Set player cats (goes through the mutation gate) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/stats` | Set one or more attributes/skills on a character's STATS record (bulk, one staged edit; `{ stats: { statKey: value } }`) |
 | GET | `/api/archetypes` | "Train as archetype" catalogue (id/label tree of mains and subs), for the UI dropdowns |
-| GET | `/api/recruits` | "Roll a recruit" catalogue (`services/recruits.js`) — name, race preference, archetype/sub, power tier, blurb. Editorial, not derived from game data |
+| GET | `/api/recruits` | "Roll a recruit" catalogue (`services/recruits.js`): 50 entries in 10 archetype groups (soldier, duellist, shadow, ranger, medic, artisan, trader, explorer, labourer, outcast), each with 4-5 options. Carries `group`/`groupLabel`, race hint, archetype/sub, tier, blurb, and `where` resolved against this install's towns |
+| GET | `/api/names` | A pool of plausible names from Kenshi's own `namesM/F/MF.txt` (`?count=`, capped at 200). Used to pre-fill the new-member name field |
 | GET | `/api/saves/:name/races` | `{ races, default }` — the races this save can supply a **living donor** for (`{ sid, name, count, donors }`, most donors first) plus the one the UI should preselect. A new member is cloned from an existing character, so this is what the save contains, never all of gamedata |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/name` | Rename a character: `strings.name` on CHAR_STATE (36) **and** the STATS (25) record's header `name`, which is where the game keeps a named character's name. `{ name }`, ≤ 63 UTF-8 bytes, control characters rejected, encoded through `binary.fromText()` |
 | PUT | `/api/saves/:name/faction/name` | Rename the squad — i.e. the **player faction**, the only squad-level name a save stores. One write to `quick.save` covering GAME_STATE `pfaction name`, every player SQUAD_META (34) `faction name`, and the player FACTION (37) record's header name. Platoon **filenames are deliberately not renamed** (see below) |

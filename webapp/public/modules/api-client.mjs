@@ -39,6 +39,9 @@ export const API = {
   // Editorial "roll a recruit" catalogue (services/recruits.js), in the spirit
   // of the wiki's Unique Recruits page.
   recruits: () => request('GET', '/api/recruits'),
+  // Plausible names from Kenshi's own name files, fetched once to pre-fill the
+  // new-member name field.
+  names: (count = 60) => request('GET', `/api/names?count=${encodeURIComponent(count)}`),
   addSquadMember: (name, file, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters`, body),
   trainCharacter: (name, file, sid, body) => request('POST',
