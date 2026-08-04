@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 const backups = require('../services/backupService');
 const saveService = require('../services/saveService');
 const mutation = require('../services/mutationService');
@@ -22,19 +23,11 @@ const { asText, fromText, byteLength } = require('../services/kenshi/binary');
  * never the live one, and every rejection asserts the save is byte-identical
  * afterwards.
  */
-function scratchSave() {
-  const src = paths.latestSave();
-  if (!src) return null;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-test-'));
-  const dir = path.join(root, src.name);
-  backups.copyDir(src.dir, dir);
-  paths.setOverrides({ backupRoot: path.join(root, 'backups') });
-  return { root, dir };
-}
+const scratchSave = fixture.scratchSave;
 
 /** First player squad file + first character in it, from the live save. */
 function firstPlayerCharacter() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const st = saveService.status(src.name);
   const squad = st.squads.find((q) => q.characters.length);
@@ -70,9 +63,8 @@ test('encodeName round-trips non-ASCII text through latin1 and enforces its limi
 // -------------------------------------------------------- renameCharacter --
 
 test('renameCharacter writes the CHAR_STATE name and the STATS record name', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -100,9 +92,8 @@ test('renameCharacter writes the CHAR_STATE name and the STATS record name', asy
 });
 
 test('renameCharacter rejects an empty, over-long or unchanged name, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -130,9 +121,8 @@ test('renameCharacter rejects an empty, over-long or unchanged name, save byte-i
 // ----------------------------------------------------- renamePlayerFaction --
 
 test('renamePlayerFaction rewrites the game state, every squad record and the faction record', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -175,9 +165,8 @@ test('renamePlayerFaction rewrites the game state, every squad record and the fa
 });
 
 test('renamePlayerFaction rejects an unchanged or invalid name, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -204,8 +193,8 @@ test('renamePlayerFaction rejects an unchanged or invalid name, save byte-identi
 // ---------------------------------------------------------- availableRaces --
 
 test('availableRaces only lists races this save can supply a living donor for', (t) => {
-  const src = paths.latestSave();
-  if (!src) return t.skip('no Kenshi save found');
+  const src = fixture.fixtureSave();
+  if (!src) return t.skip(fixture.NO_FIXTURE);
 
   const races = saveService.availableRaces(src.dir);
   assert.ok(races.length > 0, 'a save with characters in it must offer at least one race');
@@ -254,9 +243,8 @@ function seededRng(seed = 1) {
 }
 
 test('addSquadMember mints a whole character across two files and round-trips', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -351,9 +339,8 @@ test('addSquadMember mints a whole character across two files and round-trips', 
 });
 
 test('addSquadMember rejects a bad name, unknown archetype, unknown tier and unavailable race, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -394,7 +381,7 @@ test('addSquadMember rejects a bad name, unknown archetype, unknown tier and una
 });
 
 test('characterFactory refuses a donor missing any of the six state records', () => {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return;
   assert.throws(
     () => characterFactory.buildStateRecords([], { name: 'Nobody' }),
@@ -426,8 +413,8 @@ test('the personality integers decode to the seven traits the game uses', () => 
 });
 
 test('every personality in the live save is one of the seven', (t) => {
-  const src = paths.latestSave();
-  if (!src) return t.skip('no Kenshi save found');
+  const src = fixture.fixtureSave();
+  if (!src) return t.skip(fixture.NO_FIXTURE);
   const personalities = require('../services/personalities');
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return t.skip('no platoon directory');
@@ -447,9 +434,8 @@ test('every personality in the live save is one of the seven', (t) => {
 });
 
 test('setPersonality writes one int and refuses the values the game never uses', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = firstPlayerCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
 
@@ -489,7 +475,7 @@ test('setPersonality writes one int and refuses the values the game never uses',
 
 test('dialogue is reported from the origin template and is never writable', (t) => {
   const squad = (() => {
-    const src = paths.latestSave();
+    const src = fixture.fixtureSave();
     if (!src) return null;
     return saveService.status(src.name).squads.find((q) => q.characters.length) || null;
   })();
@@ -511,7 +497,7 @@ test('dialogue is reported from the origin template and is never writable', (t) 
   }
   // And confirm the save side really is empty of dialogue, rather than us
   // simply not having looked: no CHAR_STATE string key mentions it.
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   const pdir = path.join(src.dir, 'platoon');
   for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon'))) {
     const parsed = readFile(fs.readFileSync(path.join(pdir, f)));

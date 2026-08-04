@@ -6,8 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 const research = require('../services/researchService');
-const { readFile } = require('../services/kenshi/codec');
+const { readFile, writeFile } = require('../services/kenshi/codec');
 const { asText } = require('../services/kenshi/binary');
 
 /**
@@ -18,9 +19,35 @@ const { asText } = require('../services/kenshi/binary');
  * even while Kenshi is open, and they never touch a save on disk.
  */
 const hasInstall = !!paths.installDir();
-const save = paths.latestSave();
+const save = fixture.fixtureSave();
 
 const parseSave = (dir) => readFile(fs.readFileSync(path.join(dir, 'quick.save')));
+
+/**
+ * A scratch save with an EMPTY research ledger — i.e. a brand-new game.
+ *
+ * Several of these tests need a tech that is genuinely unresearched, and they
+ * used to go hunting for a save that happened to be fresh
+ * (`counts.done <= 1`). That worked exactly until the player kept playing: the
+ * save they were relying on became a 193-tech save mid-session and the tests
+ * silently started skipping. Building the state the test needs is the fix —
+ * the assertion no longer depends on how far along anyone's game is.
+ *
+ * Clearing the ledger is the same edit unlock() makes, in reverse: drop the
+ * `finished<N>` keys and zero the count. Everything else in the record, and
+ * every other record in the file, is left exactly as it was.
+ */
+function freshSave() {
+  const scratch = fixture.scratchSave();
+  if (!scratch) return null;
+  const quick = path.join(scratch.dir, 'quick.save');
+  const world = readFile(fs.readFileSync(quick));
+  const rec = research.ledgerRecord(world);
+  for (const key of [...rec.strings.keys()]) rec.strings.delete(key);
+  rec.floats.set('num finished', 0);
+  fs.writeFileSync(quick, writeFile(world));
+  return scratch;
+}
 
 test('the tech tree resolves in the game\'s own mod load order', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
@@ -53,7 +80,7 @@ test('the tech tree resolves in the game\'s own mod load order', (t) => {
 });
 
 test('FCS boilerplate is classified but kept out of the tree', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   // RESEARCH_TEMPLATE is the blank an FCS user copies to make a new tech: no
   // description, no cost, nothing to unlock, and a literal sid instead of the
   // `<id>-<file>` shape every authored record has. The game marks it finished
@@ -71,7 +98,7 @@ test('FCS boilerplate is classified but kept out of the tree', (t) => {
 });
 
 test('THE INVARIANT: a resolved tech can hold every level the save recorded for it', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   // This is what proves load-order resolution is right rather than merely
   // plausible. `repeats` is the number of levels a tech has; the ledger records
   // levels the player actually researched. If resolution picked the wrong
@@ -87,8 +114,12 @@ test('THE INVARIANT: a resolved tech can hold every level the save recorded for 
 });
 
 test('every ledger entry classifies — nothing is silently ignored', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
-  for (const s of paths.listSaves()) {
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
+  // The fixture is the subject; the player's live saves are swept too because
+  // this asserts nothing about their CONTENTS, only that every row classifies —
+  // and reading them is how format drift gets caught early (the same reason
+  // codec.test.js round-trips them). Nothing here writes.
+  for (const s of [save, ...paths.listSaves()]) {
     const st = research.statusFor(s.dir);
     assert.strictEqual(st.counts.unknown, 0,
       `${s.name} has ${st.counts.unknown} unrecognised ledger entries`);
@@ -106,7 +137,7 @@ test('every ledger entry classifies — nothing is silently ignored', (t) => {
 });
 
 test('a `.N` suffix only ever means a repeat level', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const known = new Map(research.catalogue().map((x) => [x.sid, x]));
   const rec = research.ledgerRecord(parseSave(save.dir));
   let levelled = 0;
@@ -123,7 +154,7 @@ test('a `.N` suffix only ever means a repeat level', (t) => {
 });
 
 test('a `.TECH.N` entry is an item blueprint, never a tech', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const known = new Map(research.catalogue().map((x) => [x.sid, x]));
   const rec = research.ledgerRecord(parseSave(save.dir));
   let blueprints = 0;
@@ -137,7 +168,7 @@ test('a `.TECH.N` entry is an item blueprint, never a tech', (t) => {
 });
 
 test('unlock() appends without disturbing a single existing entry', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const before = research.statusFor(save.dir);
   const target = before.techs.find((x) => !x.done);
   if (!target) return t.skip('this save has finished everything');
@@ -175,15 +206,15 @@ test('unlock() appends without disturbing a single existing entry', (t) => {
 });
 
 test('unlocking a repeating tech writes the bare sid plus every level below', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const tech = research.catalogue().find((x) => x.repeats >= 3);
   if (!tech) return t.skip('no repeating tech in this install');
   const st = research.statusFor(save.dir);
   const live = st.techs.find((x) => x.sid === tech.sid);
   if (live.maxed) {
-    // Already maxed here, so prove the shape on the fresh save instead.
-    const fresh = paths.listSaves().find((s) => research.statusFor(s.dir).counts.done <= 1);
-    if (!fresh) return t.skip('no save with this tech unresearched');
+    // Already maxed in the fixture, so prove the shape on a fresh ledger.
+    const fresh = freshSave();
+    if (!fresh) return t.skip(fixture.NO_FIXTURE);
     const res = research.unlock(fresh.dir, { sids: [tech.sid], withRequirements: false });
     const got = res.added.map((a) => a.entry).sort();
     const want = [tech.sid, ...Array.from({ length: tech.repeats - 1 }, (_, i) => `${tech.sid}.${i + 2}`)].sort();
@@ -195,10 +226,10 @@ test('unlocking a repeating tech writes the bare sid plus every level below', (t
 });
 
 test('`levels` caps a repeating tech, and out-of-range is rejected', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
-  const fresh = paths.listSaves().find((s) => research.statusFor(s.dir).counts.done <= 1);
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const tech = research.catalogue().find((x) => x.repeats >= 3 && !x.requirements.length);
-  if (!fresh || !tech) return t.skip('needs a fresh save and an unconditioned repeating tech');
+  const fresh = tech ? freshSave() : null;
+  if (!fresh || !tech) return t.skip('needs a fixture and an unconditioned repeating tech');
 
   const res = research.unlock(fresh.dir, { sids: [tech.sid], levels: { [tech.sid]: 2 }, withRequirements: false });
   assert.deepStrictEqual(res.added.map((a) => a.entry), [tech.sid, `${tech.sid}.2`]);
@@ -210,9 +241,9 @@ test('`levels` caps a repeating tech, and out-of-range is rejected', (t) => {
 
 test('withRequirements pulls in unfinished prerequisites, and off leaves them', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
-  const fresh = paths.listSaves().find((s) => research.statusFor(s.dir).counts.done <= 1);
   const tech = research.catalogue().find((x) => x.requirements.length && x.repeats === 0);
-  if (!fresh || !tech) return t.skip('needs a fresh save and a tech with requirements');
+  const fresh = tech ? freshSave() : null;
+  if (!fresh || !tech) return t.skip('needs a fixture and a tech with requirements');
 
   const withReqs = research.unlock(fresh.dir, { sids: [tech.sid], withRequirements: true });
   const without = research.unlock(fresh.dir, { sids: [tech.sid], withRequirements: false });
@@ -228,7 +259,7 @@ test('withRequirements pulls in unfinished prerequisites, and off leaves them', 
 });
 
 test('unlock() rejects rather than writing a no-op or a bad sid', (t) => {
-  if (!hasInstall || !save) return t.skip('no install or save');
+  if (!hasInstall || !save) return t.skip(fixture.NO_FIXTURE);
   const st = research.statusFor(save.dir);
   const maxed = st.techs.find((x) => x.maxed);
   assert.throws(() => research.unlock(save.dir, { sids: [] }), /no research techs given/);
@@ -237,7 +268,7 @@ test('unlock() rejects rather than writing a no-op or a bad sid', (t) => {
 });
 
 test('the ledger is the only research state in the save', (t) => {
-  if (!save) return t.skip('no save found');
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   // If some other record also tracked research, unlocking would be half a fix.
   // Nothing else in quick.save mentions it — this is what makes a one-record
   // edit the complete operation.

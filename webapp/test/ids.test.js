@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { readFile, writeFile } = require('../services/kenshi/codec');
 const { nextRecordId, mintSid, addRecord, addInstance } = require('../services/kenshi/ids');
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -32,8 +33,8 @@ function roundTrip(t, file) {
 // (a) Regression guard: the codec change (patching header.nextId on write)
 // must not perturb the no-op path — parse, write straight back, byte-identical.
 test('writeFile() no-op path is still byte-identical after the nextId patch (platoon)', (t) => {
-  const save = paths.latestSave();
-  if (!save) return t.skip('no Kenshi save found');
+  const save = fixture.fixtureSave();
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   const dir = path.join(save.dir, 'platoon');
   if (!fs.existsSync(dir)) return t.skip('no platoon dir');
   const files = fs.readdirSync(dir).filter((n) => n.endsWith('.platoon'));
@@ -45,8 +46,8 @@ test('writeFile() no-op path is still byte-identical after the nextId patch (pla
 });
 
 test('writeFile() no-op path is still byte-identical after the nextId patch (quick.save)', (t) => {
-  const save = paths.latestSave();
-  if (!save) return t.skip('no Kenshi save found');
+  const save = fixture.fixtureSave();
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   roundTrip(t, path.join(save.dir, 'quick.save'));
 });
 
@@ -74,8 +75,8 @@ function makeRecord({ type = 42, name = '0', modDataType = 0 } = {}) {
 // (b) addRecord: count +1, round-trips identically (sections + key order),
 // nextId increased, new id collides with nothing pre-existing.
 test('addRecord mints a record that round-trips and does not collide', (t) => {
-  const save = paths.latestSave();
-  if (!save) return t.skip('no Kenshi save found');
+  const save = fixture.fixtureSave();
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   const dir = path.join(save.dir, 'platoon');
   if (!fs.existsSync(dir)) return t.skip('no platoon dir');
   const files = fs.readdirSync(dir).filter((n) => n.endsWith('.platoon'));
@@ -122,8 +123,8 @@ test('addRecord mints a record that round-trips and does not collide', (t) => {
 });
 
 test('addRecord rejects a malformed record before appending', (t) => {
-  const save = paths.latestSave();
-  if (!save) return t.skip('no Kenshi save found');
+  const save = fixture.fixtureSave();
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   const dir = path.join(save.dir, 'platoon');
   if (!fs.existsSync(dir)) return t.skip('no platoon dir');
   const files = fs.readdirSync(dir).filter((n) => n.endsWith('.platoon'));
@@ -149,8 +150,8 @@ test('addRecord rejects a malformed record before appending', (t) => {
 // (c) addInstance: bumps instances.length and instanceCount together,
 // survives write/re-parse, ordinal id does not collide.
 test('addInstance bumps instanceCount in lockstep and survives round trip', (t) => {
-  const save = paths.latestSave();
-  if (!save) return t.skip('no Kenshi save found');
+  const save = fixture.fixtureSave();
+  if (!save) return t.skip(fixture.NO_FIXTURE);
   const dir = path.join(save.dir, 'platoon');
   if (!fs.existsSync(dir)) return t.skip('no platoon dir');
   const files = fs.readdirSync(dir).filter((n) => n.endsWith('.platoon'));

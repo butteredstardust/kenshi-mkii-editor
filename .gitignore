@@ -4,6 +4,10 @@ webapp/config/settings.json
 .temp/
 *.log
 
+# The test fixture: a full snapshot of one of the player's saves (~39 MB), made
+# by `npm run fixture:create`. The suite reads this instead of the live save.
+webapp/.fixtures/
+
 # Never commit save data or game data
 *.save
 *.platoon

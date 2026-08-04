@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 const backups = require('../services/backupService');
 const saveService = require('../services/saveService');
 const mutation = require('../services/mutationService');
@@ -16,24 +17,85 @@ const { readFile, writeFile } = require('../services/kenshi/codec');
 const { asText } = require('../services/kenshi/binary');
 
 /**
- * The write pipeline is exercised against a COPY of a real save in a temp
- * directory — never the live one. Backup root is redirected for the same
- * reason.
+ * The write pipeline is exercised against a COPY of the test fixture in a temp
+ * directory — never the player's live save, and never the fixture itself.
+ * Backup root is redirected for the same reason.
  */
-function scratchSave() {
-  const src = paths.latestSave();
-  if (!src) return null;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-test-'));
-  const dir = path.join(root, src.name);
-  backups.copyDir(src.dir, dir);
-  paths.setOverrides({ backupRoot: path.join(root, 'backups') });
-  return { root, dir };
-}
+const scratchSave = fixture.scratchSave;
+
+// ------------------------------------------------------- the gate's scope --
+
+test('the game-running gate protects live saves, and only live saves', (t) => {
+  const root = paths.saveRoot();
+  if (!root) return t.skip('no Kenshi save root on this machine');
+
+  // Anything under the real save root is live and stays gated, whatever else
+  // is true. This is the half that must never regress: relaxing the gate is
+  // only safe because it cannot possibly apply to a save Kenshi owns.
+  assert.strictEqual(mutation.isLiveSaveDir(root), true);
+  assert.strictEqual(mutation.isLiveSaveDir(path.join(root, 'autosave1')), true);
+  assert.strictEqual(mutation.isLiveSaveDir(path.join(root, 'a', 'b')), true);
+  for (const live of paths.listSaves()) {
+    assert.strictEqual(mutation.isLiveSaveDir(live.dir), true, `${live.dir} must be gated`);
+  }
+
+  // The fixture and the temp copies made from it are not saves the game knows
+  // about, so they are not gated — which is what lets the write suite run while
+  // the player is playing.
+  assert.strictEqual(mutation.isLiveSaveDir(fixture.fixtureRoot()), false);
+  assert.strictEqual(mutation.isLiveSaveDir(os.tmpdir()), false);
+
+  // A path that merely LOOKS like the save root from outside is not inside it.
+  assert.strictEqual(mutation.isLiveSaveDir(`${root}-elsewhere`), false);
+  assert.strictEqual(mutation.isLiveSaveDir(path.join(root, '..', 'somewhere-else')), false);
+  return undefined;
+});
+
+test('the fixture lives outside the Kenshi save root', (t) => {
+  // If the fixture were ever created inside the save root, every write test
+  // would be aimed at something Kenshi owns.
+  const f = fixture.fixtureSave();
+  if (!f) return t.skip(fixture.NO_FIXTURE);
+  assert.strictEqual(mutation.isLiveSaveDir(f.dir), false, `fixture is inside the live save root: ${f.dir}`);
+  return undefined;
+});
+
+test('a mutation touches only the files it reports, leaving the rest byte-identical', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  try {
+    const before = backups.hashDir(scratch.dir);
+    const receipt = await mutation.mutate(scratch.dir, 'test: scope of a write',
+      (staging) => saveService.setPlayerMoney(staging, 4242));
+    const after = backups.hashDir(scratch.dir);
+
+    assert.deepStrictEqual(receipt.changedFiles, ['quick.save']);
+    const actuallyChanged = Object.keys(after).filter((k) => after[k] !== before[k]);
+    assert.deepStrictEqual(actuallyChanged, ['quick.save'],
+      'a write altered files it did not report');
+    assert.deepStrictEqual(Object.keys(after).sort(), Object.keys(before).sort(),
+      'a write added or removed files in the save directory');
+
+    // With a full fixture the check above covers the 210 zone/ files as well —
+    // the reason `make-fixture.js` keeps them by default. A `--slim` fixture
+    // still proves the property, just over fewer files, so this only asserts
+    // the coverage it was actually given.
+    const untouched = Object.keys(before).filter((k) => k !== 'quick.save');
+    const info = fixture.fixtureInfo() || {};
+    assert.ok(untouched.length > 0, 'nothing else in the save to prove was left alone');
+    if (!info.slim) {
+      assert.ok(untouched.length > 100,
+        `a full fixture should have hundreds of other files, saw ${untouched.length}`);
+    }
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+  }
+  return undefined;
+});
 
 test('setPlayerMoney writes, verifies and reports a receipt', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const receipt = await mutation.mutate(scratch.dir, 'test: set money',
@@ -48,7 +110,7 @@ test('setPlayerMoney writes, verifies and reports a receipt', async (t) => {
     assert.strictEqual(gs.ints.get('player money'), 12345);
 
     // The edit must change exactly one field: same record count, same order.
-    const original = readFile(fs.readFileSync(path.join(paths.latestSave().dir, 'quick.save')));
+    const original = readFile(fs.readFileSync(path.join(fixture.fixtureSave().dir, 'quick.save')));
     assert.strictEqual(after.records.length, original.records.length);
   } finally {
     fs.rmSync(scratch.root, { recursive: true, force: true });
@@ -58,7 +120,7 @@ test('setPlayerMoney writes, verifies and reports a receipt', async (t) => {
 
 /** Find a platoon file + character sid that has a STATS record, from a live save. */
 function findStatsCharacter() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return null;
@@ -71,9 +133,8 @@ function findStatsCharacter() {
 }
 
 test('setStats sets a single stat and round-trips', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -99,9 +160,8 @@ test('setStats sets a single stat and round-trips', async (t) => {
 });
 
 test('setStats rejects out-of-range and unknown stat keys without touching the save', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -133,7 +193,7 @@ test('setStats rejects out-of-range and unknown stat keys without touching the s
 
 test('resolveCharacter rejects a platoon file name that escapes the save directory', (t) => {
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     // `:file` is percent-decoded by Express, so these are all reachable from a
@@ -153,9 +213,8 @@ test('resolveCharacter rejects a platoon file name that escapes the save directo
 });
 
 test('setStats bulk form sets 3+ stats in one call and preserves key order', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -185,9 +244,8 @@ test('setStats bulk form sets 3+ stats in one call and preserves key order', asy
 });
 
 test('setStats allows a negative skill value but still rejects a negative attribute', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -235,7 +293,7 @@ test('setStats allows a negative skill value but still rejects a negative attrib
 
 /** Find a platoon file + character sid that has a MEDICAL record with at least one body part. */
 function findMedicalCharacter() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return null;
@@ -251,16 +309,15 @@ function findMedicalCharacter() {
  * negative flesh in Cannibals_1.platoon — check there first for the
  * dead/coma/limbs fixtures the revive and restore-limbs tests need. */
 function findCannibalsFile() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const p = path.join(src.dir, 'platoon', 'Cannibals_1.platoon');
   return fs.existsSync(p) ? p : null;
 }
 
 test('healPart sets flesh<n> and zeroes bandage/stun, leaving sid<n>/hit<n> untouched', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -294,9 +351,8 @@ test('healPart sets flesh<n> and zeroes bandage/stun, leaving sid<n>/hit<n> unto
 });
 
 test('healPart "full" sets flesh to the max of the character\'s own parts, never hit<n>', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -329,9 +385,8 @@ test('healPart "full" sets flesh to the max of the character\'s own parts, never
 });
 
 test('damagePart allows a negative flesh value (documented limb-loss mechanic) and round-trips', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -363,9 +418,8 @@ test('damagePart allows a negative flesh value (documented limb-loss mechanic) a
 });
 
 test('setHunger sets hung and fed independently, in both directions', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -393,9 +447,8 @@ test('setHunger sets hung and fed independently, in both directions', async (t) 
 });
 
 test('revive clears flags and raises lethal flesh in one combined mutation', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   const cannibalsPath = findCannibalsFile();
   let target = null;
@@ -456,9 +509,8 @@ test('revive clears flags and raises lethal flesh in one combined mutation', asy
 });
 
 test('revive refuses a character with no intact part rather than half-reviving it', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -490,9 +542,8 @@ test('revive refuses a character with no intact part rather than half-reviving i
 });
 
 test('restoreLimbs deletes ints.limbs, preserving remaining key order', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   const cannibalsPath = findCannibalsFile();
   let target = null;
@@ -536,9 +587,8 @@ test('restoreLimbs deletes ints.limbs, preserving remaining key order', async (t
 });
 
 test('restoreLimbs is rejected as a no-op when the character has no limbs key', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findMedicalCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a MEDICAL record found'); }
 
@@ -558,9 +608,8 @@ test('restoreLimbs is rejected as a no-op when the character has no limbs key', 
 });
 
 test('trainCharacter sets attributes to 45 and rolls archetype/other skills into their bands', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -609,9 +658,8 @@ test('trainCharacter sets attributes to 45 and rolls archetype/other skills into
 });
 
 test('trainCharacter mode "raise" never lowers an existing stat', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -640,9 +688,8 @@ test('trainCharacter mode "raise" never lowers an existing stat', async (t) => {
 });
 
 test('trainCharacter rejects an unknown archetype/sub id and leaves the save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findStatsCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with a STATS record found'); }
 
@@ -671,7 +718,7 @@ test('trainCharacter rejects an unknown archetype/sub id and leaves the save byt
 
 /** Find a platoon file + character sid with 2+ ITEM (type 42) records in inventory. */
 function findGearCharacter() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return null;
@@ -691,7 +738,7 @@ function findGearCharacter() {
  * tests below (TODO.md 2.1).
  */
 function findItemOfType(desiredType, sectionEquals) {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return null;
@@ -710,9 +757,8 @@ function findItemOfType(desiredType, sectionEquals) {
 }
 
 test('setItemSection rejects a weapon moving into shirt, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findItemOfType(2);
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon-type (typecode 2) item found in this save'); }
 
@@ -731,9 +777,8 @@ test('setItemSection rejects a weapon moving into shirt, save byte-identical', a
 });
 
 test('setItemSection rejects armour moving into hip, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findItemOfType(3);
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no armour-type (typecode 3) item found in this save'); }
 
@@ -752,9 +797,8 @@ test('setItemSection rejects armour moving into hip, save byte-identical', async
 });
 
 test('setItemSection allows a shirt-compatible item to move from main and from backpack_content into shirt', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   // An item currently equipped in `shirt` is, by construction, allowed into
   // `shirt` — this is the case TODO.md 2.1 explicitly calls out as "must keep
   // working": a shirt sitting in inventory or a backpack must still be
@@ -783,9 +827,8 @@ test('setItemSection allows a shirt-compatible item to move from main and from b
 });
 
 test('setItemSection permits an item of unresolved kind into any documented slot (permissive fallback)', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -832,9 +875,8 @@ test('itemSlots.allowedSections always includes the item\'s own current section'
 });
 
 test('setItemSection moves an item into an empty slot, changing only that item', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -889,9 +931,8 @@ test('setItemSection moves an item into an empty slot, changing only that item',
 });
 
 test('setItemSection swaps into an occupied slot and flips the previous occupant back to main', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -960,9 +1001,8 @@ test('setItemSection swaps into an occupied slot and flips the previous occupant
 });
 
 test('setItemSection rejects an invalid slot string and leaves the save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -984,9 +1024,8 @@ test('setItemSection rejects an invalid slot string and leaves the save byte-ide
 });
 
 test('setItemQuality sets level and quality on an item independently', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -1018,9 +1057,8 @@ test('setItemQuality sets level and quality on an item independently', async (t)
 });
 
 test('setItemSection rejects an item that does not belong to the given character', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -1056,9 +1094,8 @@ function findAddableTemplate(type, section, { stackable } = {}) {
 }
 
 test('addItem adds a new item to a character\'s inventory and round-trips', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const tmpl = findAddableTemplate(4, 'main');
@@ -1124,9 +1161,8 @@ test('addItem adds a new item to a character\'s inventory and round-trips', asyn
 });
 
 test('addItem allows quantity > 1 on a stackable template and rejects it on a non-stackable one', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const stackableTmpl = findAddableTemplate(4, 'main', { stackable: true });
@@ -1153,9 +1189,8 @@ test('addItem allows quantity > 1 on a stackable template and rejects it on a no
 });
 
 test('addItem rejects an unresolvable template sid, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
 
@@ -1174,9 +1209,8 @@ test('addItem rejects an unresolvable template sid, save byte-identical', async 
 });
 
 test('addItem rejects a template of the wrong typecode (not 2/3/4), save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const grades = gamedata.weaponGrades();
@@ -1203,9 +1237,8 @@ test('addItem rejects a template of the wrong typecode (not 2/3/4), save byte-id
 // grade ("Totally rusted junk") instead of the one asked for, and the save
 // would look successfully written. Regression guard for exactly that.
 test('addItem rejects an unknown option instead of silently ignoring it', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const weaponTmpl = findAddableTemplate(2, 'hip') || findAddableTemplate(2, 'back');
@@ -1227,9 +1260,8 @@ test('addItem rejects an unknown option instead of silently ignoring it', async 
 });
 
 test('addItem rejects a section incompatible with the item\'s kind, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const weaponTmpl = findAddableTemplate(2, 'hip') || findAddableTemplate(2, 'back');
@@ -1250,9 +1282,8 @@ test('addItem rejects a section incompatible with the item\'s kind, save byte-id
 });
 
 test('addItem rejects quantity 0, negative and non-integer, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const tmpl = findAddableTemplate(4, 'main');
@@ -1276,9 +1307,8 @@ test('addItem rejects quantity 0, negative and non-integer, save byte-identical'
 });
 
 test('addItem into an occupied single-occupancy slot displaces the prior occupant to main', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const target = findGearCharacter();
   if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ inventory items found'); }
   const tmpl = findAddableTemplate(3, 'head');
@@ -1313,9 +1343,8 @@ test('addItem into an occupied single-occupancy slot displaces the prior occupan
 });
 
 test('a rejected edit leaves the save untouched', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const before = backups.hashDir(scratch.dir);
@@ -1339,9 +1368,8 @@ test('a rejected edit leaves the save untouched', async (t) => {
 // page showed it as read-only text and "quantity didn't work".
 
 test('updateItem sets quantity on a stackable item', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(4); // trade goods: the stackable typecode
   if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
 
@@ -1359,9 +1387,8 @@ test('updateItem sets quantity on a stackable item', async (t) => {
 });
 
 test('updateItem rejects quantity > 1 on a non-stackable item, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(2) || findItemOfType(3); // weapons/armour never stack
   if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon/armour item found'); }
 
@@ -1380,9 +1407,8 @@ test('updateItem rejects quantity > 1 on a non-stackable item, save byte-identic
 });
 
 test('updateItem rejects quantity 0, negative and non-integer, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(4);
   if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
 
@@ -1405,9 +1431,8 @@ test('updateItem rejects quantity 0, negative and non-integer, save byte-identic
 // The reason updateItem exists rather than the UI firing two requests: one
 // mutation-gate pass, one backup, and no intermediate state on disk.
 test('updateItem applies slot, level and quantity together in ONE staged edit', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(4);
   if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
 
@@ -1432,9 +1457,8 @@ test('updateItem applies slot, level and quantity together in ONE staged edit', 
 });
 
 test('updateItem rejects an unknown field and an empty patch, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(4);
   if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no trade-goods item found'); }
 
@@ -1461,9 +1485,8 @@ test('updateItem rejects an unknown field and an empty patch, save byte-identica
 // one is the asymmetry that made the Gear page confusing. Grade is the
 // (company sid, material sid) pair, and the two must move together.
 test('updateItem re-grades a weapon, writing material and company sid together', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const found = findItemOfType(2);
   const grades = gamedata.weaponGrades();
   if (!found || !grades.length) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon item or no grade ladder'); }
@@ -1484,9 +1507,8 @@ test('updateItem re-grades a weapon, writing material and company sid together',
 });
 
 test('updateItem rejects a grade on a non-weapon and an unknown grade sid, save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
   const armour = findItemOfType(3);
   const weapon = findItemOfType(2);
   if (!armour || !weapon) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('need one armour and one weapon item'); }

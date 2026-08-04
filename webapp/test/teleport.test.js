@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 const backups = require('../services/backupService');
 const saveService = require('../services/saveService');
 const mutation = require('../services/mutationService');
@@ -14,18 +15,10 @@ const locations = require('../services/locationsService');
 const recruits = require('../services/recruits');
 const { readFile } = require('../services/kenshi/codec');
 
-function scratchSave() {
-  const src = paths.latestSave();
-  if (!src) return null;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-test-'));
-  const dir = path.join(root, src.name);
-  backups.copyDir(src.dir, dir);
-  paths.setOverrides({ backupRoot: path.join(root, 'backups') });
-  return { root, dir };
-}
+const scratchSave = fixture.scratchSave;
 
 function playerSquad() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const st = saveService.status(src.name);
   return st.squads.find((q) => q.characters.length) || null;
@@ -69,7 +62,7 @@ test('the location catalogue only carries real world positions', (t) => {
 });
 
 test('catalogued town positions agree with where the save says those towns are', (t) => {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src || !locations.all().length) return t.skip('no save or no install');
 
   // Ground truth: NPC squads that name a town as their `basetown`. Their
@@ -127,12 +120,11 @@ test('recruit locations resolve against the towns this install actually has', ()
 // -------------------------------------------------------------- teleport --
 
 test('teleportSquad moves every character and the squad marker together', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   const dest = locations.all()[0];
   if (!squad || !dest) return t.skip('no player squad or no locations');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const relFile = path.join('platoon', squad.file);
@@ -172,12 +164,11 @@ test('teleportSquad moves every character and the squad marker together', async 
 });
 
 test('teleportSquad can move part of a squad, and rejects bad input byte-identically', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   const dest = locations.all()[0];
   if (!squad || squad.characters.length < 2 || !dest) return t.skip('need a squad of 2+ and a location');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const one = squad.characters[0];
@@ -221,8 +212,8 @@ test('teleportSquad can move part of a squad, and rejects bad input byte-identic
 // ------------------------------------------------------- backpack contents --
 
 test('a worn backpack reports the contents of its own inventory record', (t) => {
-  const src = paths.latestSave();
-  if (!src) return t.skip('no Kenshi save found');
+  const src = fixture.fixtureSave();
+  if (!src) return t.skip(fixture.NO_FIXTURE);
   const pdir = path.join(src.dir, 'platoon');
   if (!fs.existsSync(pdir)) return t.skip('no platoon directory');
 

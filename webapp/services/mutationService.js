@@ -6,6 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const backups = require('./backupService');
+const paths = require('./pathService');
 const { readFile } = require('./kenshi/codec');
 
 /**
@@ -33,6 +34,33 @@ function gameIsRunning() {
     // If we cannot tell, assume the worst rather than risk a corrupt save.
     return true;
   }
+}
+
+/**
+ * Is this directory one Kenshi itself owns?
+ *
+ * The game-running check exists for exactly one reason: Kenshi holds the world
+ * in memory and rewrites its own save directory on save, so editing a file it
+ * owns while it runs is discarded at best and interleaved at worst. That
+ * reasoning applies to the save root and to nothing else. A copy in a temp
+ * directory or in `webapp/.fixtures/` is not a save the game knows about, will
+ * ever write to, or could conflict over.
+ *
+ * So the gate asks "is this a live save?" rather than "is the game running?",
+ * which lets the write tests actually run while the player is playing — the
+ * whole suite used to skip 56 tests the moment Kenshi was open, which is
+ * precisely when someone is most likely to be editing.
+ *
+ * Note the direction of the failure: if the save root cannot be determined at
+ * all, this returns TRUE and the write is gated. Unknown means treat it as
+ * live. The check can never *permit* a write to a real save — it can only
+ * decline to gate a directory it has positively established lives elsewhere.
+ */
+function isLiveSaveDir(dir) {
+  const root = paths.saveRoot();
+  if (!root) return true; // cannot prove it is safe, so assume it is not
+  const rel = path.relative(path.resolve(root), path.resolve(dir));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /**
@@ -65,7 +93,8 @@ async function mutate(saveDir, label, action) {
     err.status = 404;
     throw err;
   }
-  if (gameIsRunning()) {
+  const live = isLiveSaveDir(saveDir);
+  if (live && gameIsRunning()) {
     const err = new Error('Kenshi is running — close the game before editing a save');
     err.status = 409;
     throw err;
@@ -94,7 +123,7 @@ async function mutate(saveDir, label, action) {
     if (changed.length === 0) throw new Error('edit produced no change');
 
     // Re-check the two preconditions that could have gone stale while we worked.
-    if (gameIsRunning()) throw new Error('Kenshi started during the edit — aborted, live save untouched');
+    if (live && gameIsRunning()) throw new Error('Kenshi started during the edit — aborted, live save untouched');
     const stillLive = backups.hashDir(saveDir);
     for (const [rel, hash] of Object.entries(before)) {
       if (stillLive[rel] !== hash) throw new Error(`live save changed underneath us (${rel}) — aborted`);
@@ -134,4 +163,4 @@ async function mutate(saveDir, label, action) {
 
 function state() { return { active }; }
 
-module.exports = { mutate, gameIsRunning, verifyParses, state };
+module.exports = { mutate, gameIsRunning, isLiveSaveDir, verifyParses, state };

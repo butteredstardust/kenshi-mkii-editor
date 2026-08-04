@@ -11,7 +11,8 @@
     "start": "node server.js",
     "test": "node --test \"test/*.test.js\"",
     "gamedata:rebuild": "node -e \"console.log(require('./services/gamedataService').rebuild().size, 'stringIDs indexed')\"",
-    "status": "node scripts/status.js"
+    "status": "node scripts/status.js",
+    "fixture:create": "node scripts/make-fixture.js"
   },
   "dependencies": {
     "express": "^4.21.2"

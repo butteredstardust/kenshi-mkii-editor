@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const paths = require('../services/pathService');
+const fixture = require('./helpers/save-fixture');
 const backups = require('../services/backupService');
 const saveService = require('../services/saveService');
 const mutation = require('../services/mutationService');
@@ -24,19 +25,11 @@ const { asText } = require('../services/kenshi/binary');
  * never the live one, and every rejection asserts the save is byte-identical
  * afterwards.
  */
-function scratchSave() {
-  const src = paths.latestSave();
-  if (!src) return null;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-test-'));
-  const dir = path.join(root, src.name);
-  backups.copyDir(src.dir, dir);
-  paths.setOverrides({ backupRoot: path.join(root, 'backups') });
-  return { root, dir };
-}
+const scratchSave = fixture.scratchSave;
 
 /** The player squad's file plus its characters, from the live save. */
 function playerSquad() {
-  const src = paths.latestSave();
+  const src = fixture.fixtureSave();
   if (!src) return null;
   const st = saveService.status(src.name);
   const squad = st.squads.find((q) => q.characters.length);
@@ -207,11 +200,10 @@ test('fitCheck warns only about parts a character actually lacks', () => {
 // ------------------------------------------------------------- equipMany --
 
 test('equipMany gives every target every item in ONE staged edit', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   if (!squad || squad.characters.length < 2) return t.skip('need a player squad of at least 2');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const relFile = path.join('platoon', squad.file);
@@ -277,11 +269,10 @@ function readCharacter(dir, platoonFile, sid) {
 }
 
 test('equipMany displaces a prior occupant, and skipIfSlotFilled leaves it alone instead', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   if (!squad) return t.skip('no player squad');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const target = { file: squad.file, sid: squad.characters[0].sid };
@@ -318,7 +309,6 @@ test('equipMany displaces a prior occupant, and skipIfSlotFilled leaves it alone
 });
 
 test('equipMany warns about a bad race fit but never refuses on it', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   if (!squad) return t.skip('no player squad');
   // Someone whose body plan genuinely lacks a part the samurai set covers.
@@ -332,7 +322,7 @@ test('equipMany warns about a bad race fit but never refuses on it', async (t) =
   });
   if (!odd) return t.skip('no character in this save has a mismatched body plan');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const receipt = await mutation.mutate(scratch.dir, 'test: warn not refuse',
@@ -358,11 +348,10 @@ test('equipMany warns about a bad race fit but never refuses on it', async (t) =
 });
 
 test('equipMany rejects a bad request and leaves the save byte-identical', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   if (!squad) return t.skip('no player squad');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const targets = [{ file: squad.file, sid: squad.characters[0].sid }];
@@ -413,14 +402,13 @@ test('a character read carries its race, so nothing has to re-scan the save for 
 });
 
 test('a weapon minted with a gradeId carries that exact company/material pair', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
   const squad = playerSquad();
   if (!squad) return t.skip('no player squad');
   const weapons = loadouts.find('player-weapons');
   const grade = gamedata.weaponGrades().find((g) => g.id === weapons.items[0].gradeId);
   if (!grade) return t.skip('this install has no such grade');
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     await mutation.mutate(scratch.dir, 'test: graded weapon',
@@ -444,9 +432,8 @@ test('a weapon minted with a gradeId carries that exact company/material pair', 
 });
 
 test('equipMany spans platoon files, writing each one once', async (t) => {
-  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
-  const src = paths.latestSave();
-  if (!src) return t.skip('no Kenshi save found');
+  const src = fixture.fixtureSave();
+  if (!src) return t.skip(fixture.NO_FIXTURE);
 
   // Any two platoon files, not just the PLAYER's — equipMany targets are
   // (file, sid) pairs and it does not care whose squad they are. A save with
@@ -464,7 +451,7 @@ test('equipMany spans platoon files, writing each one once', async (t) => {
   if (candidates.length < 2) return t.skip('need two platoon files with characters');
 
   const scratch = scratchSave();
-  if (!scratch) return t.skip('no Kenshi save found');
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
   try {
     const targets = candidates;
@@ -518,8 +505,8 @@ test('robotic limbs (typecode 111) are offered and mint the live shape', (t) => 
 });
 
 test('every typecode that backs a live item is offered by the picker', (t) => {
-  const src = paths.latestSave();
-  if (!src) return t.skip('no Kenshi save found');
+  const src = fixture.fixtureSave();
+  if (!src) return t.skip(fixture.NO_FIXTURE);
 
   // The question the picker must answer: which gamedata typecodes actually
   // appear as the `base data sid` of a live ITEM record? Sweeping the WHOLE
