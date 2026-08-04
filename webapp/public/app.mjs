@@ -661,6 +661,30 @@ function gearCard(c, file) {
  * route is 48 backups and 47 intermediate states nobody asked for. One request,
  * one edit, one receipt.
  */
+// Loadouts grouped by their leading tag. 29 kits in one flat <select> is a
+// wall; grouped by role it reads as a menu. Order is deliberate — heaviest
+// first, oddments last — and anything untagged still appears, under "Other".
+const LOADOUT_GROUPS = [
+  ['heavy', 'Heavy armour'], ['light', 'Light armour'], ['ranged', 'Ranged'],
+  ['blunt', 'Blunt / non-lethal'], ['support', 'Support'], ['trade', 'Trade & hauling'],
+  ['travel', 'Travel'], ['starter', 'Starter kit'], ['weapons', 'Weapons only'],
+  ['pack', 'Packs'],
+];
+
+function loadoutGroups() {
+  const rows = state.loadouts || [];
+  const taken = new Set();
+  const out = [];
+  for (const [tag, label] of LOADOUT_GROUPS) {
+    const group = rows.filter((l) => !taken.has(l.id) && (l.tags || []).includes(tag));
+    for (const l of group) taken.add(l.id);
+    if (group.length) out.push([label, group]);
+  }
+  const rest = rows.filter((l) => !taken.has(l.id));
+  if (rest.length) out.push(['Other', rest]);
+  return out;
+}
+
 function bulkPanel(picked) {
   const bulk = state.bulk || {};
   const loadout = (state.loadouts || []).find((l) => l.id === bulk.loadoutId) || (state.loadouts || [])[0];
@@ -686,7 +710,9 @@ function bulkPanel(picked) {
         <div class="field-row">
           <label class="field field--grow">Loadout
             <select id="bulk-loadout" ${dis()}>
-              ${(state.loadouts || []).map((l) => `<option value="${esc(l.id)}" ${loadout && l.id === loadout.id ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
+              ${loadoutGroups().map(([group, rows]) => `<optgroup label="${esc(group)}">
+                ${rows.map((l) => `<option value="${esc(l.id)}" ${loadout && l.id === loadout.id ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
+              </optgroup>`).join('')}
             </select></label>
           <label class="field-check">
             <input type="checkbox" id="bulk-skip" ${bulk.skipIfSlotFilled ? 'checked' : ''}>

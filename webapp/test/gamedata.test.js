@@ -50,15 +50,18 @@ function get(server, urlPath) {
 // exist in this install's data and the picker used to hide every one of them,
 // which is why the equip scripts had to hand-roll a backpack record. All 42
 // live type-46-backed items sit in `backpack_attach` and share one record
-// shape — see services/itemFactory.js.
-test('itemTemplates() filters to typecodes {2, 3, 4, 46} and is non-empty', (t) => {
+// shape. 107 (crossbow) joined when the loadout catalogue went looking for a
+// ranged archetype and found "Ranger" at a typecode nothing accepted — a whole
+// weapon class that had been unreachable. See services/itemFactory.js.
+test('itemTemplates() filters to typecodes {2, 3, 4, 46, 107} and is non-empty', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
   const templates = gamedata.itemTemplates();
   assert.ok(templates.length > 0, 'itemTemplates() returned nothing');
   for (const tpl of templates) {
-    assert.ok([2, 3, 4, 46].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
+    assert.ok([2, 3, 4, 46, 107].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
   }
   assert.ok(templates.some((tpl) => tpl.type === 46), 'no backpack template offered');
+  assert.ok(templates.some((tpl) => tpl.type === 107), 'no crossbow template offered');
 });
 
 // Regression test for TODO.md 2.2(g): the original 2.3 task text said "filter

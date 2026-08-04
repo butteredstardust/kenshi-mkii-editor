@@ -36,14 +36,18 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 const CACHE_VERSION = 5;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
-// 4 = trade goods/consumable, 46 = backpack. Type 42 is the save-side ITEM
-// *instance* record, not a template, and must never appear here.
+// 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
+// save-side ITEM *instance* record, not a template, and must never appear here.
 //
 // 46 was added when bulk equip landed: 22 backpack templates exist in this
 // install's data and the picker used to hide every one of them, which is why
 // the equip scripts had to hand-roll a backpack record. All 42 live
 // type-46-backed items confirm the minted shape (see itemFactory.js).
-const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46]);
+//
+// 107 is the crossbow — a whole weapon class that was unreachable until the
+// loadout work went looking for a ranged archetype and found "Ranger" sitting
+// at a typecode nothing accepted.
+const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46, 107]);
 
 let index = null;
 let stats = null;

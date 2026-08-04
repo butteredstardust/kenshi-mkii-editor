@@ -2003,3 +2003,63 @@ numbered into Phase 1/2/3.
   partial teleport leaving everyone else exactly where they were; five rejection
   cases including a `../quick.save` path escape, each byte-identical; and a
   backpack reporting its contents through the second hop.
+
+- [x] **26 more loadouts, read off the game's own NPCs — and crossbow support,
+  which they turned up.**
+
+  The catalogue was three kits, all variations on one idea (a katana and
+  Ancient Samurai plate) because it was seeded from four ad-hoc scripts rather
+  than from the game. So the game was asked instead: every character in the live
+  save sorted by combat skill with their worn gear dumped, then the
+  best-equipped member of each of the 22 factions present.
+
+  **What that showed, and what the catalogue had wrong:**
+
+  - **A full kit is FIVE armour pieces, not four.** The `shirt` slot is worn
+    UNDER body armour and every existing loadout missed it: a Samurai Gate
+    Sergeant wears a Chain Shirt beneath Empire Samurai Armour, a Shinobi Guard
+    wears Blackened Chainmail under a Black Rag Shirt. A test now pins this —
+    anything tagged `full` must fill head/shirt/armour/legs/boots and carry a
+    weapon.
+  - **Armour `level` tracks rank**: a grunt is 20, a garrison soldier 40-60, an
+    elite 80, a named character 95. Weapon grade tracks it in step: Catun No.1
+    around rank 30 for a grunt, Industrial 008 for a veteran, Edge Type 5 for an
+    elite. The kits follow that ladder rather than making everything masterwork.
+  - **Senior fighters carry two weapons**, one on `back` and one on `hip` (the
+    Gate Sergeant carries a naginata and a wakizashi).
+  - **Almost everyone carries a first aid kit and some cats.**
+
+  **Crossbows were a whole missing weapon class.** Looking for a ranged
+  archetype turned up "Ranger" at **typecode 107** — which nothing accepted,
+  because 107 had been left deliberately unmapped when the type-46 work found
+  its 7 live items split 6 `back` / 1 `backpack_content` and called that
+  ambiguous. It isn't: the outlier is a crossbow being *carried in a pack*, and
+  `backpack_content` is a bucket any item may sit in rather than a competing
+  equip slot. Every crossbow that is actually equipped is on the back, which is
+  where Kenshi wears one. All 7 live records agree on the rest of the shape:
+  `item function: 0`, a caller-settable `level` (5 to 80 observed, exactly like
+  a melee weapon), `quality: 100`, a `uniform` key, and an empty `company sid` —
+  a crossbow has no manufacturer ladder.
+
+  That last point exposed a real bug: `buildItemRecord()` only consulted the
+  grade ladder for typecode 2, so a `gradeId` passed for anything else was
+  **silently dropped**. A caller asking for a Meitou crossbow got a plain one
+  and was told nothing. It now throws, matching how `updateItem()` already
+  refused the same thing ("is not a weapon").
+
+  **The catalogue is now 29 kits** across heavy armour (9), light (4), ranged
+  (2), blunt/non-lethal (2), support (2), trade & hauling (2), travel (2),
+  starter (4), plus the weapons-only and pack-only oddments. Every one resolves
+  against this install with zero missing templates, and they use 20 distinct
+  body armours and 17 distinct weapons — variety is asserted by test, not just
+  by count, since twenty kits ending in the same breastplate would pass a count
+  check. Entries carry `tags`, and the UI groups the `<select>` by role because
+  29 options in one flat list is a wall.
+
+  `validate()` also grew two checks the bigger catalogue needs: a loadout may
+  not fill the same single-occupancy slot twice (the second would silently
+  displace the first to `main` at write time), and may not ask for quantity > 1
+  on an unstackable template or a grade on a template that has no ladder.
+
+  Also removed: `scripts/build-locations-catalog.js` and
+  `data/locations-catalog.json`, superseded by `services/locationsService.js`.

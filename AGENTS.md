@@ -137,12 +137,17 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   zone cell, and their naming is a different layer (the save calls the player's
   cell "Heng" where the data places "Trader's Edge"). See
   `services/locationsService.js` for the full evidence.
-- **An item template is typecode 2, 3, 4 or 46 — never 42.** 42 is the save-side
-  ITEM *instance*. 46 (backpack) was the late addition: 22 exist in this
-  install's data, all 42 live type-46-backed items sit in `backpack_attach`, and
-  they mint with `item function: 4`, `level: 0`, `quality: 100`, an empty
-  `company sid` and **no `uniform` key**. Type **107** is deliberately still
-  unmapped — its 7 live items disagree about which section they occupy.
+- **An item template is typecode 2, 3, 4, 46 or 107 — never 42.** 42 is the
+  save-side ITEM *instance*. The two late additions were both whole item classes
+  the editor could not reach:
+  - **46 (backpack)** — 22 in this install's data; all 42 live type-46-backed
+    items sit in `backpack_attach` and mint with `item function: 4`, `level: 0`,
+    `quality: 100`, an empty `company sid` and **no `uniform` key**.
+  - **107 (crossbow)** — all 7 live ones mint with `item function: 0`, a
+    caller-settable `level`, `quality: 100`, an empty `company sid` (a crossbow
+    has no manufacturer ladder, so `gradeId` is *refused*, not ignored) and a
+    `uniform` key. Worn on `back`: 6 of the 7 are, and the seventh is one being
+    carried inside a pack, which is a bucket rather than a competing slot.
 - **A weapon's grade is the (company sid, material sid) PAIR, and a model sid is
   not a key.** 14 of this install's 24 grade model sids appear under two
   different companies — `1069-gamedata.base` is both "Homemade" and
@@ -202,12 +207,12 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | GET | `/api/status` | Save root, install dir, save list, game-running, writability |
 | GET | `/api/gamedata` | Name-index stats |
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
-| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46** — type 42 is the save-side item *instance*, not a template. |
+| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46/107** — type 42 is the save-side item *instance*, not a template. |
 | GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ id, companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the **(company sid, material sid) pair**, not `ints.level` — and **`modelSid` alone is not a key**: 14 of this install's 24 model sids appear under two companies. Pass the row's `id` (`"<companySid>\|<modelSid>"`) as `gradeId`. |
 | GET | `/api/locations` | Town positions for the teleport picker: `{ id, name, label, faction, x, y, z, source }[]` plus build stats. From the install's world data, **not** the save — see `services/locationsService.js` for why the two obvious sources are both wrong |
 | POST | `/api/locations/rebuild` | Re-scan the install for town placements (after installing or removing a mod) |
 | POST | `/api/saves/:name/platoons/:file/teleport` | Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`; `sids?` limits it to some of the squad. Edits the SQUAD (30) instances' `pos` **and** the quick.save SQUAD_META position so the map marker follows |
-| GET | `/api/loadouts` | Named gear sets for bulk equip (`services/loadouts.js`) — editorial, with items already resolved to names/kinds, plus advisory `raceNotes` and a `missing[]` of any template this install can't resolve |
+| GET | `/api/loadouts` | **29 named gear sets** for bulk equip (`services/loadouts.js`) — editorial, read off the game's own NPCs. Items already resolved to names/kinds, plus `tags` (heavy/light/ranged/support/trade/travel/starter) for grouping, advisory `raceNotes`, and a `missing[]` of any template this install cannot resolve |
 | GET | `/api/saves` | List save directories, newest first |
 | GET | `/api/saves/:name/status` | World summary + squads + characters + inventories |
 | PUT | `/api/saves/:name/money` | Set player cats (goes through the mutation gate) |

@@ -24,13 +24,14 @@ const gamedata = require('./gamedataService');
  */
 
 // Template typecodes this can mint an ITEM record for: 2 weapon, 3 armour,
-// 4 trade goods, 46 backpack. Never 42 — that IS the item instance (2.2(g)).
-const TEMPLATE_TYPES = [2, 3, 4, 46];
+// 4 trade goods, 46 backpack, 107 crossbow. Never 42 — that IS the item
+// instance (2.2(g)).
+const TEMPLATE_TYPES = [2, 3, 4, 46, 107];
 
 // 2.2(a): the two `strings` key orders differ only by whether `uniform` is
-// present. Confirmed present for template types 2 (weapon) and 3 (armour) and
-// absent for 4 — and, from the later type-46 sweep, absent for backpacks too:
-// all 42 live backpack items carry exactly
+// present. Confirmed present for template types 2 (weapon), 3 (armour) and 107
+// (crossbow — all 7 live ones carry it), and absent for 4 and, from the
+// type-46 sweep, for backpacks: all 42 live backpack items carry exactly
 // `color sid, material sid, company sid, section, base data sid`, no `uniform`.
 function isEquippableTemplateType(type) {
   return type !== 4 && type !== 46;
@@ -116,6 +117,7 @@ function buildItemRecord(templateSid, opts = {}) {
   if (tmpl.type === 2) itemFunction = 5; // 262/262 live weapons
   else if (tmpl.type === 3) itemFunction = 6; // 882/882 live armour
   else if (tmpl.type === 46) itemFunction = 4; // 42/42 live backpacks
+  else if (tmpl.type === 107) itemFunction = 0; // 7/7 live crossbows
   else {
     // Type 4: copy the template's own `ints['item function']` (cached on the
     // gamedata index entry as `itemFunction`). Matched the live item on every
@@ -149,10 +151,19 @@ function buildItemRecord(templateSid, opts = {}) {
     // === 0), materialSid/companySid stay '' — flagged via `grade: null` in
     // meta rather than thrown, since the item itself is still mintable.
   } else {
-    // Type 3/4/46: `material sid` defaults to the first candidate in the union
-    // of extra['material'] targets across every definition of this sid
+    // Only a melee weapon (type 2) has a manufacturer ladder. Asking for a
+    // grade on anything else is a caller error, not something to drop quietly:
+    // silently ignoring it would hand back a plain item while the caller
+    // believes it minted a Meitou. saveService.updateItem() refuses the same
+    // way ("is not a weapon"), so the two paths agree.
+    if (gradeId) {
+      throw new Error(`"${tmpl.name}" is typecode ${tmpl.type}, which has no weapon grade — gradeId does not apply`);
+    }
+    // Type 3/4/46/107: `material sid` defaults to the first candidate in the
+    // union of extra['material'] targets across every definition of this sid
     // (2.2(h)); `company sid` is always empty (universal on all 882+503 live
-    // type-3/4 records, and all 42 live type-46 ones).
+    // type-3/4 records, all 42 live type-46 ones, and all 7 type-107 ones —
+    // a crossbow's `material sid` names its model, e.g. "Handheld Crossbow").
     materialSid = materialOverride || gamedata.materialCandidates(templateSid)[0] || '';
     companySid = '';
   }
@@ -172,9 +183,11 @@ function buildItemRecord(templateSid, opts = {}) {
     levelValue = 0;
     qualityValue = 100;
   } else {
-    // 2.2(b): universal 100 on all 1144 live type-2/3 records — this is NOT
-    // the user-facing "quality" tier (that's `level`); do not confuse it with
-    // the template's own floats.quality, which the live data disagrees with.
+    // 2.2(b): universal 100 on all 1144 live type-2/3 records, and on all 7
+    // live type-107 (crossbow) ones, whose `level` varies from 5 to 80 exactly
+    // like a melee weapon's — this is NOT the user-facing "quality" tier
+    // (that's `level`); do not confuse it with the template's own
+    // floats.quality, which the live data disagrees with.
     levelValue = Number.isInteger(level) ? level : 0;
     qualityValue = 100;
   }

@@ -91,13 +91,17 @@ const ARMOUR_SLOT_MAP = new Map([
 // it fell through to the permissive branch, so it worked but offered all 11
 // slots and reported `widened: true`.
 //
-// Type 107 is deliberately NOT listed: its 7 live items disagree (6 `back`,
-// 1 `backpack_content`), so permissive is the honest answer for it.
+// Type 107 (crossbow) resolved later still. It first looked ambiguous — its 7
+// live items split 6 `back` / 1 `backpack_content` — but the outlier is a
+// crossbow being CARRIED in a pack, and `backpack_content` is a bucket every
+// item may sit in, not a competing equip slot. Every one that is actually
+// equipped is on the back, which is also where Kenshi wears a crossbow.
 const TYPECODE_SECTIONS = new Map([
   [2, ['hip', 'back']],
   [3, ['head', 'shirt', 'armour', 'legs', 'boots']],
   [4, []],
   [46, ['backpack_attach']],
+  [107, ['back']],
 ]);
 
 // Legitimate for every item regardless of kind — general carry and pack

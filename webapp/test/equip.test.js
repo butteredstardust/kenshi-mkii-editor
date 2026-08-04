@@ -62,6 +62,64 @@ test('every loadout resolves and every section is legal for its item kind', () =
   }
 });
 
+test('a loadout tagged "full" dresses every armour slot the game itself uses', () => {
+  // Read off the game's own NPCs: a fully-equipped character wears FIVE armour
+  // pieces, not four — the `shirt` goes UNDER the body armour (a Samurai Gate
+  // Sergeant wears a Chain Shirt beneath Empire Samurai Armour). This catalogue
+  // missed that slot entirely at first, so it is pinned here.
+  const ARMOUR_SLOTS = ['head', 'shirt', 'armour', 'legs', 'boots'];
+  const full = loadouts.catalogue().filter((l) => l.tags.includes('full'));
+  assert.ok(full.length >= 5, 'expected several full kits');
+  for (const l of full) {
+    const filled = new Set(l.items.map((it) => it.section));
+    for (const slot of ARMOUR_SLOTS) {
+      assert.ok(filled.has(slot), `"${l.label}" is tagged full but leaves ${slot} empty`);
+    }
+    assert.ok(filled.has('back') || filled.has('hip'), `"${l.label}" is tagged full but carries no weapon`);
+  }
+});
+
+test('the catalogue covers a real spread of archetypes, not variations on one', () => {
+  const rows = loadouts.catalogue();
+  assert.ok(rows.length >= 20, `expected 20+ loadouts, got ${rows.length}`);
+
+  const tags = new Set(rows.flatMap((l) => l.tags));
+  for (const needed of ['heavy', 'light', 'ranged', 'support', 'trade', 'starter']) {
+    assert.ok(tags.has(needed), `no loadout is tagged "${needed}"`);
+  }
+
+  // Distinct body armour across the catalogue is the real test of variety —
+  // twenty kits that all end in the same breastplate would pass a count check.
+  const bodies = new Set(rows.flatMap((l) => l.items.filter((i) => i.section === 'armour').map((i) => i.name)));
+  assert.ok(bodies.size >= 12, `only ${bodies.size} distinct body armours across the catalogue`);
+  const weapons = new Set(rows.flatMap((l) => l.items.filter((i) => i.section === 'back' || i.section === 'hip').map((i) => i.name)));
+  assert.ok(weapons.size >= 10, `only ${weapons.size} distinct weapons across the catalogue`);
+});
+
+test('crossbows (typecode 107) are offered and mint on the back', (t) => {
+  const bows = gamedata.itemTemplates().filter((x) => x.type === 107);
+  if (!bows.length) return t.skip('no typecode-107 templates in this install');
+
+  const { sections, widened } = itemSlots.allowedSections(bows[0].sid, null);
+  assert.deepStrictEqual(sections.filter((s) => s !== 'main' && s !== 'backpack_content'), ['back'],
+    'a crossbow is worn on the back and nowhere else');
+  assert.strictEqual(widened, false);
+
+  const { record } = itemFactory.buildItemRecord(bows[0].sid, { section: 'back', level: 40 });
+  assert.strictEqual(record.ints.get('item function'), 0); // 7/7 live crossbows
+  assert.strictEqual(record.ints.get('level'), 40, 'a crossbow takes the caller\'s level, like a melee weapon');
+  assert.strictEqual(record.floats.get('quality'), 100);
+  assert.strictEqual(record.strings.get('company sid'), '', 'a crossbow has no manufacturer ladder');
+  assert.ok(record.strings.has('uniform'), 'all 7 live crossbows carry a "uniform" key');
+  assert.ok(record.strings.get('material sid'), 'a crossbow gets a material from its template');
+
+  // A crossbow is not a melee weapon, so it has no grade — and asking for one
+  // must fail rather than be dropped, or a caller believes it minted a Meitou
+  // crossbow and gets a plain one.
+  assert.throws(() => itemFactory.buildItemRecord(bows[0].sid, { section: 'back', gradeId: loadouts.GRADE.meitou }),
+    /has no weapon grade/);
+});
+
 // -------------------------------------------------- typecode 46 (backpack) --
 
 test('backpack templates (typecode 46) are offered and mint a live-shaped record', (t) => {
