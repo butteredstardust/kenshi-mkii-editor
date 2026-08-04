@@ -268,14 +268,31 @@ function statsSection(c) {
   </details>`;
 }
 
+/**
+ * Read-only inventory for the Squad card — same glyphs and slot labels the Gear
+ * page uses, so an item looks like the same thing on both pages, and pack
+ * contents nested under the pack that holds them (they live in the pack's own
+ * inventory record, one hop past the character's — see
+ * saveService.packContentsOf). Before this they were simply absent here.
+ */
+function invRow(it, { nested = false } = {}) {
+  return `<tr${nested ? ' class="inv-nested"' : ''}>
+    <td class="col-item"><span class="item-name">${icon(SLOT_ICONS[it.section] || 'bag', it.section)}<span>${esc(it.name)}</span></span></td>
+    <td class="n shrink">${it.quantity > 1 ? `&times;${esc(it.quantity)}` : ''}</td>
+    <td class="muted shrink">${esc(SLOT_LABELS[it.section] || it.section)}</td>
+  </tr>`;
+}
+
 function inventorySection(c) {
+  const items = c.inventory || [];
+  const nestedCount = items.reduce((n, it) => n + it.contents.length, 0);
+  const rows = items.flatMap((it) => [invRow(it), ...it.contents.map((inner) => invRow(inner, { nested: true }))]);
+
   return `<details class="section">
-    ${sectionSummary('list', `Inventory (${esc(c.inventory.length)})`)}
+    ${sectionSummary('list', `Inventory (${esc(items.length + nestedCount)})`)}
     <div class="section-body table-wrap">
-      <table class="data-table"><tbody>${c.inventory.map((it) => `<tr>
-        <td>${esc(it.name)}</td>
-        <td class="n">${it.quantity > 1 ? `×${esc(it.quantity)}` : ''}</td>
-        <td class="muted">${esc(it.section)}</td></tr>`).join('') || '<tr><td class="muted">Empty.</td></tr>'}
+      <table class="data-table table--compact"><tbody>
+        ${rows.join('') || '<tr><td class="muted">Empty.</td></tr>'}
       </tbody></table>
     </div>
   </details>`;
@@ -323,6 +340,10 @@ const ICON_PATHS = {
   stats: '<path d="M2.5 13.5h11"/><path d="M4.5 13.5v-4"/><path d="M8 13.5v-8"/><path d="M11.5 13.5v-6"/>',
   identity: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><circle cx="6" cy="7.5" r="1.4"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7"/><path d="M10 7h3M10 9.5h3"/>',
   dice: '<rect x="2.5" y="2.5" width="11" height="11" rx="2"/><circle cx="5.6" cy="5.6" r=".9" fill="currentColor"/><circle cx="10.4" cy="10.4" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/>',
+  cats: '<circle cx="8" cy="8" r="5.5"/><path d="M8 5.2v5.6"/><path d="M9.6 6.4a1.8 1.8 0 0 0-3 1.1c0 1.7 3 .9 3 2.5a1.8 1.8 0 0 1-3 .6"/>',
+  sun: '<circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1"/>',
+  moon: '<path d="M13 9.6A5.6 5.6 0 0 1 6.4 3a5.6 5.6 0 1 0 6.6 6.6z"/>',
+  blood: '<path d="M8 2.2s4 4.5 4 6.9a4 4 0 0 1-8 0c0-2.4 4-6.9 4-6.9z"/>',
   list: '<path d="M5.5 4.5h8M5.5 8h8M5.5 11.5h8"/><path d="M2.5 4.5h.01M2.5 8h.01M2.5 11.5h.01"/>',
   shirt: '<path d="M6 2.5 2.5 4.5 4 7l2-1.2v7.7h4V5.8L12 7l1.5-2.5L10 2.5 8 4z"/>',
   armour: '<path d="M4 3h8v5.5A4 4 0 0 1 8 13a4 4 0 0 1-4-4.5z"/><path d="M8 3v10"/>',
@@ -366,11 +387,21 @@ function sectionSummary(glyph, label) {
   return `<summary>${icon(glyph, label)}<span>${label}</span></summary>`;
 }
 
+/**
+ * Put the two storage buckets first. Adding something usually means "into the
+ * pack" or "into the character's hands" — the body slots are the exception, and
+ * they were sorted ahead of both because ITEM_SLOTS lists them in wear order.
+ */
+function carryFirst(sections) {
+  const buckets = ['main', 'backpack_content'].filter((s) => sections.includes(s));
+  return [...buckets, ...sections.filter((s) => !buckets.includes(s))];
+}
+
 function itemSlotSelect(it) {
   // Options come straight from the server's allowedSections (services/itemSlots.js)
   // — the client never recomputes compatibility itself. Fall back to the full
   // list only if an older/unpatched API response omits the field.
-  const options = it.allowedSections || ITEM_SLOTS;
+  const options = carryFirst(it.allowedSections || ITEM_SLOTS);
   return `<select class="item-slot-select" data-sid="${esc(it.sid)}"
       data-initial="${esc(it.section || '')}" aria-label="Slot" ${dis()}>
     ${options.map((slot) => `<option value="${esc(slot)}" ${it.section === slot ? 'selected' : ''}>${esc(SLOT_LABELS[slot] || slot)}</option>`).join('')}
@@ -405,6 +436,11 @@ function itemRow(it) {
         value="${esc(it.quantity ?? 1)}" data-initial="${esc(it.quantity ?? 1)}" aria-label="Quantity" ${dis()}>`
     : `<span class="muted">${it.quantity > 1 ? `×${esc(it.quantity)}` : '1'}</span>`;
 
+  // Trade goods and packs have no quality tier: every one mints `level` 0 and
+  // the field means nothing on them (itemFactory forces it). Showing a
+  // "Level 0" dropdown invites an edit that does nothing.
+  const hasQuality = isWeapon || (hasLevel && it.kindType !== 4 && it.kindType !== 46);
+
   let qualityCell = '<span class="muted">—</span>';
   if (isWeapon && grades.length) {
     // Keyed on the grade's composite id ("<companySid>|<modelSid>"), NOT on
@@ -416,7 +452,7 @@ function itemRow(it) {
     ? `<option value="${esc(it.gradeId)}" selected>${esc(it.material || 'current')}</option>` : ''}
       ${grades.map((g) => `<option value="${esc(g.id)}" ${g.id === it.gradeId ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
     </select>`;
-  } else if (hasLevel) {
+  } else if (hasQuality) {
     const named = LEVEL_PRESETS.some(([v]) => v === it.level);
     qualityCell = `<select class="item-field" data-field="level" data-initial="${esc(it.level)}" aria-label="Quality tier" ${dis()}>
       ${named ? '' : `<option value="${esc(it.level)}" selected>Level ${esc(it.level)}</option>`}
@@ -547,7 +583,7 @@ function addItemConfig(pick) {
       ${quantityControl}
       <label class="field">Place in
         <select class="add-item-section">
-          ${t.allowedSections.map((s) => `<option value="${esc(s)}" ${pick.section === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}
+          ${carryFirst(t.allowedSections).map((s) => `<option value="${esc(s)}" ${pick.section === s ? 'selected' : ''}>${esc(SLOT_LABELS[s] || s)}</option>`).join('')}
         </select></label>
       <span class="actions">
         <button class="btn btn--primary add-item-btn" ${dis()}>Add to inventory</button>
@@ -811,6 +847,80 @@ function identitySection(c) {
   </details>`;
 }
 
+/**
+ * One labelled bar. `percent` drives the fill; `text` is the real value, which
+ * is always shown — a bar answers "roughly how bad is this" at a glance and the
+ * number answers "exactly how bad", and a save editor owes the user both.
+ */
+function vital(label, percent, text, tone = null) {
+  const p = Math.max(0, Math.min(100, percent ?? 0));
+  const t = tone || (p < 25 ? 'danger' : p < 50 ? 'warn' : 'ok');
+  return `<div class="vital">
+    <span class="vital-label">${esc(label)}</span>
+    <span class="meter"><span class="meter-fill ${t}" style="width:${p}%"></span></span>
+    <span class="vital-value ${t === 'ok' ? '' : t}">${esc(text)}</span>
+  </div>`;
+}
+
+/**
+ * Blood, bleeding and hunger as bars rather than three bare floats.
+ *
+ * Scales are measured off this save's own 535 medical records, not guessed:
+ *   - blood    p50 100.2, p75 113, max 181.7 — so 100 reads as "normal" but it
+ *              is race-dependent (bigger races carry more). The bar caps at
+ *              100 and the number carries the truth.
+ *   - bleeding 534 of 535 are exactly 0.0 and the one exception is 0.1. A bar
+ *              would be permanently empty and tell you nothing, so this is a
+ *              state instead: bleeding or not.
+ *   - hung     min 1.5, and p25 through max are all 3.0 — 3 is the resting
+ *              value for a healthy character, so the bar fills toward 3 and a
+ *              LOW value is the bad one.
+ */
+function vitalsBlock(m) {
+  const blood = typeof m.blood === 'number' ? m.blood : null;
+  const hunger = typeof m.hunger === 'number' ? m.hunger : null;
+  const bleeding = m.bleeding || 0;
+
+  return `<div class="card-vitals">
+    ${blood != null ? vital('Blood', blood, num(blood)) : ''}
+    ${hunger != null ? vital('Hunger', (hunger / 3) * 100, `${num(hunger, 1)} / 3`) : ''}
+    <div class="vital">
+      <span class="vital-label">Bleeding</span>
+      <span class="vital-state ${bleeding > 0 ? 'danger' : 'ok'}">
+        ${icon(bleeding > 0 ? 'blood' : 'heart', 'Bleeding')}${bleeding > 0 ? esc(num(bleeding, 2)) : 'none'}
+      </span>
+    </div>
+  </div>`;
+}
+
+// Display label -> the real float key, for the attribute pills. `toughness2`
+// is the on-disk name; the label is not.
+const ATTR_PILLS = [['strength', 'STR'], ['dexterity', 'DEX'], ['toughness', 'TGH'], ['perception', 'PER']];
+
+/**
+ * Attributes as pills, and the character's strongest skills beside them.
+ *
+ * The point is recognising a character without opening anything: four numbers
+ * say how tough they are, and the top skills say *what they are* — three of
+ * medic/science/doctor reads as a medic, katana/attack/defence as a swordsman.
+ * Skills are already sorted descending by statsOf(); anything at or below zero
+ * is untrained (the save stores those negative) and is never shown as a
+ * strength.
+ */
+function statPills(c) {
+  if (!c.stats) return '';
+  const a = c.stats.attributes || {};
+  const top = (c.stats.skills || []).filter((s) => s.level > 0).slice(0, 4);
+  return `<div class="pills">
+    ${ATTR_PILLS.map(([key, label]) => `<span class="pill pill--attr" title="${esc(key)}">
+      <span class="pill-key">${esc(label)}</span><span class="pill-val">${esc(Math.round(a[key] ?? 0))}</span>
+    </span>`).join('')}
+    ${top.length ? `<span class="pill-sep"></span>${top.map((s) => `<span class="pill pill--skill">
+      <span class="pill-key">${esc(s.skill)}</span><span class="pill-val">${esc(Math.round(s.level))}</span>
+    </span>`).join('')}` : ''}
+  </div>`;
+}
+
 function characterCard(c, file) {
   const m = c.medical || {};
   const flags = ['dead', 'unconscious', 'coma', 'incapacitated'].filter((k) => m[k]);
@@ -820,14 +930,10 @@ function characterCard(c, file) {
       <h3>${esc(c.name)}</h3>
       ${c.isLeader ? '<span class="badge badge--accent">leader</span>' : ''}
       ${flags.map((f) => `<span class="badge badge--danger">${esc(f)}</span>`).join('')}
-      <span class="muted">${esc(c.origin)}</span>
+      <span class="muted">${esc(c.race ? c.race.name : '')}${c.origin ? ` · ${esc(c.origin)}` : ''}</span>
     </div>
-    <div class="card-vitals">
-      <span class="${flags.length ? 'critical' : 'ok'}">${flags.length ? 'down' : 'conscious'}</span>
-      <span>blood ${num(m.blood)}</span>
-      <span>bleeding ${num(m.bleeding, 2)}</span>
-      <span>hunger ${num(m.hunger, 2)}</span>
-    </div>
+    ${statPills(c)}
+    ${c.medical ? vitalsBlock(m) : ''}
     ${identitySection(c)}
     ${c.medical ? healthSection(m) : ''}
     ${c.stats ? statsSection(c) : ''}
@@ -1145,6 +1251,33 @@ function squadPanel(s, groups) {
   </section>`;
 }
 
+/**
+ * The world header: faction and region as the heading, then money, members and
+ * the clock as pills.
+ *
+ * They were four identical `.muted` spans before, which made "211 cats" and
+ * "10 member(s)" read as the same kind of thing. Each now carries its own glyph
+ * and its unit, and the clock also says whether it is day or night — the single
+ * most useful thing about the time in Kenshi, and free from the hour.
+ */
+function worldBar(s, memberCount) {
+  const w = s.world;
+  const hh = String(w.hour ?? 0).padStart(2, '0');
+  const mm = String(w.minute ?? 0).padStart(2, '0');
+  const night = w.hour != null && (w.hour < 6 || w.hour >= 20);
+  return `<section class="summary-bar">
+    <span class="world-id">
+      <b>${esc(w.faction)}</b>
+      ${w.region ? `<span class="muted">${esc(w.region)}</span>` : ''}
+    </span>
+    <span class="pills">
+      <span class="pill" title="Cats">${icon('cats', 'Cats')}<span class="pill-val">${esc(w.money)}</span><span class="pill-key">cats</span></span>
+      <span class="pill" title="Squad members">${icon('squad', 'Members')}<span class="pill-val">${esc(memberCount)}</span><span class="pill-key">member${memberCount === 1 ? '' : 's'}</span></span>
+      <span class="pill" title="In-game time">${icon(night ? 'moon' : 'sun', night ? 'Night' : 'Day')}<span class="pill-val">${esc(hh)}:${esc(mm)}</span><span class="pill-key">day ${esc(w.day)}</span></span>
+    </span>
+  </section>`;
+}
+
 function renderSquad() {
   const r = buildRoster();
   if (!r) return '<p>No save found.</p>';
@@ -1152,13 +1285,7 @@ function renderSquad() {
   if (!all.length) return `${savePicker()}<p>No player squad in this save.</p>`;
 
   return `${savePicker()}
-    <section class="summary-bar">
-      <span><b>${esc(s.world.faction)}</b></span>
-      <span class="muted">${esc(s.world.region)}</span>
-      <span class="muted">day ${esc(s.world.day)}, ${String(s.world.hour).padStart(2, '0')}:${String(s.world.minute).padStart(2, '0')}</span>
-      <span class="muted">${esc(s.world.money)} cats</span>
-      <span class="muted">${esc(all.length)} member(s)</span>
-    </section>
+    ${worldBar(s, all.length)}
     <div class="workspace">
       <div class="side">
         ${rosterNav(groups)}

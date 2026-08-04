@@ -2125,3 +2125,45 @@ numbered into Phase 1/2/3.
   sizes and race hints (a typo'd race hint would silently fall back to the
   default race rather than erroring, so it is asserted against the six the save
   can actually match).
+
+- [x] **Squad-page readability pass.** All user-reported, all in the card and
+  the header:
+
+  - **Backpack contents were invisible on the Squad page.** The Gear page got
+    them when `packContentsOf()` landed, but the Squad card's read-only
+    Inventory still listed only the character's own inventory record — so a pack
+    bull carrying 46 items in its pack showed exactly one line: the pack.
+    Contents now nest under the pack that holds them, and the section count
+    includes them (Booty reads "Inventory (47)", not "(1)").
+  - **That list had no icons**, while the Gear page's did. It now uses the same
+    `SLOT_ICONS`/`SLOT_LABELS` maps, so an item looks like the same item on both
+    pages and the slot reads "In backpack" rather than `backpack_content`.
+  - **Attributes and top skills as pills.** Four attribute pills plus the
+    character's four strongest trained skills, accented — that second row is the
+    "what is this character" signal: `mass combat 109 / attack 95 / warrior
+    spirit 94` reads as a fighter at a glance, `medic / science / doctor` as a
+    medic. Skills at or below zero are untrained (the save stores those
+    negative) and are never shown as a strength.
+  - **Blood and hunger as bars, bleeding as a state.** The scales come from this
+    save's own 535 medical records rather than a guess:
+      - `blood` sits at p50 100.2 and runs to 181.7 — it is race-dependent, so
+        the bar caps at 100 and the number carries the truth (a bull reads 175).
+      - `hung` has a minimum of 1.5 and p25 through max all exactly 3.0, so
+        **3 is the resting value for a healthy character** and a LOW reading is
+        the bad one. The bar fills toward 3. This corrected an assumption: the
+        field is not "how hungry", it is how well fed.
+      - `bleeding` is exactly 0.0 on 534 of 535 characters and 0.1 on the one
+        exception, so a bar would never move. It reads as bleeding / none.
+  - **World header as pills.** Faction and region as the heading, then cats,
+    members and the clock, each with its own glyph and unit. They were four
+    identical muted spans, which made "211" and "10" look like the same kind of
+    number. The clock glyph also distinguishes day from night — free from the
+    hour, and the most useful thing about the time in Kenshi.
+  - **The two storage buckets come first in every slot picker**, labelled
+    ("Carried", "In backpack") rather than shown as raw keys. Adding something
+    usually means into the pack or into their hands; the body slots sorted ahead
+    of both only because `ITEM_SLOTS` lists them in wear order.
+  - **No quality control on items that have none.** Trade goods (type 4) and
+    packs (type 46) always mint `level` 0 and the field means nothing on them,
+    so the row offered a "Level 0" dropdown inviting an edit that would do
+    nothing. They show "—" now; weapons and armour are unchanged.

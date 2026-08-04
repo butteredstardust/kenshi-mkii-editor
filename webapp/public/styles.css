@@ -297,11 +297,56 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 }
 .card-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
 .card-head h3 { margin: 0; font-size: var(--t-xl); font-weight: 600; letter-spacing: -.01em; }
+/* Vitals as bars, not three bare floats. Each is label / bar / value on one
+ * row, and they sit in a grid so the bars line up and can be compared. */
 .card-vitals {
-  display: flex; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s2);
-  padding: var(--s2) var(--s3); border-radius: var(--radius);
-  background: var(--sunken); font-size: var(--t-sm); color: var(--muted);
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--s2) var(--s4); margin-top: var(--s2);
+  padding: var(--s3); border-radius: var(--radius);
+  background: var(--sunken); font-size: var(--t-sm);
 }
+.vital { display: grid; grid-template-columns: 4.2rem 1fr auto; gap: var(--s2); align-items: center; }
+.vital-label { font-size: var(--t-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.vital-value { font-variant-numeric: tabular-nums; font-size: var(--t-xs); color: var(--ink-dim); }
+.vital-value.warn { color: var(--warn); }
+.vital-value.danger { color: var(--danger); }
+/* Bleeding is 0 on all but one of this save's 535 characters, so it reads as a
+ * state rather than a bar that would never move. */
+.vital-state { grid-column: 2 / -1; display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--t-xs); }
+.vital-state.ok { color: var(--muted); }
+.vital-state.danger { color: var(--danger); }
+
+/* ---------------------------------------------------------------- pills -- */
+
+/* A compact key/value chip. Used for a character's attributes and strongest
+ * skills, and for the world header's cats/members/clock — things you should be
+ * able to read without parsing a sentence. */
+.pills { display: flex; flex-wrap: wrap; gap: var(--s1); align-items: center; }
+.pill {
+  display: inline-flex; align-items: baseline; gap: var(--s1);
+  padding: 1px var(--s2); border-radius: 999px;
+  background: var(--raised); border: 1px solid var(--line-soft);
+  font-size: var(--t-xs); white-space: nowrap;
+}
+.pill .icon { align-self: center; }
+.pill-key { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.pill-val { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 600; }
+/* Attributes read as the character's frame; skills as what they DO, so the
+ * strongest ones get the accent — that is the "is this a medic or a
+ * swordsman" signal. */
+.pill--attr .pill-val { color: var(--ink); }
+.pill--skill { background: var(--sunken); }
+.pill--skill .pill-key { color: var(--accent); text-transform: none; letter-spacing: 0; }
+.pill-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 var(--s1); }
+
+.card > .pills { margin-top: var(--s2); }
+.world-id { display: flex; align-items: baseline; gap: var(--s2); }
+.world-id b { font-size: var(--t-lg); }
+.summary-bar { justify-content: space-between; align-items: center; }
+
+/* A pack's contents, nested under the pack in the read-only inventory. */
+.inv-nested > td:first-child { padding-left: var(--s5); }
+.inv-nested { color: var(--ink-dim); }
 
 /* ------------------------------------------------------- master/detail -- */
 
