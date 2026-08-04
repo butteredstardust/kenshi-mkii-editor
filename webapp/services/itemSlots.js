@@ -86,10 +86,18 @@ const ARMOUR_SLOT_MAP = new Map([
 //   type 4 (trade goods): main×503
 // (type 4's list is empty here deliberately — main/backpack_content are added
 // unconditionally below as buckets, so "no extra equip slots" is correct.)
+// Type 46 (backpack) added later, from the same sweep: all 42 live
+// type-46-backed items sit in `backpack_attach`, zero exceptions. Before this
+// it fell through to the permissive branch, so it worked but offered all 11
+// slots and reported `widened: true`.
+//
+// Type 107 is deliberately NOT listed: its 7 live items disagree (6 `back`,
+// 1 `backpack_content`), so permissive is the honest answer for it.
 const TYPECODE_SECTIONS = new Map([
   [2, ['hip', 'back']],
   [3, ['head', 'shirt', 'armour', 'legs', 'boots']],
   [4, []],
+  [46, ['backpack_attach']],
 ]);
 
 // Legitimate for every item regardless of kind — general carry and pack

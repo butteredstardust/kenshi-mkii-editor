@@ -164,7 +164,7 @@ mistaking the leading one for the start of a section produces a parse that
 | 36 | **character state** — `name`, `is leader`, `personality`, `age` |
 | 37 | **faction** — `relation<n>` floats + `relationSID<n>` targets |
 | 41 | **inventory container** — one instance per item |
-| 42 | **item** — `base data sid`, `quantity`, `section`, `material sid` |
+| 42 | **item** — `base data sid`, `quantity`, `section`, `material sid`. The *instance*; its template lives in gamedata as typecode 2 (weapon), 3 (armour), 4 (trade goods) or 46 (backpack) |
 | 56 | **game state** — `player money`, `pfaction name`, `area`, clock, camera |
 | 57 | **medical** — per-body-part health, blood, hunger, KO/coma flags |
 | 66 | appearance sliders |

@@ -46,13 +46,19 @@ function get(server, urlPath) {
   });
 }
 
-test('itemTemplates() filters to typecodes {2, 3, 4} and is non-empty', (t) => {
+// 46 (backpack) joined 2/3/4 when bulk equip landed: 22 backpack templates
+// exist in this install's data and the picker used to hide every one of them,
+// which is why the equip scripts had to hand-roll a backpack record. All 42
+// live type-46-backed items sit in `backpack_attach` and share one record
+// shape — see services/itemFactory.js.
+test('itemTemplates() filters to typecodes {2, 3, 4, 46} and is non-empty', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
   const templates = gamedata.itemTemplates();
   assert.ok(templates.length > 0, 'itemTemplates() returned nothing');
   for (const tpl of templates) {
-    assert.ok([2, 3, 4].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
+    assert.ok([2, 3, 4, 46].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
   }
+  assert.ok(templates.some((tpl) => tpl.type === 46), 'no backpack template offered');
 });
 
 // Regression test for TODO.md 2.2(g): the original 2.3 task text said "filter

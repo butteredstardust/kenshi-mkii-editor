@@ -8,32 +8,51 @@
  */
 
 :root {
-  /* Surfaces — warm, desaturated, Kenshi-ish. Darkest to lightest. */
-  --bg:        #14120f;
-  --surface:   #1c1915;
-  --raised:    #232019;
-  --sunken:    #100e0b;
-  --line:      #353026;
-  --line-soft: #292419;
+  /* Surfaces — warm, desaturated, Kenshi-ish. Darkest to lightest.
+   * There are more levels than there used to be because elevation now carries
+   * meaning (style guide §1): a card sits above the page, a picker sits above
+   * a card, and the eye should be able to tell without reading a border. */
+  --bg:        #131110;
+  --surface:   #1b1815;
+  --surface-2: #211d19;
+  --raised:    #272219;
+  --overlay:   #2b261e;
+  --sunken:    #0f0d0b;
+  --line:      #383227;
+  --line-soft: #2a251c;
 
   /* Ink */
-  --ink:       #e2dacb;
+  --ink:       #e6dfd2;
+  --ink-dim:   #c3baa9;
   --muted:     #9c9280;   /* >= 4.5:1 on --surface; do not darken further */
 
   /* Intent. Colour is meaning, never decoration — see the style guide §3. */
-  --accent:    #d4a94e;   /* primary action / brand */
-  --ok:        #86ab55;
-  --warn:      #d4a02f;
-  --danger:    #c25a44;
+  --accent:    #d9ae52;   /* primary action / brand */
+  --accent-dim:#8a6d2c;
+  --ok:        #8cb35a;
+  --warn:      #d9a534;
+  --danger:    #cb6049;
+
+  /* Elevation. Use these, never a hand-written box-shadow — a shadow means
+   * "this is a layer above that", so it has to be consistent to mean anything. */
+  --elev-1: 0 1px 2px rgb(0 0 0 / .35);
+  --elev-2: 0 2px 6px rgb(0 0 0 / .40);
+  --elev-3: 0 8px 24px rgb(0 0 0 / .50);
 
   /* Space scale — use these, never magic numbers. */
   --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem; --s5: 1.5rem; --s6: 2rem;
 
-  /* Type scale */
-  --t-xs: .72rem; --t-sm: .82rem; --t-md: .9rem; --t-base: .95rem; --t-lg: 1.05rem;
+  /* Type scale. Headings used to top out at 1.05rem, which left a card title,
+   * a section title and body copy all reading as the same size. */
+  --t-xs: .72rem; --t-sm: .82rem; --t-md: .9rem; --t-base: .95rem;
+  --t-lg: 1.1rem; --t-xl: 1.35rem;
 
-  --radius: 5px;
-  --radius-lg: 7px;
+  --radius: 6px;
+  --radius-lg: 9px;
+
+  /* Motion — style guide §1a. One duration, one curve, everywhere. */
+  --motion: 120ms;
+  --ease: cubic-bezier(.2, .6, .3, 1);
 }
 
 * { box-sizing: border-box; }
@@ -42,29 +61,57 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: var(--t-base)/1.5 "Segoe UI", system-ui, sans-serif;
+  font: var(--t-base)/1.55 "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Style guide §1a: motion is an enhancement and must be removable. Every
+ * transition in this file is disabled here in one place — do not add motion
+ * that escapes this block. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---------------------------------------------------------------- shell -- */
 
+/* The header and tabs stay put while a long character card scrolls — the save
+ * you are editing and the "Kenshi is running" banner are exactly the two things
+ * you must not lose sight of mid-edit. */
 .shell-header {
+  position: sticky; top: 0; z-index: 3;
   display: flex; align-items: baseline; gap: var(--s4); flex-wrap: wrap;
   padding: var(--s3) var(--s5); border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--surface); box-shadow: var(--elev-1);
 }
 .shell-header h1 {
-  margin: 0; font-size: var(--t-lg); letter-spacing: .08em;
-  text-transform: uppercase; color: var(--accent);
+  margin: 0; font-size: var(--t-lg); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--accent); font-weight: 600;
 }
 .env { font-size: var(--t-sm); color: var(--muted); }
 
-.tabs { display: flex; gap: var(--s1); padding: var(--s2) var(--s5); border-bottom: 1px solid var(--line); }
-.tabs button {
-  background: none; border: 1px solid transparent; color: var(--muted);
-  padding: var(--s1) var(--s3); cursor: pointer; font: inherit; border-radius: var(--radius);
+.tabs {
+  position: sticky; top: 2.9rem; z-index: 2;
+  display: flex; gap: var(--s1); padding: var(--s2) var(--s5);
+  border-bottom: 1px solid var(--line); background: var(--bg);
 }
-.tabs button:hover { color: var(--ink); }
-.tabs button.active { color: var(--ink); border-color: var(--line); background: var(--raised); }
+.tabs button {
+  position: relative; background: none; border: 1px solid transparent;
+  color: var(--muted); padding: var(--s2) var(--s3); cursor: pointer;
+  font: inherit; font-size: var(--t-sm); border-radius: var(--radius);
+  transition: color var(--motion) var(--ease), background var(--motion) var(--ease);
+}
+.tabs button:hover { color: var(--ink); background: var(--surface); }
+.tabs button.active { color: var(--ink); background: var(--surface-2); }
+/* The active tab is marked by an accent rule, not just a lighter box — at a
+ * glance a box only says "hovered". */
+.tabs button.active::after {
+  content: ""; position: absolute; left: var(--s3); right: var(--s3); bottom: -1px;
+  height: 2px; background: var(--accent); border-radius: 2px;
+}
 
 main { padding: var(--s5); max-width: 1240px; }
 
@@ -73,37 +120,56 @@ main { padding: var(--s5); max-width: 1240px; }
 .panel {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); padding: var(--s4);
+  box-shadow: var(--elev-1);
 }
 .panel + .panel { margin-top: var(--s4); }
 .panel-head {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: var(--s3); margin-bottom: var(--s3);
 }
-.panel-head h2, .panel-head h3 { margin: 0; font-size: var(--t-md); font-weight: 600; letter-spacing: .02em; }
+.panel-head h2, .panel-head h3 {
+  margin: 0; font-size: var(--t-lg); font-weight: 600; letter-spacing: .01em;
+}
 
 /* A labelled group inside a panel. The ONLY approved way to sub-divide a
  * card — features must not invent their own `.foo-editor` wrappers. */
 .section { border-top: 1px solid var(--line-soft); margin-top: var(--s3); padding-top: var(--s3); }
 .section > summary {
+  display: flex; align-items: center; gap: var(--s2);
   cursor: pointer; color: var(--muted); font-size: var(--t-sm);
   text-transform: uppercase; letter-spacing: .06em; list-style: none;
+  padding: var(--s1) 0; border-radius: var(--radius);
+  transition: color var(--motion) var(--ease);
 }
 .section > summary::-webkit-details-marker { display: none; }
-.section > summary::before { content: "▸ "; color: var(--muted); }
-.section[open] > summary::before { content: "▾ "; }
+/* A rotating caret rather than swapping two glyphs: the rotation shows which
+ * way the section is heading, and it is the one place motion says something
+ * a static marker cannot. */
+.section > summary::before {
+  content: ""; width: .4em; height: .4em; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); margin-left: .15em;
+  transition: transform var(--motion) var(--ease);
+}
+.section[open] > summary::before { transform: rotate(45deg); }
 .section > summary:hover { color: var(--ink); }
 .section-body { padding-top: var(--s3); }
 
 /* --------------------------------------------------------------- fields -- */
 
 select, input, button, textarea {
-  font: inherit; background: var(--raised); color: var(--ink);
+  font: inherit; background: var(--sunken); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: var(--s1) var(--s2);
+  transition: border-color var(--motion) var(--ease), background var(--motion) var(--ease);
 }
-input:focus-visible, select:focus-visible, button:focus-visible {
+select:hover:not(:disabled), input:hover:not(:disabled), textarea:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+input:focus-visible, select:focus-visible, button:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
+select:disabled, input:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
 
 /* Numeric inputs are sized to their content, never full-bleed. */
 input[type=number] { width: 5.5rem; text-align: right; font-variant-numeric: tabular-nums; }
@@ -142,20 +208,25 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .btn {
   cursor: pointer; background: var(--raised); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--radius);
-  padding: var(--s1) var(--s3); font-size: var(--t-sm); white-space: nowrap;
+  padding: var(--s2) var(--s3); font-size: var(--t-sm); white-space: nowrap;
+  box-shadow: var(--elev-1);
+  transition: background var(--motion) var(--ease), border-color var(--motion) var(--ease),
+              color var(--motion) var(--ease), transform var(--motion) var(--ease);
 }
-.btn:hover:not(:disabled) { border-color: var(--muted); }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:hover:not(:disabled) { border-color: var(--muted); background: var(--overlay); }
+/* A press should feel like a press — 1px is enough and costs no layout. */
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 
 /* Intent tiers — see style guide §3. Primary = writes a staged edit.
  * Danger = irreversible in-game consequence; MUST also confirm(). */
-.btn--primary { border-color: var(--accent); color: var(--accent); }
-.btn--primary:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
-.btn--danger { border-color: var(--danger); color: var(--danger); }
+.btn--primary { border-color: var(--accent-dim); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--raised)); }
+.btn--primary:hover:not(:disabled) { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.btn--danger { border-color: var(--danger); color: var(--danger); background: var(--raised); }
 .btn--danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
-.btn--ghost { background: none; border-color: transparent; color: var(--muted); }
-.btn--ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--line); }
-.btn--xs { padding: 0 var(--s2); font-size: var(--t-xs); }
+.btn--ghost { background: none; border-color: transparent; color: var(--muted); box-shadow: none; }
+.btn--ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--line); background: var(--surface-2); }
+.btn--xs { padding: var(--s1) var(--s2); font-size: var(--t-xs); }
 
 /* Horizontal action group. Table action cells use this so buttons never stack. */
 .actions { display: flex; gap: var(--s1); align-items: center; flex-wrap: nowrap; }
@@ -169,9 +240,11 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
   font-size: var(--t-xs); padding-top: var(--s2);
 }
 .data-table th, .data-table td {
-  text-align: left; padding: var(--s1) var(--s2);
+  text-align: left; padding: var(--s2);
   border-bottom: 1px solid var(--line-soft); vertical-align: middle;
 }
+.data-table tbody tr { transition: background var(--motion) var(--ease); }
+.data-table tbody tr:hover { background: var(--surface-2); }
 .data-table tr:last-child td { border-bottom: none; }
 .data-table th { color: var(--muted); font-weight: 500; font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em; }
 .data-table td.n, .data-table th.n { text-align: right; font-variant-numeric: tabular-nums; }
@@ -217,10 +290,18 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 /* ---------------------------------------------------------------- cards -- */
 
 .cards { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--s4); min-width: 0; }
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); padding: var(--s4); min-width: 0;
+  box-shadow: var(--elev-1);
+}
 .card-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
-.card-head h3 { margin: 0; font-size: var(--t-md); font-weight: 600; }
-.card-vitals { display: flex; gap: var(--s3); flex-wrap: wrap; margin-top: var(--s1); font-size: var(--t-sm); color: var(--muted); }
+.card-head h3 { margin: 0; font-size: var(--t-xl); font-weight: 600; letter-spacing: -.01em; }
+.card-vitals {
+  display: flex; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s2);
+  padding: var(--s2) var(--s3); border-radius: var(--radius);
+  background: var(--sunken); font-size: var(--t-sm); color: var(--muted);
+}
 
 /* ------------------------------------------------------- master/detail -- */
 
@@ -236,53 +317,128 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * .table-wrap — which also stretched the roster to match. */
 .workspace > * { min-width: 0; }
 
-.roster { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.roster {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--elev-1);
+  position: sticky; top: 6.5rem;
+}
 .roster-filter { width: 100%; border: none; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--sunken); padding: var(--s2) var(--s3); }
 .roster-filter:focus-visible { outline-offset: -2px; }
-.roster-group { padding: var(--s2) var(--s3) var(--s1); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-top: 1px solid var(--line-soft); }
+.roster-group { padding: var(--s3) var(--s3) var(--s1); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-top: 1px solid var(--line-soft); }
 .roster-group:first-of-type { border-top: none; }
 .roster-list { list-style: none; margin: 0; padding: 0; }
 
+/* Two lines: name + badges on the first, race and condition on the second.
+ * Race comes off the character read (saveService.readPlatoon) and is here
+ * because bulk equip makes it a selection criterion — you pick who gets plate
+ * boots by looking at who can wear them. */
+/* Grid so the second line always aligns under the name, whether the lead
+ * column holds a state dot or a selection checkbox. */
 .roster-item {
-  display: flex; align-items: center; gap: var(--s2); width: 100%;
+  display: grid; grid-template-columns: auto 1fr; align-items: start;
+  gap: var(--s2); width: 100%;
   background: none; border: none; border-left: 2px solid transparent;
   border-radius: 0; padding: var(--s2) var(--s3); cursor: pointer;
   text-align: left; color: var(--ink); font-size: var(--t-sm);
+  transition: background var(--motion) var(--ease), border-color var(--motion) var(--ease);
 }
-.roster-item:hover { background: var(--raised); }
+.roster-item:hover { background: var(--surface-2); }
 .roster-item[aria-current="true"] { background: var(--raised); border-left-color: var(--accent); }
-.roster-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-item:has(.roster-check:checked) { background: var(--raised); border-left-color: var(--accent); }
+.roster-item .lead { display: flex; align-items: center; height: 1.5em; }
+.roster-item .body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.roster-item .line { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.roster-item .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roster-item .meter { width: 34px; min-width: 34px; flex: none; }
+.roster-item .sub {
+  display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--t-xs); color: var(--muted); min-width: 0;
+}
+.roster-item .sub .race { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Equipped-slot pips: one per body slot, filled when something occupies it.
+ * Lets you see who is missing armour before selecting them, which is the whole
+ * point of a multi-select. */
+.pips { display: inline-flex; gap: 2px; flex: none; }
+.pip { width: 5px; height: 5px; border-radius: 1px; background: var(--line); }
+.pip--on { background: var(--ok); }
+
+.roster-check { flex: none; margin: 0; }
+.roster-select-bar {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line);
+  background: var(--sunken); font-size: var(--t-xs); color: var(--muted);
+}
 
 /* Small round state marker — cheaper to scan than a word at list density. */
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
 .dot--warn { background: var(--warn); }
 .dot--danger { background: var(--danger); }
 
-.empty-state { color: var(--muted); padding: var(--s6) var(--s4); text-align: center; }
+.empty-state {
+  color: var(--muted); padding: var(--s6) var(--s4); text-align: center;
+  border: 1px dashed var(--line); border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.empty-state strong { display: block; color: var(--ink-dim); font-weight: 600; margin-bottom: var(--s1); }
 
 @media (max-width: 860px) {
   .workspace { grid-template-columns: 1fr; }
+  .roster { position: static; }
   .roster-list { max-height: 15rem; overflow-y: auto; }
 }
 
 .summary-bar {
-  display: flex; gap: var(--s5); flex-wrap: wrap; padding: var(--s2) var(--s4);
+  display: flex; gap: var(--s5); flex-wrap: wrap; align-items: baseline;
+  padding: var(--s3) var(--s4);
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); margin-bottom: var(--s4);
+  box-shadow: var(--elev-1);
 }
+.summary-bar b { font-size: var(--t-lg); }
 
 .picker { display: inline-flex; gap: var(--s2); align-items: center; margin-bottom: var(--s4); color: var(--muted); font-size: var(--t-sm); }
+
+/* ---------------------------------------------------------- bulk equip -- */
+
+/* The pre-flight list: exactly what each selected character is about to be
+ * given, and what it will displace, BEFORE the write. Scrolls itself — a squad
+ * of 20 must not push the Apply button off-screen (style guide §2.7). */
+.preflight { max-height: 22rem; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: var(--radius); }
+.preflight-row { display: grid; grid-template-columns: minmax(7rem, 12rem) 1fr; gap: var(--s2) var(--s3); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-soft); }
+.preflight-row:last-child { border-bottom: none; }
+.preflight-row .who { font-size: var(--t-sm); min-width: 0; }
+.preflight-row .who .race { display: block; color: var(--muted); font-size: var(--t-xs); }
+.preflight-row .what { font-size: var(--t-xs); color: var(--ink-dim); min-width: 0; }
+
+/* A warning here is advisory by design — bulk equip never refuses on race fit
+ * (services/fitCheck.js), it tells you and lets you decide. Warn tone, not
+ * danger: nothing is destroyed, the item just may not suit. */
+.note-warn { color: var(--warn); }
+.note-warn + .note-warn { margin-top: var(--s1); }
+
+/* Chip list for a loadout's contents. */
+.chips { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); }
+.chip {
+  display: inline-flex; align-items: center; gap: var(--s1);
+  font-size: var(--t-xs); color: var(--ink-dim);
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  border-radius: 999px; padding: 1px var(--s2);
+}
+.chip .slot { color: var(--muted); }
 
 /* ------------------------------------------------------------- receipts -- */
 
 /* One shared result surface for every mutation. Features must not add their
  * own <pre> variants — call the same helper (see style guide §5). */
+/* Deliberately NOT transitioned (style guide §1a): a receipt is the answer to
+ * "did my write land", and fading it in would put a delay between the answer
+ * and the person waiting for it. */
 .receipt {
-  margin: var(--s2) 0 0; background: var(--sunken); border: 1px solid var(--line);
+  margin: var(--s3) 0 0; background: var(--sunken); border: 1px solid var(--line);
   border-left: 3px solid var(--muted); padding: var(--s2) var(--s3);
-  font-size: var(--t-xs); border-radius: var(--radius);
-  white-space: pre-wrap; word-break: break-word; max-height: 12rem; overflow-y: auto;
+  font-size: var(--t-xs); line-height: 1.6; border-radius: var(--radius);
+  white-space: pre-wrap; word-break: break-word; max-height: 16rem; overflow-y: auto;
 }
 .receipt--ok { border-left-color: var(--ok); }
 .receipt--error { border-left-color: var(--danger); color: #edb9ad; }
@@ -316,7 +472,9 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * Collapses to nothing when there are no results so it leaves no empty box. */
 .picker-results {
   max-height: 17rem; overflow-y: auto;
+  background: var(--sunken);
   border: 1px solid var(--line-soft); border-radius: var(--radius);
+  box-shadow: var(--elev-2) inset;
 }
 .picker-results:empty { display: none; }
 

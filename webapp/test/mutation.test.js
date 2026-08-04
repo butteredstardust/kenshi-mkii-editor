@@ -309,6 +309,14 @@ test('healPart "full" sets flesh to the max of the character\'s own parts, never
     for (let i = 0; i < saveService.BODY_SLOTS; i++) if (rec.floats.has(`hit${i}`)) allCurrent.push(rec.floats.get(`flesh${i}`) ?? 0);
     const expectedMax = Math.max(0, ...allCurrent);
 
+    // Wound the part first, so this asserts a real heal rather than depending
+    // on the live save happening to contain a damaged character. On a fully
+    // healed squad "set flesh to the max of my own parts" is a genuine no-op
+    // and the mutation gate rightly rejects it — which used to fail this test
+    // for reasons that had nothing to do with healPart().
+    await mutation.mutate(scratch.dir, 'test: wound a part first',
+      (staging) => saveService.damagePart(staging, target.platoonFile, target.sid, n, { flesh: expectedMax / 4 }));
+
     await mutation.mutate(scratch.dir, 'test: full heal',
       (staging) => saveService.healPart(staging, target.platoonFile, target.sid, n, { flesh: 'full' }));
 
@@ -560,9 +568,14 @@ test('trainCharacter sets attributes to 45 and rolls archetype/other skills into
     const relFile = path.join('platoon', target.platoonFile);
     const before = readFile(fs.readFileSync(path.join(scratch.dir, relFile)));
 
+    // `mode: 'set'` on purpose: the bands below are what the roll produces, and
+    // the default 'raise' mode writes Math.max(current, rolled), so a character
+    // who already had a high skill would blow the "15-40" assertion for reasons
+    // that are the point of raise mode, not a bug. Raise semantics have their
+    // own test immediately below.
     const receipt = await mutation.mutate(scratch.dir, 'test: train soldier/katanas',
       (staging) => saveService.trainCharacter(staging, target.platoonFile, target.sid,
-        { archetype: 'soldier', sub: 'katanas', rng: () => 0.5 }));
+        { archetype: 'soldier', sub: 'katanas', mode: 'set', rng: () => 0.5 }));
 
     assert.deepStrictEqual(receipt.changedFiles, [relFile]);
     assert.strictEqual(receipt.rollbackStatus, 'not needed');

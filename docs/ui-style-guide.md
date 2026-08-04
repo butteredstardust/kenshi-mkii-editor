@@ -25,14 +25,40 @@ one user on one machine. That drives every decision below:
   tabular numbers, and progressive disclosure over generous whitespace.
 - **Safety is a visual property.** A button that can destroy a character must
   not look like a button that reveals a panel. See §3.
-- **Nothing is decorative.** No gradients, shadows, animations, icon fonts, or
-  illustrative flourish. If a pixel isn't carrying information, delete it.
-  **Inline SVG glyphs are allowed where they carry information** — the equip-slot
-  icons in the Gear rows encode which slot a row occupies, so they replace text
-  rather than dress it up, and make a 30-item inventory scannable by shape. Add
-  them to `ICON_PATHS` in `app.mjs`, size them in `em`, and draw them in
-  `currentColor` so they inherit tone instead of introducing a colour. An icon
-  that merely sits next to a label it duplicates is decoration — delete it.
+- **Every pixel earns its place.** This rule used to read "nothing is
+  decorative — no gradients, shadows or animations", which over time became the
+  thing holding the interface back: with only hairline borders to work with,
+  a card, a panel and a table all read as the same flat rectangle. Depth and
+  motion are now allowed **as long as they carry meaning**:
+  - **Elevation encodes layering**, not prettiness. Use the `--elev-*` tokens so
+    a raised surface means "this sits above that" — a card above the page, a
+    picker above a card. Do not put a shadow on something that isn't layered.
+  - **Motion encodes change.** See §1a.
+  - Still banned: gradients used as texture, icon fonts, illustrative flourish,
+    and any effect whose removal would cost the user no information.
+  - **Inline SVG glyphs are allowed where they carry information** — the
+    equip-slot icons in the Gear rows encode which slot a row occupies, so they
+    replace text rather than dress it up, and make a 30-item inventory scannable
+    by shape. Add them to `ICON_PATHS` in `app.mjs`, size them in `em`, and draw
+    them in `currentColor` so they inherit tone instead of introducing a colour.
+    An icon that merely sits next to a label it duplicates is decoration —
+    delete it.
+- **Dark only.** There is no light theme and adding one is not a small change:
+  every colour decision would have to be made and contrast-checked twice, for a
+  tool that runs beside a dark game. If you find yourself hardcoding a colour
+  for one theme, you have gone wrong — use the tokens.
+
+## 1a. Motion
+
+- **≤120ms, ease-out, and only on hover, focus, selection and disclosure.**
+  Anything longer is felt as lag in a tool this dense.
+- **Never animate a mutation result.** A receipt appears instantly. A user
+  watching for whether a write landed must not be shown a transition first.
+- **Never animate layout** (width, height, top/left) on anything containing a
+  table — it reflows the page mid-frame. Transition `opacity`, `background`,
+  `border-color`, `color` and `transform` only.
+- **Always honour `prefers-reduced-motion: reduce`** — `styles.css` has a single
+  global block that disables transitions; do not add motion that escapes it.
 
 ## 2. The hard rules
 
@@ -44,7 +70,8 @@ These are the ones that actually get violated. Breaking any of them is a bug.
 2. **Escape every dynamic value with `esc()`** — including numbers and values
    you're sure are safe. `innerHTML` is the only rendering path here.
 3. **Use existing tokens and components.** No hex colours, no `px` spacing, no
-   inline `style=` outside the one approved case (`meter`'s width). If you need
+   inline `style=` outside the one approved case (`meter`'s width). Elevation
+   comes from `--elev-*`, never a hand-written `box-shadow`. If you need
    something new, add it to `styles.css` with a comment explaining why.
 4. **Do not invent per-feature class names.** `.stats-editor`, `.medical-editor`
    and `.hunger-editor` were the disease. Compose `.panel`, `.section`,

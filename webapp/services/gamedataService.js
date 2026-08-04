@@ -30,12 +30,20 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // `stackable` added for the item picker, TODO.md 2.3; `itemFunction` and the
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
-const CACHE_VERSION = 4;
+//
+// 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
+// every weapon-grade row.
+const CACHE_VERSION = 5;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
-// 4 = trade goods/consumable. Type 42 is the save-side ITEM *instance*
-// record, not a template, and must never appear here.
-const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4]);
+// 4 = trade goods/consumable, 46 = backpack. Type 42 is the save-side ITEM
+// *instance* record, not a template, and must never appear here.
+//
+// 46 was added when bulk equip landed: 22 backpack templates exist in this
+// install's data and the picker used to hide every one of them, which is why
+// the equip scripts had to hand-roll a backpack record. All 42 live
+// type-46-backed items confirm the minted shape (see itemFactory.js).
+const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46]);
 
 let index = null;
 let stats = null;
@@ -134,7 +142,17 @@ function build() {
         // a fixed value (5/6) regardless of the template, so there's nothing
         // useful to cache for them here.
         const itemFunction = rec.type === 4 && rec.ints.has('item function') ? rec.ints.get('item function') : null;
-        map.set(rec.sid, { name: asText(rec.name), type: rec.type, slot, stackable, itemFunction });
+        // `part coverage` rows name the body parts an armour piece covers, by
+        // body-part stringID (e.g. "32-gamedata.quack" = Head on a helmet).
+        // Cached so bulk equip can warn when an item covers a part the target
+        // character's MEDICAL record doesn't have — the one race-fit signal
+        // that is derived from data rather than editorial. Null when the
+        // template has no such rows (everything that isn't armour).
+        const coverRows = rec.extra.get('part coverage');
+        const partCoverage = coverRows && coverRows.length
+          ? coverRows.map((r) => r.target).filter(Boolean)
+          : null;
+        map.set(rec.sid, { name: asText(rec.name), type: rec.type, slot, stackable, itemFunction, partCoverage });
       }
 
       // Material union: collected from EVERY definition, first-definition-wins
@@ -178,6 +196,12 @@ function build() {
     seenGrades.add(key);
     const modelEntry = map.get(row.modelSid);
     grades.push({
+      // The (company, model) PAIR is the grade — `modelSid` alone is NOT a key:
+      // 14 of this install's 24 model sids appear under two different companies
+      // (1069-gamedata.base is both "Homemade" and "Edgewalkers"). Anything
+      // selecting a grade must carry this `id`, or it is silently choosing
+      // whichever row happens to sort first. See itemFactory.resolveGrade().
+      id: key,
       companySid: row.companySid,
       companyName: row.companyName,
       modelSid: row.modelSid,

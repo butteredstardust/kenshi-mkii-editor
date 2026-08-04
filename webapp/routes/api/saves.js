@@ -5,6 +5,7 @@ const { handle } = require('../lib/handler');
 const paths = require('../../services/pathService');
 const saveService = require('../../services/saveService');
 const mutation = require('../../services/mutationService');
+const loadouts = require('../../services/loadouts');
 
 const router = express.Router();
 
@@ -99,6 +100,62 @@ router.post('/saves/:name/platoons/:file/characters', handle(async (req) => {
       { name, raceSid, archetype, sub, ...(tier === undefined ? {} : { tier }) }));
 }));
 
+// Bulk equip: give every character in `targets` every item in `items`, in ONE
+// staged edit across however many platoon files the targets span. Body shape is
+// checked here; the domain rules (template resolves, typecode, stackability,
+// slot compatibility) live in saveService.equipMany()/itemSlots.js.
+//
+// `loadoutId` is a convenience: name a catalogue entry instead of restating its
+// items, and its advisory race notes come along. `items` may be given as well
+// as (or instead of) a loadout — the two concatenate, so "this kit plus a
+// backpack" is one request.
+router.post('/saves/:name/equip', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { targets, items, loadoutId, skipIfSlotFilled } = req.body || {};
+
+  if (!Array.isArray(targets) || !targets.length) {
+    const e = new Error('body must include a non-empty "targets" array of { file, sid }'); e.status = 400; throw e;
+  }
+  for (const t of targets) {
+    if (!t || typeof t.file !== 'string' || !t.file || typeof t.sid !== 'string' || !t.sid) {
+      const e = new Error('every target must be { file: string, sid: string }'); e.status = 400; throw e;
+    }
+  }
+  if (items !== undefined && !Array.isArray(items)) {
+    const e = new Error('"items", if given, must be an array'); e.status = 400; throw e;
+  }
+  if (skipIfSlotFilled !== undefined && typeof skipIfSlotFilled !== 'boolean') {
+    const e = new Error('"skipIfSlotFilled", if given, must be a boolean'); e.status = 400; throw e;
+  }
+
+  let loadout = null;
+  if (loadoutId !== undefined) {
+    if (typeof loadoutId !== 'string' || !loadoutId) {
+      const e = new Error('"loadoutId", if given, must be a non-empty string'); e.status = 400; throw e;
+    }
+    loadout = loadouts.find(loadoutId);
+    if (!loadout) { const e = new Error(`unknown loadout "${loadoutId}"`); e.status = 400; throw e; }
+  }
+
+  const allItems = [...(loadout ? loadout.items : []), ...(items || [])];
+  if (!allItems.length) {
+    const e = new Error('nothing to equip — provide "loadoutId" and/or a non-empty "items" array');
+    e.status = 400;
+    throw e;
+  }
+
+  const label = loadout
+    ? `equip ${loadout.label} on ${targets.length} character(s)`
+    : `equip ${allItems.length} item(s) on ${targets.length} character(s)`;
+
+  return mutation.mutate(save.dir, label, (staging) => saveService.equipMany(staging, {
+    targets,
+    items: allItems,
+    raceNotes: loadout ? loadout.raceNotes || [] : [],
+    skipIfSlotFilled: !!skipIfSlotFilled,
+  }));
+}));
+
 function findSaveOr404(name) {
   const save = paths.findSave(name);
   if (!save) { const e = new Error(`no save named "${name}"`); e.status = 404; throw e; }
@@ -166,8 +223,8 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quali
 // remain as thin wrappers over the same primitive.
 router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
-  const { section, level, quality, quantity, materialSid } = req.body || {};
-  for (const [key, value] of Object.entries({ section, materialSid })) {
+  const { section, level, quality, quantity, materialSid, gradeId } = req.body || {};
+  for (const [key, value] of Object.entries({ section, materialSid, gradeId })) {
     if (value !== undefined && (typeof value !== 'string' || !value)) {
       const e = new Error(`"${key}", if given, must be a non-empty string`); e.status = 400; throw e;
     }
@@ -178,8 +235,8 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
     }
   }
   if (section === undefined && level === undefined && quality === undefined
-    && quantity === undefined && materialSid === undefined) {
-    const e = new Error('body must include at least one of section, level, quality, quantity, materialSid');
+    && quantity === undefined && materialSid === undefined && gradeId === undefined) {
+    const e = new Error('body must include at least one of section, level, quality, quantity, materialSid, gradeId');
     e.status = 400;
     throw e;
   }
@@ -192,6 +249,7 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
   if (quality !== undefined) patch.quality = quality;
   if (quantity !== undefined) patch.quantity = quantity;
   if (materialSid !== undefined) patch.materialSid = materialSid;
+  if (gradeId !== undefined) patch.gradeId = gradeId;
   return mutation.mutate(save.dir, `update item ${req.params.itemSid}`,
     (staging) => saveService.updateItem(staging, req.params.file, req.params.sid, req.params.itemSid, patch));
 }));
@@ -202,7 +260,10 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
 // section compatibility) lives in saveService.addItem() itself.
 router.post('/saves/:name/platoons/:file/characters/:sid/inventory', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
-  const { templateSid, section, quantity, level, materialSid, companySid } = req.body || {};
+  const { templateSid, section, quantity, level, materialSid, companySid, gradeId } = req.body || {};
+  if (gradeId !== undefined && (typeof gradeId !== 'string' || !gradeId)) {
+    const e = new Error('"gradeId", if given, must be a non-empty string'); e.status = 400; throw e;
+  }
   if (typeof templateSid !== 'string' || !templateSid) {
     const e = new Error('body must include "templateSid" (string, a gamedata item template sid)'); e.status = 400; throw e;
   }
@@ -223,7 +284,7 @@ router.post('/saves/:name/platoons/:file/characters/:sid/inventory', handle(asyn
   }
   return mutation.mutate(save.dir, `add item ${templateSid} to ${req.params.sid}`,
     (staging) => saveService.addItem(staging, req.params.file, req.params.sid, templateSid,
-      { quantity, section, level, materialSid, companySid }));
+      { quantity, section, level, materialSid, companySid, gradeId }));
 }));
 
 module.exports = router;

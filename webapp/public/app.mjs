@@ -22,13 +22,26 @@ const state = {
   // "Add member" form state, kept here so the re-render after a successful add
   // doesn't wipe what the user typed for the next one (same reason as trainChoice).
   addMember: null,
-  squadReceipt: null, // receipt for the squad-level panel, survives its re-render
+  // Receipt for whichever PANEL-level (not card-level) mutation just ran — the
+  // Squad tab's rename/add-member panel or the Gear tab's bulk equip. Both
+  // re-render on success, which replaces the .receipt element the result was
+  // just written into, so it is stashed here and re-attached by the next wire().
+  // Only one of those panels exists at a time (they are on different tabs).
+  panelReceipt: null,
+  loadouts: [], // named gear sets for bulk equip (editorial — services/loadouts.js)
+  // Bulk equip: a Set of the same stable "<file>::<sid>" keys `selected` uses,
+  // never indices — the roster can be filtered and the save re-read between
+  // renders. Empty means "not in selection mode", so single-character editing
+  // is completely unchanged until you tick something.
+  selection: new Set(),
+  selectMode: false,
+  bulk: null, // { loadoutId, skipIfSlotFilled } — survives the re-render after a write
   pendingReceipt: null, // survives the re-render a mutation triggers (see wire())
   trainChoice: null, // { key, archetype, sub } — likewise survives the re-render
   // "Add item" picker state, keyed like trainChoice so it survives the
   // re-render a successful add triggers — otherwise adding one of something
   // would clear the search and force the user to start over to add a second.
-  // { key, query, results, total, template, level, materialSid, quantity, section }
+  // { key, query, results, total, template, level, gradeId, quantity, section }
   addItem: null,
   weaponGrades: null, // fetched once, lazily — only needed when a weapon is picked
 };
@@ -52,6 +65,7 @@ async function boot() {
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
   state.recruits = await API.recruits().catch(() => []);
+  state.loadouts = await API.loadouts().catch(() => []);
   await loadRaces();
   // The grade ladder backs the Gear row's weapon "Quality" select, which is
   // rendered synchronously, so it has to be here rather than fetched lazily.
@@ -363,10 +377,14 @@ function itemRow(it) {
 
   let qualityCell = '<span class="muted">—</span>';
   if (isWeapon && grades.length) {
-    qualityCell = `<select class="item-field" data-field="materialSid" data-initial="${esc(it.materialSid || '')}" aria-label="Grade" ${dis()}>
-      ${it.materialSid && !grades.some((g) => g.modelSid === it.materialSid)
-    ? `<option value="${esc(it.materialSid)}" selected>${esc(it.material || 'current')}</option>` : ''}
-      ${grades.map((g) => `<option value="${esc(g.modelSid)}" ${g.modelSid === it.materialSid ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+    // Keyed on the grade's composite id ("<companySid>|<modelSid>"), NOT on
+    // modelSid: 14 of this install's 24 model sids belong to two different
+    // companies, so a modelSid-keyed <select> emits duplicate option values and
+    // the server has to guess which manufacturer you meant.
+    qualityCell = `<select class="item-field" data-field="gradeId" data-initial="${esc(it.gradeId || '')}" aria-label="Grade" ${dis()}>
+      ${it.gradeId && !grades.some((g) => g.id === it.gradeId)
+    ? `<option value="${esc(it.gradeId)}" selected>${esc(it.material || 'current')}</option>` : ''}
+      ${grades.map((g) => `<option value="${esc(g.id)}" ${g.id === it.gradeId ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
     </select>`;
   } else if (hasLevel) {
     const named = LEVEL_PRESETS.some(([v]) => v === it.level);
@@ -484,7 +502,7 @@ function addItemConfig(pick) {
     <label class="field">Grade
       <select class="add-item-grade">
         <option value="">lowest (default)</option>
-        ${(state.weaponGrades || []).map((g) => `<option value="${esc(g.modelSid)}" ${pick.materialSid === g.modelSid ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+        ${(state.weaponGrades || []).map((g) => `<option value="${esc(g.id)}" ${pick.gradeId === g.id ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
       </select></label>` : '';
 
   const quantityControl = t.stackable ? `
@@ -570,16 +588,123 @@ function gearCard(c, file) {
   </article>`;
 }
 
+// ------------------------------------------------------------ bulk equip --
+
+/**
+ * "Equip several at once."
+ *
+ * The whole reason this exists rather than looping the single-item control:
+ * `mutationService` treats each call as one staged edit against one snapshot and
+ * takes one backup, so eight characters × six items through the per-character
+ * route is 48 backups and 47 intermediate states nobody asked for. One request,
+ * one edit, one receipt.
+ */
+function bulkPanel(picked) {
+  const bulk = state.bulk || {};
+  const loadout = (state.loadouts || []).find((l) => l.id === bulk.loadoutId) || (state.loadouts || [])[0];
+
+  const chips = loadout ? `<div class="chips">
+      ${loadout.items.map((it) => `<span class="chip">${esc(it.name || it.templateSid)}
+        <span class="slot">${esc(SLOT_LABELS[it.section] || it.section)}</span></span>`).join('')}
+    </div>
+    ${loadout.missing.length ? `<p class="hint note-warn">${esc(loadout.missing.length)} item(s) in this set are not in your installed data and will be rejected.</p>` : ''}` : '';
+
+  return `<article class="card" id="bulk-card">
+    <div class="card-head">
+      <h3>Equip ${esc(picked.length)} character${picked.length === 1 ? '' : 's'}</h3>
+      <button class="btn btn--ghost btn--xs" id="bulk-clear">Clear selection</button>
+    </div>
+    <p class="hint">Everything below is written in one edit with one backup, across every squad the
+      selection touches. Items go to whoever is ticked — the editor does not refuse an item on the
+      grounds of race, it tells you afterwards which ones look like a bad fit.</p>
+
+    <details class="section" open>
+      <summary>Apply a loadout</summary>
+      <div class="section-body stack">
+        <div class="field-row">
+          <label class="field field--grow">Loadout
+            <select id="bulk-loadout" ${dis()}>
+              ${(state.loadouts || []).map((l) => `<option value="${esc(l.id)}" ${loadout && l.id === loadout.id ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
+            </select></label>
+          <label class="field-check">
+            <input type="checkbox" id="bulk-skip" ${bulk.skipIfSlotFilled ? 'checked' : ''}>
+            Skip a slot that's already filled
+          </label>
+          <button class="btn btn--primary" id="bulk-apply" ${dis()}>Apply to ${esc(picked.length)}</button>
+        </div>
+        ${loadout ? `<p class="hint">${esc(loadout.description)}</p>${chips}` : '<p class="hint">No loadouts available.</p>'}
+        <div id="bulk-preflight"></div>
+      </div>
+    </details>
+    <pre class="receipt" id="bulk-receipt" hidden></pre>
+  </article>`;
+}
+
+/**
+ * What is about to happen, per character, BEFORE the write — the same
+ * "name the consequence first" rule the single-item row follows with its
+ * "replaces X" note, scaled to a squad. Computed client-side from data already
+ * on the character; the server re-derives it all anyway.
+ */
+function bulkPreflight(picked, loadout) {
+  if (!loadout) return '';
+  const skip = !!(state.bulk || {}).skipIfSlotFilled;
+  const buckets = new Set(['main', 'backpack_content']);
+
+  return `<div class="preflight">${picked.map(({ c }) => {
+    const filled = new Map((c.inventory || []).map((it) => [it.section, it]));
+    const gets = [];
+    const skipped = [];
+    const replaces = [];
+    for (const it of loadout.items) {
+      const occupant = buckets.has(it.section) ? null : filled.get(it.section);
+      if (skip && occupant) { skipped.push(it); continue; }
+      gets.push(it);
+      if (occupant) replaces.push(occupant.name);
+    }
+    const notes = (loadout.raceNotes || [])
+      .filter((n) => c.race && (n.races || []).some((r) => c.race.name.toLowerCase().includes(r.toLowerCase())))
+      .map((n) => n.note);
+
+    return `<div class="preflight-row">
+      <span class="who">${esc(c.name || '(unnamed)')}<span class="race">${esc(c.race ? c.race.name : 'unknown race')}</span></span>
+      <span class="what">
+        ${gets.length ? esc(gets.map((it) => it.name || it.templateSid).join(', ')) : '<em>nothing — every slot already filled</em>'}
+        ${replaces.length ? `<div class="muted">replaces ${esc(replaces.join(', '))}</div>` : ''}
+        ${skipped.length ? `<div class="muted">skipping ${esc(skipped.length)} already-filled slot(s)</div>` : ''}
+        ${notes.map((n) => `<div class="note-warn">${esc(n)}</div>`).join('')}
+      </span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
 function renderGear() {
   const r = buildRoster();
   if (!r) return '<p>No save found.</p>';
   const { all, groups, sel } = r;
   if (!all.length) return `${savePicker()}<p>No player squad in this save.</p>`;
 
+  // Selection survives a filter change, so validate it against the roster that
+  // actually exists rather than trusting stale keys after a refresh.
+  const picked = all.filter(({ c, file }) => state.selection.has(keyOf(file, c.sid)));
+
+  const detail = picked.length
+    ? bulkPanel(picked)
+    : (state.selectMode
+      ? `<div class="empty-state"><strong>Nothing selected</strong>Tick characters in the roster to equip them together in one edit.</div>`
+      : (sel ? gearCard(sel.c, sel.file) : '<div class="empty-state"><strong>No character selected</strong>Pick someone from the roster to edit their gear.</div>'));
+
   return `${savePicker()}
+    <section class="summary-bar">
+      <span><b>Gear</b></span>
+      <span class="muted">${esc(all.length)} character(s)</span>
+      <span class="actions">
+        <button class="btn btn--xs" id="toggle-select">${state.selectMode ? 'Done selecting' : 'Equip several at once'}</button>
+      </span>
+    </section>
     <div class="workspace">
-      ${rosterNav(groups)}
-      <div id="detail">${sel ? gearCard(sel.c, sel.file) : '<div class="empty-state">Select a character to edit.</div>'}</div>
+      ${rosterNav(groups, { selectable: state.selectMode })}
+      <div id="detail">${detail}</div>
     </div>`;
 }
 
@@ -636,17 +761,51 @@ function condition(c) {
   return Math.min(...parts.map((p) => p.percentOfIntact ?? 100));
 }
 
-function rosterItem(c, file) {
+/**
+ * One pip per equip slot, filled when something occupies it. Information, not
+ * decoration (style guide §1): it answers "who still needs armour?" at roster
+ * density, which is exactly the question a multi-select equip raises.
+ */
+function slotPips(c) {
+  const filled = new Set((c.inventory || []).map((it) => it.section));
+  return `<span class="pips" role="img" aria-label="${esc(EQUIP_SLOTS.filter((s) => filled.has(s)).length)} of ${esc(EQUIP_SLOTS.length)} slots filled">
+    ${EQUIP_SLOTS.map((s) => `<span class="pip ${filled.has(s) ? 'pip--on' : ''}" title="${esc(SLOT_LABELS[s] || s)}"></span>`).join('')}
+  </span>`;
+}
+
+function rosterItem(c, file, { selectable = false } = {}) {
   const key = keyOf(file, c.sid);
   const down = ['dead', 'unconscious', 'coma', 'incapacitated'].some((k) => c.medical?.[k]);
   const cond = condition(c);
   const tone = down ? 'dot--danger' : cond != null && cond < 70 ? 'dot--warn' : '';
+  // In selection mode the row is a label wrapping a checkbox rather than a
+  // button — ticking someone must not also change which character the detail
+  // pane is editing.
+  const body = `<span class="body">
+      <span class="line">
+        <span class="name">${esc(c.name || '(unnamed)')}</span>
+        ${c.isLeader ? '<span class="badge badge--accent">L</span>' : ''}
+      </span>
+      <span class="sub">
+        <span class="race">${esc(c.race ? c.race.name : 'unknown race')}</span>
+        ${slotPips(c)}
+        ${cond != null ? meter(cond) : ''}
+      </span>
+    </span>`;
+
+  if (selectable) {
+    return `<li><label class="roster-item">
+      <span class="lead">
+        <input type="checkbox" class="roster-check" data-pick="${esc(key)}"
+          ${state.selection.has(key) ? 'checked' : ''} ${dis()}>
+      </span>
+      ${body}
+    </label></li>`;
+  }
   return `<li><button class="roster-item" data-select="${esc(key)}"
       aria-current="${state.selected === key}">
-    <span class="dot ${tone}"></span>
-    <span class="name">${esc(c.name || '(unnamed)')}</span>
-    ${c.isLeader ? '<span class="badge badge--accent">L</span>' : ''}
-    ${cond != null ? meter(cond) : ''}
+    <span class="lead"><span class="dot ${tone}"></span></span>
+    ${body}
   </button></li>`;
 }
 
@@ -682,12 +841,26 @@ function buildRoster() {
   return { s, all, groups, sel };
 }
 
-function rosterNav(groups) {
+/**
+ * `selectable` turns the roster into a multi-select for bulk equip. Off
+ * everywhere except the Gear tab, and off there until the user asks for it, so
+ * the single-character flow is untouched by default.
+ */
+function rosterNav(groups, { selectable = false } = {}) {
+  const bar = selectable ? `<div class="roster-select-bar">
+      <span>${esc(state.selection.size)} selected</span>
+      <span class="actions">
+        <button class="btn btn--ghost btn--xs" id="select-all">All</button>
+        <button class="btn btn--ghost btn--xs" id="select-none">None</button>
+      </span>
+    </div>` : '';
+
   return `<nav class="roster" aria-label="Squad roster">
     <input type="search" class="roster-filter" id="roster-filter" placeholder="Filter by name…"
       value="${esc(state.filter)}" autocomplete="off">
+    ${bar}
     ${groups.map((g) => `<div class="roster-group">${esc(g.file.replace(/\.platoon$/, ''))}</div>
-      <ul class="roster-list">${g.chars.map((c) => rosterItem(c, g.file)).join('')}</ul>`).join('')
+      <ul class="roster-list">${g.chars.map((c) => rosterItem(c, g.file, { selectable })).join('')}</ul>`).join('')
       || '<p class="empty-state">No match.</p>'}
   </nav>`;
 }
@@ -898,20 +1071,178 @@ async function refresh() {
  * changes the roster — so the receipt is stashed in state and re-attached by the
  * next pass, the same trick the character cards use.
  */
+/**
+ * Multi-select roster + bulk equip (Gear tab).
+ *
+ * The checkbox handlers deliberately do NOT call render() — re-rendering the
+ * page on every tick would tear down the roster mid-click and lose scroll
+ * position on a 20-character squad. Only the count, the panel heading and the
+ * pre-flight need to change, and those are patched in place.
+ */
+/**
+ * Turn a bulk-equip receipt into readable lines: who got what, what it
+ * displaced, what was skipped, and any fit warning. The server reports all of
+ * this per character (saveService.equipMany) precisely so the UI doesn't have
+ * to guess after the fact.
+ */
+function bulkDetails(result) {
+  const r = (result.receipts || [])[0];
+  if (!r || !r.characters) return null;
+  const lines = [`${r.itemsAdded} item(s) → ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  for (const c of r.characters) {
+    const got = c.added.map((a) => a.name).join(', ') || 'nothing';
+    lines.push(`  ${c.name || '(unnamed)'} — ${got}`);
+    if (c.displaced.length) lines.push(`      displaced: ${c.displaced.map((d) => d.name).join(', ')}`);
+    if (c.skipped.length) lines.push(`      skipped ${c.skipped.length} filled slot(s)`);
+    for (const w of c.warnings) lines.push(`      ! ${w.text}`);
+  }
+  return lines;
+}
+
+function wireBulkEquip() {
+  const toggle = document.getElementById('toggle-select');
+  if (toggle) toggle.onclick = () => {
+    state.selectMode = !state.selectMode;
+    if (!state.selectMode) state.selection.clear();
+    render();
+  };
+
+  const checks = [...page.querySelectorAll('.roster-check')];
+
+  /**
+   * Ticking a box must NOT re-render the page. render() replaces `page.innerHTML`
+   * wholesale, which detaches every checkbox mid-interaction — a user ticking
+   * four names in a row would find the second click landing on a dead node. Only
+   * the 0<->1 transition genuinely changes the layout (single-character card vs.
+   * bulk panel); every other tick just updates a count, a heading and the
+   * pre-flight list, so those are patched in place.
+   */
+  let syncSelectionUi = () => {};
+  const onTick = (crossedZero) => {
+    if (crossedZero) render(); else syncSelectionUi();
+  };
+  const applyTick = (el) => {
+    const had = state.selection.size;
+    if (el.checked) state.selection.add(el.dataset.pick); else state.selection.delete(el.dataset.pick);
+    onTick((had === 0) !== (state.selection.size === 0));
+  };
+
+  const setAll = (on) => {
+    const had = state.selection.size;
+    for (const el of checks) {
+      el.checked = on;
+      if (on) state.selection.add(el.dataset.pick); else state.selection.delete(el.dataset.pick);
+    }
+    onTick((had === 0) !== (state.selection.size === 0));
+  };
+  const all = document.getElementById('select-all');
+  const none = document.getElementById('select-none');
+  if (all) all.onclick = () => setAll(true);
+  if (none) none.onclick = () => setAll(false);
+
+  for (const el of checks) el.onchange = () => applyTick(el);
+
+  const card = document.getElementById('bulk-card');
+  if (!card) return;
+  const receipt = document.getElementById('bulk-receipt');
+
+  if (state.panelReceipt) {
+    showReceipt(receipt, state.panelReceipt.result,
+      { label: state.panelReceipt.label, details: state.panelReceipt.details });
+    state.panelReceipt = null;
+  }
+
+  const clear = document.getElementById('bulk-clear');
+  if (clear) clear.onclick = () => { state.selection.clear(); render(); };
+
+  const loadoutSel = document.getElementById('bulk-loadout');
+  const skipBox = document.getElementById('bulk-skip');
+  const preflightEl = document.getElementById('bulk-preflight');
+  const applyBtn = document.getElementById('bulk-apply');
+
+  const rosterEntries = () => {
+    const r = buildRoster();
+    return r ? r.all.filter(({ c, file }) => state.selection.has(keyOf(file, c.sid))) : [];
+  };
+  const currentLoadout = () => (state.loadouts || []).find((l) => l.id === (loadoutSel && loadoutSel.value))
+    || (state.loadouts || [])[0];
+
+  // Rendered imperatively, not through render(): changing the loadout must not
+  // tear down the roster (same rule the item picker follows).
+  const refreshPreflight = () => {
+    if (!preflightEl) return;
+    state.bulk = {
+      loadoutId: loadoutSel ? loadoutSel.value : null,
+      skipIfSlotFilled: !!(skipBox && skipBox.checked),
+    };
+    preflightEl.innerHTML = bulkPreflight(rosterEntries(), currentLoadout());
+  };
+
+  // Everything a tick changes, patched in place — see onTick() above.
+  syncSelectionUi = () => {
+    const n = state.selection.size;
+    const count = page.querySelector('.roster-select-bar span');
+    if (count) count.textContent = `${n} selected`;
+    const heading = card.querySelector('h3');
+    if (heading) heading.textContent = `Equip ${n} character${n === 1 ? '' : 's'}`;
+    if (applyBtn) applyBtn.textContent = `Apply to ${n}`;
+    refreshPreflight();
+  };
+
+  // Changing the loadout only rewrites this panel's own contents, so it is
+  // rendered imperatively too rather than tearing down the roster.
+  const redrawLoadout = () => {
+    const lo = currentLoadout();
+    const desc = card.querySelector('.section-body > .hint');
+    if (desc && lo) desc.textContent = lo.description;
+    const chipBox = card.querySelector('.chips');
+    if (chipBox && lo) {
+      chipBox.innerHTML = lo.items.map((it) => `<span class="chip">${esc(it.name || it.templateSid)}
+        <span class="slot">${esc(SLOT_LABELS[it.section] || it.section)}</span></span>`).join('');
+    }
+    refreshPreflight();
+  };
+  if (loadoutSel) loadoutSel.onchange = redrawLoadout;
+  if (skipBox) skipBox.onchange = refreshPreflight;
+  refreshPreflight();
+
+  if (applyBtn) applyBtn.onclick = () => {
+    const picked = rosterEntries();
+    const loadout = currentLoadout();
+    if (!picked.length) return showReceipt(receipt, new Error('Select at least one character first.'));
+    if (!loadout) return showReceipt(receipt, new Error('No loadout to apply.'));
+
+    const targets = picked.map(({ c, file }) => ({ file, sid: c.sid }));
+    const label = `${loadout.label} → ${picked.length} character(s)`;
+    return runMutation(applyBtn, receipt, label,
+      () => API.equipMany(state.save, {
+        targets,
+        loadoutId: loadout.id,
+        skipIfSlotFilled: !!(skipBox && skipBox.checked),
+      }),
+      async (result) => {
+        await refresh();
+        state.panelReceipt = { result, label, details: bulkDetails(result) };
+        render();
+      },
+      { details: bulkDetails });
+  };
+}
+
 function wireSquadPanel() {
   const panel = document.getElementById('squad-panel');
   if (!panel) return;
   const receipt = document.getElementById('squad-receipt');
 
-  if (state.squadReceipt) {
-    showReceipt(receipt, state.squadReceipt.result, { label: state.squadReceipt.label });
-    state.squadReceipt = null;
+  if (state.panelReceipt) {
+    showReceipt(receipt, state.panelReceipt.result, { label: state.panelReceipt.label });
+    state.panelReceipt = null;
   }
 
   const run = (btn, label, fn) => runMutation(btn, receipt, label, fn, async (result) => {
     await refresh();
     await loadRaces();
-    state.squadReceipt = { result, label };
+    state.panelReceipt = { result, label };
     render();
   });
 
@@ -1036,6 +1367,7 @@ function wire() {
   };
 
   wireSquadPanel();
+  wireBulkEquip();
 
   const money = document.getElementById('save-money');
   if (money) money.onclick = () => runMutation(
@@ -1172,7 +1504,7 @@ function wire() {
       ];
       for (const el of fields) {
         if (el.value === '' || el.value === el.dataset.initial) continue;
-        patch[el.dataset.field] = el.dataset.field === 'materialSid' ? el.value : Number(el.value);
+        patch[el.dataset.field] = el.dataset.field === 'gradeId' ? el.value : Number(el.value);
       }
       const slot = row.querySelector('.item-slot-select');
       if (slot && slot.value !== slot.dataset.initial) patch.section = slot.value;
@@ -1253,7 +1585,7 @@ function wire() {
         if (levelInput) levelInput.oninput = () => {
           pick.level = levelInput.value === '' ? undefined : Number(levelInput.value);
         };
-        if (gradeSel) gradeSel.onchange = () => { pick.materialSid = gradeSel.value || undefined; };
+        if (gradeSel) gradeSel.onchange = () => { pick.gradeId = gradeSel.value || undefined; };
         if (qtyInput) qtyInput.oninput = () => { pick.quantity = Number(qtyInput.value); };
 
         // Name what this placement will displace BEFORE the write, same as the
@@ -1280,7 +1612,7 @@ function wire() {
         addBtn.onclick = () => {
           const body = { templateSid: pick.template.sid, section: sectionSel.value };
           if (levelInput && levelInput.value !== '') body.level = Number(levelInput.value);
-          if (gradeSel && gradeSel.value) body.materialSid = gradeSel.value;
+          if (gradeSel && gradeSel.value) body.gradeId = gradeSel.value;
           if (qtyInput && qtyInput.value !== '') body.quantity = Number(qtyInput.value);
           return run(addBtn, `added ${pick.template.name}`,
             () => API.addItem(state.save, file, sid, body), true);
@@ -1309,7 +1641,7 @@ function wire() {
               section: template.allowedSections[0],
               quantity: template.stackable ? 1 : undefined,
               level: undefined,
-              materialSid: undefined,
+              gradeId: undefined,
             });
             wireConfig();
           };

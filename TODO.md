@@ -1257,6 +1257,18 @@ manufacturer. The picker must filter to {2, 3, 4}.
   resolved from it and written in lockstep — the pair IS the grade (2.2(i)), so
   they can never be written out of step. Rejected on non-weapons.
 
+  **Correction, found later while building bulk equip:** "`materialSid` names a
+  ladder entry" was wrong. It names a *model*, and a model can belong to more
+  than one company — 14 of this install's 24 model sids appear under two
+  (`1069-gamedata.base` is both "Homemade" and "Edgewalkers"). So the `<select>`
+  keyed on `modelSid` emitted duplicate option values, and
+  `grades.find(g => g.modelSid === ...)` silently resolved to whichever row
+  sorted first: choosing "Edge Type 5 — Edgewalkers" wrote Homemade. The pair
+  really is the grade, which means the *key* has to be the pair too. Every
+  ladder row now carries `id: "<companySid>|<modelSid>"`, `gradeId` is what the
+  UI and the API pass, and `itemFactory.resolveGrade()` is the single place that
+  resolution happens. See the bulk-equip entry at the end of this file.
+
 - [x] **UI redesign.** What was wrong, and what replaced it:
   - *Two write buttons per row ("Move" for the slot select, "Set" for the
     number boxes) with no visual link to their controls.* Now every control is a
@@ -1732,3 +1744,149 @@ numbered into Phase 1/2/3.
   inference, not observation. Every add still takes an automatic backup first,
   and the round trip proves only that the file is internally consistent under
   this codec.
+
+- [x] **Equip several characters at once, and a visual pass over the whole UI.**
+  Both prompted by the same thing: four ad-hoc scripts in `webapp/scripts/`
+  (`equip-weapons.js`, `equip-ancient-samurai.js`, `equip-octo.js`,
+  `equip-backpacks.js`) that geared up a whole squad because the UI could not.
+  Reading them was the design document; each one exposed a specific gap.
+
+  **Gap 1 — race was not in the API.** Every script had to `require()`
+  `saveService` in-process and call `scanCharacters()` (re-parsing all 23
+  platoon files) purely to learn each character's race, because
+  `GET /api/saves/:name/status` didn't carry it. That is why these had to be
+  Node scripts rather than buttons. `readPlatoon()` now returns
+  `race: { sid, name }` per character, read via the new `saveService.raceOf()`
+  off the APPEARANCE (66) record's `extra['race']` row — the same place
+  `scanCharacters()` always read it, just no longer requiring a whole-save scan
+  to reach. The roster shows it, and bulk equip needs it.
+
+  **Gap 2 — there was no bulk write.** Three of the four scripts fired N×2
+  sequential POSTs at the per-character `addItem` route.
+  `mutationService.mutate()` treats each call as one staged edit against one
+  snapshot and takes one backup, so equipping 10 characters with 6 items each
+  meant 60 gate passes, 60 backups and 59 intermediate on-disk states nobody
+  asked for. `equip-backpacks.js` had already worked this out and did the whole
+  thing in one `mutate()` — that is the shape `saveService.equipMany(saveDir,
+  { targets, items, raceNotes, skipIfSlotFilled })` generalises. Targets are
+  `{ file, sid }` pairs and may span platoon files; each file is parsed once and
+  returned as its own `{ file, bytes }`, which `mutate()` verifies and installs
+  all-or-nothing. Everything is validated before any file is touched (the same
+  two-pass rule as `updateItem()`), and the displacement rule reuses the
+  existing `displaceIntoSlot()` rather than growing a second copy.
+  `skipIfSlotFilled` reproduces the backpack script's "don't hand out a second
+  backpack" behaviour; it is off by default so the default matches the Gear
+  page's existing displace-the-occupant semantics.
+
+  **Gap 3 — backpacks were unreachable.** The Thieves Backpack is typecode
+  **46**, and both `itemFactory.buildItemRecord()` and `GET /api/gamedata/items`
+  were hard-gated to 2/3/4 — which is exactly why `equip-backpacks.js` had to
+  hand-roll its own type-42 record. That hand-rolled shape turned out to be
+  right, and is now the evidence for the supported one: all 42 live
+  type-46-backed items in the save mint with `item function: 4`, `level: 0`,
+  `quality: 100`, `charges: 1`, an empty `company sid`, `material sid` from the
+  material union, and **no `uniform` key**, and all 42 sit in
+  `backpack_attach` with zero exceptions. So: 46 added to
+  `gamedataService.ITEM_TEMPLATE_TYPES` (22 backpack templates the picker used
+  to hide), to `itemSlots.TYPECODE_SECTIONS` (it used to fall through to the
+  permissive branch, offering all 11 slots and flagging `widened`), and to
+  `itemFactory`. Typecode **107** is deliberately left unmapped — its 7 live
+  items disagree (6 `back`, 1 `backpack_content`), so permissive is the honest
+  answer.
+
+  **Gap 4 — a real weapon-grade bug the scripts were silently working around.**
+  14 of this install's 24 grade model sids appear under **two** companies
+  (`1069-gamedata.base` is both "Homemade" and "Edgewalkers"), but the Gear
+  row's grade `<select>`, the Add-item grade `<select>` and
+  `buildItemRecord()` all keyed on `modelSid` alone — so the selects emitted
+  duplicate option values and `grades.find(g => g.modelSid === ...)` picked
+  whichever row sorted first. Choosing "Edge Type 5 — Edgewalkers" wrote
+  Homemade. The scripts dodged it by passing `companySid: 'PLAYER_WEAPONS'`
+  explicitly, which the UI had no way to express. Fixed: every ladder row now
+  carries a stable `id` (`"<companySid>|<modelSid>"`), the new
+  `itemFactory.resolveGrade()` is the single resolution point, and `gradeId`
+  flows through `addItem`/`updateItem`/`equipMany` and both selects. Bare
+  `materialSid` still works (older API) but its ambiguity is now explicit and
+  documented: lowest rank wins, and a mismatched `companySid` throws instead of
+  quietly writing a different manufacturer.
+
+  **Compatibility policy — decided deliberately, and the two halves are not the
+  same.** Kind-vs-slot (a shirt into `hip`) is a **hard refusal**, validated up
+  front through `itemSlots.allowedSections()`, the same single source of truth
+  `addItem`/`updateItem` use. Race fit **never blocks**: every selected
+  character gets every item, and `services/fitCheck.js` reports what looks
+  wrong afterwards. Kenshi's real race/mesh restrictions are not in any field
+  this editor has identified (1.5 is still blocked on exactly that), so refusing
+  on suspicion would mean inventing a rule. Two warning sources, labelled by
+  which they are: **derived** — a type-3 template's `extra['part coverage']`
+  rows name the body parts it covers by stringID, and a character's MEDICAL
+  record lists the parts it has as `sid<n>`, so an item covering a part the
+  character lacks is provably a poor fit (this is what catches plate armour on a
+  bonedog, which has no arms); and **editorial** — the race notes copied out of
+  the scripts, deduped per character so a loadout's "animal" note doesn't repeat
+  once per item. Caching `partCoverage` on the gamedata index took
+  `CACHE_VERSION` 4 → 5; a stale cache rebuilds itself on version mismatch.
+
+  **`services/loadouts.js`** carries the four scripts' contents as data — same
+  "editorial, not derived from a save, safe to re-balance" contract as
+  `archetypes.js` and `recruits.js`, with `validate()` asserting every
+  `templateSid` resolves and every `section` is legal for that template's kind.
+  The scripts themselves are deleted, along with `character-races.js`, which
+  Gap 1 reduced to a field on a status read.
+
+  Routes: `POST /api/saves/:name/equip` (`loadoutId` and `items` concatenate,
+  so "this kit plus a backpack" is one request) and `GET /api/loadouts`.
+  UI: the Gear tab gains an "Equip several at once" toggle; the roster grows
+  checkboxes, and the detail pane swaps to a bulk panel showing the loadout's
+  contents as chips and a **pre-flight list** — per character, what they get,
+  what it displaces, what is skipped, and any fit warning — before anything is
+  written. Selection is a `Set` of the same stable `"<file>::<sid>"` keys the
+  single-character flow uses, never indices. Ticking a box patches the count,
+  heading and pre-flight in place rather than re-rendering; only the 0↔1
+  transition (which genuinely swaps the pane) calls `render()`, because a full
+  re-render detaches every checkbox mid-interaction.
+  `core.mjs`'s `showReceipt()` grew optional `details` lines so a 60-item bulk
+  result is readable — it stays the ONE receipt surface, no second component.
+
+  **UI visual pass.** `docs/ui-style-guide.md` §1 previously banned gradients,
+  shadows and animation outright, which over time became the thing holding the
+  interface back: with only hairline borders available, a card, a panel and a
+  table all read as the same flat rectangle. §1 is amended (and a new §1a
+  "Motion" added) to permit depth and motion **that carry meaning** — elevation
+  encodes layering, motion encodes change — while still banning decoration for
+  its own sake. Concretely: more surface levels and an `--elev-*` scale, a wider
+  type scale (headings used to top out at `1.05rem`), sticky header and tab bar,
+  an accent underline on the active tab, hover/active/selected states that are
+  actually visible, a rotating disclosure caret, real empty states, and
+  two-line roster rows carrying race, equipped-slot pips and condition — the
+  pips exist so you can see who still needs armour *before* selecting them,
+  which is the whole point of a multi-select. Motion is ≤120ms, never on a
+  receipt (the answer to "did my write land" must not be delayed), and all of it
+  is disabled by one global `prefers-reduced-motion` block. **Dark only** — a
+  light theme was considered and rejected: it would double every colour decision
+  and contrast check for a tool that runs beside a dark game.
+
+  Tests: `webapp/test/equip.test.js` (12) — the loadout catalogue validating
+  against real templates and legal sections; a minted backpack matching the live
+  shape including key order and the absent `uniform` key; `gradeId` pinning the
+  exact company where a bare model sid is ambiguous, and the documented
+  lowest-rank fallback; `fitCheck` warning only about genuinely absent parts;
+  bulk equip asserting one staged edit, one type-42 record per (character, item)
+  pair, `nextId` bumped by exactly that many, no duplicate id/sid, and every item
+  reading back in the right slot on the right character; displacement and
+  `skipIfSlotFilled`; a bad race fit warned but still written, with deduped
+  warnings; nine rejection cases each leaving the save byte-identical, including
+  a `../quick.save` path escape; and a genuine cross-platoon-file write (which
+  targets any two platoon files, not just player squads — this save has only one
+  player squad, and the multi-file path is the reason `equipMany` returns an
+  array, so it must not go untested).
+  Two pre-existing tests were also made save-state-independent rather than
+  weakened: `healPart "full"` now wounds a part first (on a fully-healed squad
+  "set flesh to my own maximum" is a genuine no-op and the gate rightly rejects
+  it), and the `trainCharacter` band test passes `mode: 'set'` (the bands are
+  what the roll produces; the default 'raise' mode writes
+  `Math.max(current, rolled)`, which is the point of raise mode and has its own
+  test).
+
+  **Left alone deliberately:** `scripts/build-locations-catalog.js` and
+  `data/locations-catalog.json` — teleport groundwork for 1.4, unrelated to this.

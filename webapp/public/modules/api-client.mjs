@@ -82,6 +82,15 @@ export const API = {
   addItem: (name, file, sid, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory`,
     body),
+  // Named gear sets for bulk equip (services/loadouts.js) — editorial data,
+  // items already resolved to names/kinds server-side.
+  loadouts: () => request('GET', '/api/loadouts'),
+  // Bulk equip: `{ targets: [{file, sid}], loadoutId?, items?, skipIfSlotFilled? }`
+  // in ONE staged edit across however many platoon files the targets span.
+  // Sending N single-item requests instead would mean N backups and N
+  // intermediate on-disk states.
+  equipMany: (name, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/equip`, body),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

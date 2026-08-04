@@ -7,6 +7,7 @@ const gamedata = require('../../services/gamedataService');
 const mutation = require('../../services/mutationService');
 const archetypes = require('../../services/archetypes');
 const recruits = require('../../services/recruits');
+const loadouts = require('../../services/loadouts');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -100,5 +101,10 @@ router.get('/archetypes', handle(async () => archetypes.catalogue()));
 // "Roll a recruit" catalogue for the Add member panel. Editorial, not derived
 // from game data — see services/recruits.js.
 router.get('/recruits', handle(async () => recruits.catalogue()));
+
+// Named gear sets for bulk equip. Editorial too (services/loadouts.js), and
+// each row carries its items already resolved to names/kinds so the client
+// never looks a template up itself.
+router.get('/loadouts', handle(async () => loadouts.catalogue()));
 
 module.exports = router;

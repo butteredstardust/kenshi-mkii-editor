@@ -23,46 +23,99 @@ const gamedata = require('./gamedataService');
  *     was defaulted). Never written to disk.
  */
 
+// Template typecodes this can mint an ITEM record for: 2 weapon, 3 armour,
+// 4 trade goods, 46 backpack. Never 42 — that IS the item instance (2.2(g)).
+const TEMPLATE_TYPES = [2, 3, 4, 46];
+
 // 2.2(a): the two `strings` key orders differ only by whether `uniform` is
-// present. Confirmed present for template types 2 (weapon) and 3 (armour),
-// and the one observed type 107 in the live sweep — but buildItemRecord()
-// only ever accepts 2/3/4 (2.2(g): a template's typecode is never 42, and 107
-// was a single unexplained outlier, not a third supported kind), so in
-// practice this reduces to "type 4 is the only non-equippable case".
+// present. Confirmed present for template types 2 (weapon) and 3 (armour) and
+// absent for 4 — and, from the later type-46 sweep, absent for backpacks too:
+// all 42 live backpack items carry exactly
+// `color sid, material sid, company sid, section, base data sid`, no `uniform`.
 function isEquippableTemplateType(type) {
-  return type !== 4;
+  return type !== 4 && type !== 46;
 }
 
 /**
- * @param {string} templateSid  a gamedata TEMPLATE sid (typecode 2/3/4)
+ * Resolve a caller's grade choice to exactly one ladder row.
+ *
+ * `gradeId` ("<companySid>|<modelSid>", from gamedataService.weaponGrades()) is
+ * the correct key and the only unambiguous one. `materialSid` is kept working
+ * because it is the older API, but it names a MODEL, not a grade: 14 of this
+ * install's 24 model sids belong to two companies at once, so it can match more
+ * than one row. When it does, this picks the lowest-ranked match — deliberately
+ * the least generous reading — and the caller can pass `companySid` to say
+ * which one it actually meant. Passing a `companySid` that doesn't match throws
+ * rather than quietly writing a different manufacturer.
+ */
+function resolveGrade({ gradeId, materialSid, companySid }) {
+  const grades = gamedata.weaponGrades();
+
+  if (gradeId) {
+    const hit = grades.find((g) => g.id === gradeId);
+    if (!hit) throw new Error(`"${gradeId}" is not a known weapon grade id`);
+    if (companySid && companySid !== hit.companySid) {
+      throw new Error(`companySid "${companySid}" does not match grade "${gradeId}" (company is "${hit.companySid}")`);
+    }
+    return hit;
+  }
+
+  const matches = grades.filter((g) => g.modelSid === materialSid);
+  if (!matches.length) throw new Error(`"${materialSid}" is not a known weapon grade (type-50) sid`);
+  if (companySid) {
+    const exact = matches.find((g) => g.companySid === companySid);
+    if (!exact) {
+      throw new Error(
+        `companySid "${companySid}" does not match any ladder entry for materialSid "${materialSid}" `
+        + `(available: ${matches.map((g) => g.companySid).join(', ')})`,
+      );
+    }
+    return exact;
+  }
+  // Ambiguous and unqualified: lowest rank wins, then lowest company sid, so
+  // the choice is at least deterministic across runs and cache rebuilds.
+  return [...matches].sort((a, b) => (a.rank - b.rank)
+    || (a.companySid < b.companySid ? -1 : a.companySid > b.companySid ? 1 : 0))[0];
+}
+
+/**
+ * @param {string} templateSid  a gamedata TEMPLATE sid (typecode 2/3/4/46)
  * @param {object} opts
  * @param {string} opts.section     required — validated by the caller via
  *   itemSlots.allowedSections(templateSid, null) (2.2(f)); not re-validated here.
- * @param {number} [opts.level]     type 2/3 only; type 4 always mints 0 and
- *   ignores this (2.2(e)).
+ * @param {number} [opts.level]     type 2/3 only; types 4 and 46 always mint 0
+ *   and ignore this (2.2(e)).
  * @param {number} [opts.quantity=1]  written as-is; stackability is validated
  *   by the caller (2.2(d)).
- * @param {string} [opts.materialSid]  type 2: a type-50 grade sid to look up
- *   in the weapon ladder (2.2(i)); type 3/4: an explicit `material sid`
- *   override, bypassing the union-of-definitions default (2.2(h)).
- * @param {string} [opts.companySid]  type 2 only: must name the SAME ladder
- *   entry as `materialSid` if both are given (see below); ignored for type 3/4,
- *   which always mint an empty `company sid` (2.2(b)).
+ * @param {string} [opts.gradeId]   type 2 only: "<companySid>|<modelSid>" from
+ *   gamedataService.weaponGrades(). The unambiguous way to name a grade —
+ *   prefer it over materialSid. See resolveGrade().
+ * @param {string} [opts.materialSid]  type 2: a type-50 MODEL sid, which can
+ *   match more than one ladder row (see resolveGrade()); type 3/4/46: an
+ *   explicit `material sid` override, bypassing the union-of-definitions
+ *   default (2.2(h)).
+ * @param {string} [opts.companySid]  type 2 only: disambiguates an ambiguous
+ *   `materialSid`, and must agree with `gradeId` if both are given; ignored for
+ *   type 3/4/46, which always mint an empty `company sid` (2.2(b)).
  */
 function buildItemRecord(templateSid, opts = {}) {
   const tmpl = gamedata.lookup(templateSid);
   if (!tmpl) throw new Error(`unresolvable item template sid "${templateSid}"`);
-  if (![2, 3, 4].includes(tmpl.type)) {
-    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (2/3/4) — see TODO.md 2.2(g)`);
+  if (!TEMPLATE_TYPES.includes(tmpl.type)) {
+    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${TEMPLATE_TYPES.join('/')}) — see TODO.md 2.2(g)`);
   }
 
-  const { section, level, quantity = 1, materialSid: materialOverride, companySid: companyOverride } = opts;
+  const {
+    section, level, quantity = 1,
+    gradeId, materialSid: materialOverride, companySid: companyOverride,
+  } = opts;
   if (!section) throw new Error('buildItemRecord: section is required');
 
   // --- item function (2.2(b)) ---
   let itemFunction;
   if (tmpl.type === 2) itemFunction = 5; // 262/262 live weapons
   else if (tmpl.type === 3) itemFunction = 6; // 882/882 live armour
+  else if (tmpl.type === 46) itemFunction = 4; // 42/42 live backpacks
   else {
     // Type 4: copy the template's own `ints['item function']` (cached on the
     // gamedata index entry as `itemFunction`). Matched the live item on every
@@ -81,15 +134,8 @@ function buildItemRecord(templateSid, opts = {}) {
   let grade = null; // receipt info only, weapons only
   if (tmpl.type === 2) {
     const grades = gamedata.weaponGrades();
-    if (materialOverride) {
-      grade = grades.find((g) => g.modelSid === materialOverride);
-      if (!grade) throw new Error(`"${materialOverride}" is not a known weapon grade (type-50) sid`);
-      if (companyOverride && companyOverride !== grade.companySid) {
-        throw new Error(
-          `companySid "${companyOverride}" does not match the ladder entry for materialSid "${materialOverride}" `
-          + `(expected companySid "${grade.companySid}")`,
-        );
-      }
+    if (gradeId || materialOverride) {
+      grade = resolveGrade({ gradeId, materialSid: materialOverride, companySid: companyOverride });
     } else if (grades.length) {
       // No grade requested: default to the LOWEST-ranked ladder entry, per
       // TODO.md 2.2(i) — never silently hand out a high-tier weapon.
@@ -103,10 +149,10 @@ function buildItemRecord(templateSid, opts = {}) {
     // === 0), materialSid/companySid stay '' — flagged via `grade: null` in
     // meta rather than thrown, since the item itself is still mintable.
   } else {
-    // Type 3/4: `material sid` defaults to the first candidate in the union
+    // Type 3/4/46: `material sid` defaults to the first candidate in the union
     // of extra['material'] targets across every definition of this sid
     // (2.2(h)); `company sid` is always empty (universal on all 882+503 live
-    // type-3/4 records).
+    // type-3/4 records, and all 42 live type-46 ones).
     materialSid = materialOverride || gamedata.materialCandidates(templateSid)[0] || '';
     companySid = '';
   }
@@ -120,6 +166,11 @@ function buildItemRecord(templateSid, opts = {}) {
     // (1, 404/503) — no quality control is offered for type 4 at all.
     levelValue = 0;
     qualityValue = 1;
+  } else if (tmpl.type === 46) {
+    // All 42 live backpack items: level 0, quality 100. A backpack has no
+    // quality tier in the UI sense, so `level` is not taken from the caller.
+    levelValue = 0;
+    qualityValue = 100;
   } else {
     // 2.2(b): universal 100 on all 1144 live type-2/3 records — this is NOT
     // the user-facing "quality" tier (that's `level`); do not confuse it with
@@ -185,15 +236,16 @@ function buildItemRecord(templateSid, opts = {}) {
       templateName: tmpl.name,
       templateType: tmpl.type,
       grade: grade ? {
+        id: grade.id,
         companySid: grade.companySid,
         companyName: grade.companyName,
         modelSid: grade.modelSid,
         modelName: grade.modelName,
         rank: grade.rank,
-        defaulted: !materialOverride,
+        defaulted: !gradeId && !materialOverride,
       } : null,
     },
   };
 }
 
-module.exports = { buildItemRecord };
+module.exports = { buildItemRecord, resolveGrade, TEMPLATE_TYPES };

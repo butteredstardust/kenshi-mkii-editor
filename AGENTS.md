@@ -35,7 +35,9 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/gamedataService.js` | `stringID → name` index across all data files, disk-cached |
 | `services/saveService.js` | Domain model: world summary, squads, characters, items |
 | `services/itemSlots.js` | Item/slot compatibility rules for `setItemSection()` and the Gear UI's `allowedSections` |
-| `services/itemFactory.js` | Shape of a minted type-42 ITEM record |
+| `services/itemFactory.js` | Shape of a minted type-42 ITEM record; weapon-grade resolution |
+| `services/loadouts.js` | Named gear sets for bulk equip — editorial, like `archetypes.js` |
+| `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
 | `services/recruits.js` | "Roll a recruit" catalogue — editorial, like `archetypes.js`, not save-derived |
 | `services/backupService.js` | Whole-directory versioned backups with hash manifests |
@@ -119,6 +121,27 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   record-id sequence. So a new squad member burns **seven** ids: six state
   records plus its own handle. `ids.addInstance()` takes an explicit `id` for
   this case and refuses a duplicate.
+- **An item template is typecode 2, 3, 4 or 46 — never 42.** 42 is the save-side
+  ITEM *instance*. 46 (backpack) was the late addition: 22 exist in this
+  install's data, all 42 live type-46-backed items sit in `backpack_attach`, and
+  they mint with `item function: 4`, `level: 0`, `quality: 100`, an empty
+  `company sid` and **no `uniform` key**. Type **107** is deliberately still
+  unmapped — its 7 live items disagree about which section they occupy.
+- **A weapon's grade is the (company sid, material sid) PAIR, and a model sid is
+  not a key.** 14 of this install's 24 grade model sids appear under two
+  different companies — `1069-gamedata.base` is both "Homemade" and
+  "Edgewalkers". Anything choosing a grade passes the ladder row's
+  `id` (`"<companySid>|<modelSid>"`); resolving by model sid alone silently
+  picks whichever row sorts first and writes a different manufacturer than the
+  user chose. `itemFactory.resolveGrade()` is the one place that resolution
+  happens.
+- **Race compatibility is advisory, never enforced.** Kenshi's real race/mesh
+  restrictions are not in any field this editor has identified (TODO.md 1.5), so
+  refusing an item on suspicion would be inventing a rule. `services/fitCheck.js`
+  produces warnings — one derived (an armour template's `extra['part coverage']`
+  names body parts the target's MEDICAL record may not have) and one editorial
+  (a loadout's own race notes). Kind-vs-slot incompatibility is a different
+  question, IS enforced, and lives in `services/itemSlots.js`.
 - **A squad has no name; the player faction does.** A full sweep of a live save
   found the player's chosen name in exactly three places, all in `quick.save`:
   GAME_STATE (56) `strings['pfaction name']`, each SQUAD_META (34)
@@ -163,8 +186,9 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | GET | `/api/status` | Save root, install dir, save list, game-running, writability |
 | GET | `/api/gamedata` | Name-index stats |
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
-| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4** — type 42 is the save-side item *instance*, not a template. |
-| GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the (company sid, material sid) pair, not `ints.level` — pass the chosen `modelSid` as `addItem`'s `materialSid`. |
+| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46** — type 42 is the save-side item *instance*, not a template. |
+| GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ id, companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the **(company sid, material sid) pair**, not `ints.level` — and **`modelSid` alone is not a key**: 14 of this install's 24 model sids appear under two companies. Pass the row's `id` (`"<companySid>\|<modelSid>"`) as `gradeId`. |
+| GET | `/api/loadouts` | Named gear sets for bulk equip (`services/loadouts.js`) — editorial, with items already resolved to names/kinds, plus advisory `raceNotes` and a `missing[]` of any template this install can't resolve |
 | GET | `/api/saves` | List save directories, newest first |
 | GET | `/api/saves/:name/status` | World summary + squads + characters + inventories |
 | PUT | `/api/saves/:name/money` | Set player cats (goes through the mutation gate) |
@@ -174,7 +198,8 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | GET | `/api/saves/:name/races` | `{ races, default }` — the races this save can supply a **living donor** for (`{ sid, name, count, donors }`, most donors first) plus the one the UI should preselect. A new member is cloned from an existing character, so this is what the save contains, never all of gamedata |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/name` | Rename a character: `strings.name` on CHAR_STATE (36) **and** the STATS (25) record's header `name`, which is where the game keeps a named character's name. `{ name }`, ≤ 63 UTF-8 bytes, control characters rejected, encoded through `binary.fromText()` |
 | PUT | `/api/saves/:name/faction/name` | Rename the squad — i.e. the **player faction**, the only squad-level name a save stores. One write to `quick.save` covering GAME_STATE `pfaction name`, every player SQUAD_META (34) `faction name`, and the player FACTION (37) record's header name. Platoon **filenames are deliberately not renamed** (see below) |
-| POST | `/api/saves/:name/platoons/:file/characters` | Add a squad member. `{ name, raceSid, archetype, sub, tier? }`. **The only two-file mutation in the app** — the `.platoon` and `quick.save` in one staged edit. See `services/characterFactory.js` |
+| POST | `/api/saves/:name/platoons/:file/characters` | Add a squad member. `{ name, raceSid, archetype, sub, tier? }`. Writes two files — the `.platoon` and `quick.save` — in one staged edit. See `services/characterFactory.js` |
+| POST | `/api/saves/:name/equip` | **Bulk equip.** `{ targets: [{file, sid}], loadoutId?, items?, skipIfSlotFilled? }` — every target gets every item in ONE staged edit, across however many platoon files the targets span (`loadoutId` and `items` concatenate). Kind-vs-slot incompatibility is a hard refusal; **race fit never blocks**, it is reported per character via `services/fitCheck.js`. See `saveService.equipMany()` |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/train` | "Train as archetype": one staged edit setting all 4 attributes to 45, archetype skills to random 45–95, everything else to random 15–40; `{ archetype, sub, mode? }` (`mode: 'raise'` default never lowers an existing stat, `'set'` overwrites) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n` | Heal a body part: set `flesh<n>` (or `"full"`), zero `bandage<n>`/`stun<n>` by default; `{ flesh, bandage?, stun? }` |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n/damage` | Limb loss (destructive, no lower clamp on `flesh`); same body shape as heal, UI must confirm before calling |
@@ -183,7 +208,7 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/medical/restore-limbs` | Delete `ints.limbs` if present (no bitmask interpretation); no-op is rejected by the mutation gate |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/section` | Move an item into a slot (`strings.section` on type 42); `{ section }`. If the target slot is already occupied by another of this character's items, that item's `section` is flipped back to `main` in the same write. Rejects a slot not in the documented list, an item that isn't in this character's own inventory, or a slot incompatible with the item's kind (see `services/itemSlots.js`) — the latter check is skipped (permissive) when the item's kind can't be resolved via `gamedataService`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quality` | Set `ints.level` and/or `floats.quality` on an item, independently; `{ level?, quality? }`. Both keys must already exist on the record. Thin wrapper over `updateItem()`. |
-| PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid` | **Unified per-item edit** — `{ section?, level?, quality?, quantity?, materialSid? }`, any combination, in ONE staged edit (one gate pass, one backup). This is what the Gear row's single "Apply" calls; the two narrower routes above are wrappers over the same `saveService.updateItem()`. `quantity > 1` is rejected unless the template is stackable. `materialSid` is a weapon **grade** (a type-50 sid from `/api/gamedata/weapon-grades`) and writes `company sid` in lockstep — the pair is the grade, `level` is a separate field. |
+| PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid` | **Unified per-item edit** — `{ section?, level?, quality?, quantity?, materialSid? }`, any combination, in ONE staged edit (one gate pass, one backup). This is what the Gear row's single "Apply" calls; the two narrower routes above are wrappers over the same `saveService.updateItem()`. `quantity > 1` is rejected unless the template is stackable. Weapon grade is chosen with `gradeId` and writes `material sid`/`company sid` in lockstep — the **pair** is the grade, `level` is a separate field. Bare `materialSid` still works but is ambiguous (see `/api/gamedata/weapon-grades`) and resolves to the lowest-ranked matching row. |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/inventory` | Add a new item to a character's inventory; mints a type-42 ITEM record and an INVENTORY (41) instance via `services/kenshi/ids.js`. `{ templateSid, section, quantity?, level?, materialSid?, companySid? }`. `templateSid` must resolve to a gamedata item template (typecode 2/3/4); `section` is validated via `itemSlots.allowedSections()`; `quantity > 1` is rejected unless the template is stackable. Displaces a prior occupant of an already-occupied single-occupancy `section` back to `main`, same rule as the `/section` route above. See `services/itemFactory.js` for the minted record's exact shape. |
 | GET | `/api/backups` | List backups |
 | POST | `/api/backups` | Create a labelled backup |

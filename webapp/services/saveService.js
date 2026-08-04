@@ -13,6 +13,7 @@ const itemCatalog = require('./itemCatalogService');
 const itemSlots = require('./itemSlots');
 const itemFactory = require('./itemFactory');
 const characterFactory = require('./characterFactory');
+const fitCheck = require('./fitCheck');
 const ids = require('./kenshi/ids');
 
 /**
@@ -145,6 +146,12 @@ function itemOf(rec) {
     // `materialSid` is surfaced so the Gear row's grade <select> can preselect
     // the item's current entry; null for non-weapons, which have no ladder.
     materialSid: asText(s.get('material sid') || ''),
+    // The grade is the (company, material) PAIR — `materialSid` alone is
+    // ambiguous (14 of 24 model sids belong to two companies). This composite
+    // is what the Gear row's grade <select> matches its options against, and
+    // what it sends back; see gamedataService.weaponGrades().
+    gradeId: `${asText(s.get('company sid') || '')}|${asText(s.get('material sid') || '')}`,
+    companySid: asText(s.get('company sid') || ''),
     // Whether the template can stack at all — decides whether the Gear row
     // offers a quantity control (TODO.md 2.2(d)). Not derivable client-side.
     stackable: !!(gamedata.lookup(baseSid) || {}).stackable,
@@ -231,6 +238,21 @@ function statsOf(rec) {
   return { attributes, skills, xp: f.get('xp') ?? 0, freePoints: f.get('free attribute points') ?? 0 };
 }
 
+/**
+ * A character's race, off the APPEARANCE (66) record.
+ *
+ * The race is NOT a key in `bools`/`floats`/`ints`/`strings` — it lives in the
+ * record's `extra` section, category `"race"`, as a single row whose `target`
+ * is the race stringID (docs/save-format.md §5, Phase 0 finding). Returns null
+ * for a character with no appearance record or no race row.
+ */
+function raceOf(appearanceRec) {
+  if (!appearanceRec) return null;
+  const row = (appearanceRec.extra.get('race') || [])[0];
+  if (!row || !row.target) return null;
+  return { sid: row.target, name: gamedata.nameOf(row.target, row.target) };
+}
+
 /** Characters in one platoon file, resolved through the squad record. */
 function readPlatoon(file) {
   const parsed = readFile(fs.readFileSync(file));
@@ -251,6 +273,10 @@ function readPlatoon(file) {
       isLeader: state ? (state.bools.get('is leader') ?? false) : false,
       personality: state ? state.ints.get('personality') ?? null : null,
       age: state ? state.floats.get('age') ?? null : null,
+      // Carried on every character read so nothing downstream has to re-scan
+      // every platoon file just to learn a race (which is what the equip
+      // scripts this feature replaced had to do).
+      race: raceOf(pick(T.APPEARANCE)),
       position: inst.pos,
       medical: medicalOf(pick(T.MEDICAL)),
       stats: statsOf(pick(T.STATS)),
@@ -892,7 +918,7 @@ function setItemSection(saveDir, platoonFile, characterSid, itemSid, targetSecti
 // ignored, for the same reason addItem() rejects them: silently dropping a
 // misnamed field would write a *different* item than the caller asked for and
 // still report success.
-const UPDATE_ITEM_FIELDS = new Set(['section', 'level', 'quality', 'quantity', 'materialSid']);
+const UPDATE_ITEM_FIELDS = new Set(['section', 'level', 'quality', 'quantity', 'materialSid', 'gradeId']);
 
 /**
  * Set any combination of an item's slot, level, quality and quantity in ONE
@@ -922,10 +948,10 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
   if (unknown.length) {
     throw new Error(`updateItem: unknown field(s) ${unknown.join(', ')} — supported: ${[...UPDATE_ITEM_FIELDS].join(', ')}`);
   }
-  const { section, level, quality, quantity, materialSid } = opts;
+  const { section, level, quality, quantity, materialSid, gradeId } = opts;
   if (section === undefined && level === undefined && quality === undefined
-    && quantity === undefined && materialSid === undefined) {
-    throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid');
+    && quantity === undefined && materialSid === undefined && gradeId === undefined) {
+    throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid, gradeId');
   }
 
   const { relFile, parsed, bag, bySid, itemRec } = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
@@ -983,17 +1009,23 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
   // here as well as in addItem() because being able to choose Meitou when
   // creating a weapon but not when editing one is exactly the sort of
   // asymmetry that makes this page confusing.
+  //
+  // `gradeId` ("<companySid>|<modelSid>") is the unambiguous key and what the
+  // UI sends; bare `materialSid` names only the model and can match two ladder
+  // rows (14 of 24 model sids do), so itemFactory.resolveGrade() pins it to the
+  // lowest-ranked one. Either way the pair is written together.
   let grade = null;
-  if (materialSid !== undefined) {
-    if (typeof materialSid !== 'string' || !materialSid) {
-      throw new Error('materialSid must be a non-empty string (a weapon grade type-50 sid)');
+  if (materialSid !== undefined || gradeId !== undefined) {
+    for (const [key, value] of Object.entries({ materialSid, gradeId })) {
+      if (value !== undefined && (typeof value !== 'string' || !value)) {
+        throw new Error(`${key} must be a non-empty string`);
+      }
     }
     const tmpl = gamedata.lookup(baseSid);
     if (!tmpl || tmpl.type !== 2) {
-      throw new Error(`"${itemName}" is not a weapon — grade (materialSid) only applies to weapons`);
+      throw new Error(`"${itemName}" is not a weapon — grade only applies to weapons`);
     }
-    grade = gamedata.weaponGrades().find((g) => g.modelSid === materialSid);
-    if (!grade) throw new Error(`"${materialSid}" is not a known weapon grade (type-50) sid`);
+    grade = itemFactory.resolveGrade({ gradeId, materialSid });
   }
 
   // ---- apply ----
@@ -1041,7 +1073,7 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
       quantity: itemRec.ints.get('quantity') ?? null,
       materialSid: asText(itemRec.strings.get('material sid') || ''),
       companySid: asText(itemRec.strings.get('company sid') || ''),
-      grade: grade ? { modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank } : null,
+      grade: grade ? { id: grade.id, modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank } : null,
       displacedSid: displaced ? displaced.sid : null,
       displacedSection: displaced ? 'main' : null,
     },
@@ -1111,7 +1143,7 @@ function setItemQuality(saveDir, platoonFile, characterSid, itemSid, { level, qu
 // silently dropped and quietly mint a "Totally rusted junk" weapon rather than
 // the Meitou the caller asked for). A wrong item written into a save is not the
 // kind of mistake that should fail silently.
-const ADD_ITEM_OPTIONS = new Set(['quantity', 'section', 'level', 'materialSid', 'companySid']);
+const ADD_ITEM_OPTIONS = new Set(['quantity', 'section', 'level', 'materialSid', 'companySid', 'gradeId']);
 
 function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   const unknown = Object.keys(opts).filter((k) => !ADD_ITEM_OPTIONS.has(k));
@@ -1148,6 +1180,7 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
     section,
     level: opts.level,
     quantity,
+    gradeId: opts.gradeId,
     materialSid: opts.materialSid,
     companySid: opts.companySid,
   });
@@ -1617,8 +1650,209 @@ function addSquadMember(saveDir, platoonFile, {
   ];
 }
 
+// ----------------------------------------------------------- bulk equip --
+
+// Every field an `items[]` entry may carry. Rejected rather than ignored, same
+// reasoning as ADD_ITEM_OPTIONS: a misnamed grade field would quietly mint a
+// "Totally rusted junk" weapon across a whole squad and still report success.
+const EQUIP_ITEM_FIELDS = new Set(['templateSid', 'section', 'quantity', 'level', 'gradeId', 'materialSid', 'companySid']);
+
+/**
+ * Give every character in `targets` every item in `items`, in ONE staged edit.
+ *
+ * This is the bulk sibling of addItem(), and the reason it exists rather than
+ * "just call addItem N times": mutationService.mutate() treats each call as one
+ * staged edit against one pre-edit snapshot and takes one backup, so equipping
+ * 8 characters with 6 items each through the single-item route means 48 gate
+ * passes, 48 backups, and 47 intermediate on-disk states nobody asked for. One
+ * call means one backup and all-or-nothing installation.
+ *
+ * `targets` may span platoon files; each file is parsed once, mutated once, and
+ * returned as its own `{ file, bytes }`. mutate() already accepts an array and
+ * verifies every entry before installing any of them.
+ *
+ * COMPATIBILITY POLICY — deliberate, and not the same for both kinds:
+ *   - KIND vs SLOT (a shirt into `hip`) is a hard refusal, validated up front
+ *     via itemSlots.allowedSections(), the same single source of truth
+ *     addItem()/updateItem() use.
+ *   - RACE fit (plate boots on a hiver) NEVER blocks. Every selected character
+ *     gets every item; services/fitCheck.js produces advisory warnings that ride
+ *     along in the receipt. Kenshi's real race restrictions are not in any field
+ *     this editor has identified (TODO.md 1.5), so refusing on suspicion would
+ *     be inventing a rule.
+ *
+ * @param {string} saveDir
+ * @param {object} opts
+ * @param {{file: string, sid: string}[]} opts.targets
+ * @param {object[]} opts.items      see EQUIP_ITEM_FIELDS
+ * @param {Array<{races: string[], note: string}>} [opts.raceNotes]  advisory only
+ * @param {boolean} [opts.skipIfSlotFilled=false]  don't give a character a
+ *   second item in a single-occupancy slot they already occupy (this is what
+ *   the backpack script did); off by default so the default behaviour matches
+ *   the Gear page's existing "moving into an occupied slot displaces the
+ *   current occupant to main" rule.
+ */
+function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled = false } = {}) {
+  if (!Array.isArray(targets) || !targets.length) throw new Error('equipMany: targets must be a non-empty array');
+  if (!Array.isArray(items) || !items.length) throw new Error('equipMany: items must be a non-empty array');
+
+  // ---- validate every item ONCE, before touching any file (AGENTS.md §4) ----
+  const checked = items.map((raw, i) => {
+    if (!raw || typeof raw !== 'object') throw new Error(`equipMany: items[${i}] must be an object`);
+    const unknown = Object.keys(raw).filter((k) => !EQUIP_ITEM_FIELDS.has(k));
+    if (unknown.length) {
+      throw new Error(`equipMany: items[${i}] has unknown field(s) ${unknown.join(', ')} — supported: ${[...EQUIP_ITEM_FIELDS].join(', ')}`);
+    }
+    const { templateSid, section, quantity = 1 } = raw;
+    if (typeof templateSid !== 'string' || !templateSid) throw new Error(`equipMany: items[${i}].templateSid is required`);
+    if (typeof section !== 'string' || !section) throw new Error(`equipMany: items[${i}].section is required`);
+    if (!Number.isInteger(quantity) || quantity < 1) throw new Error(`equipMany: items[${i}].quantity must be a positive integer`);
+
+    const tmpl = gamedata.lookup(templateSid);
+    if (!tmpl) throw new Error(`unresolvable item template sid "${templateSid}"`);
+    if (!itemFactory.TEMPLATE_TYPES.includes(tmpl.type)) {
+      throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${itemFactory.TEMPLATE_TYPES.join('/')})`);
+    }
+    if (quantity > 1 && !tmpl.stackable) {
+      throw new Error(`"${tmpl.name}" is not stackable — quantity must be 1`);
+    }
+    const { sections: allowed } = itemSlots.allowedSections(templateSid, null);
+    if (!allowed.includes(section)) {
+      throw new Error(`"${tmpl.name}" cannot be added into slot "${section}" — allowed slots: ${allowed.join(', ')}`);
+    }
+    return { ...raw, quantity, name: tmpl.name, type: tmpl.type };
+  });
+
+  // ---- group targets by platoon file so each file is parsed exactly once ----
+  const byFile = new Map();
+  for (const t of targets) {
+    if (!t || typeof t.file !== 'string' || typeof t.sid !== 'string') {
+      throw new Error('equipMany: every target needs a "file" and a "sid"');
+    }
+    if (!byFile.has(t.file)) byFile.set(t.file, []);
+    if (!byFile.get(t.file).some((s) => s === t.sid)) byFile.get(t.file).push(t.sid);
+  }
+
+  const results = [];
+  const characters = [];
+  let addedCount = 0;
+
+  for (const [platoonFile, sids] of byFile) {
+    const { relFile, parsed, squad } = resolveSquad(saveDir, platoonFile);
+    const bySid = new Map(parsed.records.map((r) => [r.sid, r]));
+
+    for (const sid of sids) {
+      const inst = squad.instances.find((i) => i.id === sid);
+      if (!inst) throw new Error(`${platoonFile}: no character with sid "${sid}"`);
+      const states = inst.states.map((s) => bySid.get(s)).filter(Boolean);
+      const pick = (type) => states.find((r) => r.type === type) || null;
+      const bag = pick(T.INVENTORY);
+      if (!bag) throw new Error(`${platoonFile}: character "${sid}" has no INVENTORY record (type 41)`);
+
+      const stateRec = pick(T.CHAR_STATE);
+      const race = raceOf(pick(T.APPEARANCE));
+      const partSids = fitCheck.bodyPartSids(pick(T.MEDICAL), BODY_SLOTS);
+
+      const entry = {
+        file: platoonFile,
+        sid,
+        name: asText(stateRec ? (stateRec.strings.get('name') || '') : ''),
+        race: race ? race.name : null,
+        added: [],
+        skipped: [],
+        displaced: [],
+        warnings: [],
+      };
+
+      for (const item of checked) {
+        // `skipIfSlotFilled` only makes sense for a single-occupancy slot —
+        // `main` and `backpack_content` are buckets that legitimately hold many
+        // items, so "already filled" is never true for them.
+        if (skipIfSlotFilled && !ITEM_BUCKET_SLOTS.has(item.section)) {
+          const occupied = bag.instances.some((ii) => {
+            const other = bySid.get(ii.target);
+            return other && other.type === T.ITEM
+              && asText(other.strings.get('section') || '') === item.section;
+          });
+          if (occupied) {
+            entry.skipped.push({ name: item.name, section: item.section, reason: 'slot already filled' });
+            continue;
+          }
+        }
+
+        const { record, meta } = itemFactory.buildItemRecord(item.templateSid, {
+          section: item.section,
+          level: item.level,
+          quantity: item.quantity,
+          gradeId: item.gradeId,
+          materialSid: item.materialSid,
+          companySid: item.companySid,
+        });
+
+        // The SAME displacement helper setItemSection()/addItem() use — this
+        // rule must never grow a second copy. excludeSid is null: the new
+        // record has no sid until addRecord() stamps one.
+        const displaced = displaceIntoSlot(bag, bySid, null, item.section);
+        if (displaced) {
+          entry.displaced.push({
+            sid: displaced.sid,
+            name: gamedata.nameOf(displaced.strings.get('base data sid'), 'item'),
+            section: 'main',
+          });
+        }
+
+        ids.addRecord(parsed, record);
+        ids.addInstance(bag, record.sid);
+        bySid.set(record.sid, record);
+        addedCount += 1;
+
+        entry.added.push({
+          sid: record.sid,
+          name: meta.templateName,
+          section: item.section,
+          level: record.ints.get('level'),
+          grade: meta.grade ? { id: meta.grade.id, modelName: meta.grade.modelName, companyName: meta.grade.companyName } : null,
+        });
+
+        entry.warnings.push(...fitCheck.warningsFor({
+          templateSid: item.templateSid,
+          itemName: item.name,
+          partSids,
+          raceName: entry.race,
+          raceNotes,
+        }));
+      }
+
+      // A loadout's race note is about the character, not about each item, so
+      // it would otherwise repeat once per item — six identical "animal" lines
+      // for a bonedog. Dedupe by text; the derived per-item warnings already
+      // name their item and so stay distinct.
+      const seen = new Set();
+      entry.warnings = entry.warnings.filter((w) => !seen.has(w.text) && seen.add(w.text));
+
+      characters.push(entry);
+    }
+
+    results.push({ file: relFile, bytes: writeFile(parsed) });
+  }
+
+  // The receipt rides on the first file's result; mutate() surfaces every
+  // result's non-`bytes` fields under `receipts`.
+  results[0] = {
+    ...results[0],
+    characters,
+    itemsAdded: addedCount,
+    charactersTouched: characters.length,
+    filesTouched: results.length,
+    warnings: characters.flatMap((c) => c.warnings.map((w) => ({ character: c.name, ...w }))),
+  };
+
+  return results;
+}
+
 module.exports = {
   T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
+  raceOf, equipMany,
   playerPlatoonFiles, playerSquadRecords, scanCharacters, availableRaces, defaultRace,
   resolveSquad, squadMetaFor, encodeName, MAX_NAME_BYTES,
   renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread,

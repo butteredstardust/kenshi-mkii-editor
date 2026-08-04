@@ -49,7 +49,7 @@ export function numField(label, value, attrs = '') {
  * Every write in this app reports through here so success and failure look the
  * same everywhere. Pass the receipt object from the API on success, or an Error.
  */
-export function showReceipt(el, result, { label = 'done' } = {}) {
+export function showReceipt(el, result, { label = 'done', details = null } = {}) {
   if (!el) return;
   el.hidden = false;
   if (result instanceof Error) {
@@ -64,7 +64,13 @@ export function showReceipt(el, result, { label = 'done' } = {}) {
   if (result.rollbackStatus && result.rollbackStatus !== 'not needed') {
     parts.push(`rollback: ${result.rollbackStatus}`);
   }
-  el.textContent = parts.join(' · ');
+  // A bulk write can touch a dozen characters, and "one edit, 60 items" on its
+  // own tells you nothing about what each of them got. `details` is a plain
+  // array of already-formatted lines; this stays the ONE receipt surface
+  // (style guide §2.5) rather than growing a second component for bulk results.
+  const lines = [parts.join(' · ')];
+  if (details && details.length) lines.push('', ...details);
+  el.textContent = lines.join('\n');
 }
 
 /**
@@ -72,13 +78,13 @@ export function showReceipt(el, result, { label = 'done' } = {}) {
  * refreshes. `run` returns the API promise. Failures surface in the receipt
  * rather than the console — a silent failure on a save editor is unacceptable.
  */
-export async function runMutation(btn, receiptEl, label, run, after) {
+export async function runMutation(btn, receiptEl, label, run, after, { details = null } = {}) {
   const prev = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'working…';
   try {
     const result = await run();
-    showReceipt(receiptEl, result, { label });
+    showReceipt(receiptEl, result, { label, details: details ? details(result) : null });
     if (after) await after(result);
   } catch (err) {
     showReceipt(receiptEl, err);
