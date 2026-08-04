@@ -46,22 +46,24 @@ function get(server, urlPath) {
   });
 }
 
-// 46 (backpack) joined 2/3/4 when bulk equip landed: 22 backpack templates
-// exist in this install's data and the picker used to hide every one of them,
-// which is why the equip scripts had to hand-roll a backpack record. All 42
-// live type-46-backed items sit in `backpack_attach` and share one record
-// shape. 107 (crossbow) joined when the loadout catalogue went looking for a
-// ranged archetype and found "Ranger" at a typecode nothing accepted — a whole
-// weapon class that had been unreachable. See services/itemFactory.js.
-test('itemTemplates() filters to typecodes {2, 3, 4, 46, 107} and is non-empty', (t) => {
+// The set grew three times, each because a whole item class turned out to be
+// unreachable: 46 (backpack) when bulk equip landed, 107 (crossbow) when the
+// loadout catalogue went looking for a ranged archetype and found "Ranger" at
+// a typecode nothing accepted, and 111 (robotic limb) when a user searched for
+// a "KLR Series Arm (left)" and got nothing. A sweep of all 123 files of a live
+// save (6103 ITEM records) then settled it: exactly these six typecodes ever
+// back an item. See services/itemFactory.js and the equip suite's
+// "every typecode that backs a live item is offered" test.
+test('itemTemplates() filters to typecodes {2, 3, 4, 46, 107, 111} and is non-empty', (t) => {
   if (!hasInstall) return t.skip('no Kenshi install found');
   const templates = gamedata.itemTemplates();
   assert.ok(templates.length > 0, 'itemTemplates() returned nothing');
   for (const tpl of templates) {
-    assert.ok([2, 3, 4, 46, 107].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
+    assert.ok([2, 3, 4, 46, 107, 111].includes(tpl.type), `sid ${tpl.sid} has unexpected type ${tpl.type}`);
   }
   assert.ok(templates.some((tpl) => tpl.type === 46), 'no backpack template offered');
   assert.ok(templates.some((tpl) => tpl.type === 107), 'no crossbow template offered');
+  assert.ok(templates.some((tpl) => tpl.type === 111), 'no robotic-limb template offered');
 });
 
 // Regression test for TODO.md 2.2(g): the original 2.3 task text said "filter
@@ -88,8 +90,9 @@ test('GET /api/gamedata/items: every row carries the documented fields', async (
     for (const item of body.items) {
       assert.equal(typeof item.sid, 'string');
       assert.equal(typeof item.name, 'string');
-      assert.ok([2, 3, 4].includes(item.type));
-      assert.ok(['weapon', 'armour', 'trade goods'].includes(item.kind));
+      assert.ok([2, 3, 4, 46, 107, 111].includes(item.type));
+      assert.ok(['weapon', 'armour', 'trade goods', 'backpack', 'crossbow', 'limb'].includes(item.kind),
+        `${item.name} has kind "${item.kind}" — every offered typecode needs a kind label`);
       assert.equal(typeof item.stackable, 'boolean', `stackable must be a boolean, got ${typeof item.stackable} for ${item.sid}`);
       assert.ok(item.category === null || typeof item.category === 'string');
       assert.ok(item.description === null || typeof item.description === 'string');

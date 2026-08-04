@@ -191,6 +191,20 @@ router.post('/saves/:name/platoons/:file/teleport', handle(async (req) => {
       { ...dest, ...(sids === undefined ? {} : { sids }) }));
 }));
 
+// Personality (TODO.md 1.3): one int on CHAR_STATE. The seven working values
+// are decoded in services/personalities.js from gamedata's type-26 records;
+// `allowUnknown` lets a caller past that check deliberately.
+router.put('/saves/:name/platoons/:file/characters/:sid/personality', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { personality, allowUnknown } = req.body || {};
+  if (typeof personality !== 'number' || !Number.isInteger(personality)) {
+    const e = new Error('body must include "personality" (integer)'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `set personality on ${req.params.sid}`,
+    (staging) => saveService.setPersonality(staging, req.params.file, req.params.sid, personality,
+      { allowUnknown: !!allowUnknown }));
+}));
+
 function findSaveOr404(name) {
   const save = paths.findSave(name);
   if (!save) { const e = new Error(`no save named "${name}"`); e.status = 404; throw e; }

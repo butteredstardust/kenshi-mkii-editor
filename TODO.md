@@ -545,7 +545,7 @@ squad (30) → instance → state records structure already read by
   `saveService.encodeName()` / `binary.fromText()`; the UI is an "Identity"
   section on the character card rather than a click-to-edit `<h3>`.
 
-- [ ] **Personality**: `ints.personality` on type 36 (already read by
+- [x] **Personality**: `ints.personality` on type 36 (already read by
   `readPlatoon()` as `personality`). Function: `saveService.setPersonality`.
   Route + UI as above. Validation: restrict the dropdown to the guide's
   documented working values (1, 2, 5, 6, 9, 10, 14) and warn in the UI that 11/12/13
@@ -2167,3 +2167,84 @@ numbered into Phase 1/2/3.
     packs (type 46) always mint `level` 0 and the field means nothing on them,
     so the row offered a "Level 0" dropdown inviting an edit that would do
     nothing. They show "—" now; weapons and armour are unchanged.
+
+- [x] **Personality decoded and editable; dialogue investigated and found NOT
+  save-side.** (Closes 1.3's second task.)
+
+  **Robotic limbs, and the reason a whole item class kept going missing.**
+  A user searched for "KLR Series Arm (left)" and the picker had nothing.
+  Rather than add one typecode and wait for the next report, the question was
+  settled properly: sweep **all 123 files of a live save** (quick.save, every
+  platoon, every zone — vendor stock lives in the zones, which is where the
+  limbs were) and tally which gamedata typecode backs each of the 6103 live
+  ITEM records. Exactly six do: 4 (3234), 3 (2225), 2 (560), 46 (56), 107 (17)
+  and **111 (11)**. Only 111 was missing, and it is now supported: 32 templates.
+  A test now asserts this invariant directly — every typecode backing a live
+  item must be offered — so the next gap fails the suite instead of the user.
+  A robotic limb is CARRIED, never worn: all 11 live ones sit in
+  `backpack_content`, and its record is the one kind with extra float keys —
+  `wear`, `stun`, `dam` ahead of `charges`/`quality`, which is limb condition.
+  Also fixed: `saveService.addItem()` had its own hardcoded `[2,3,4]` gate, so
+  backpacks, crossbows and limbs were addable through bulk equip but rejected
+  by the single-item route. It now reads `itemFactory.TEMPLATE_TYPES`, the one
+  list that mints the record.
+
+  **Category filters** on the item search: `kind` (weapon / armour / crossbow /
+  backpack / robotic limb / trade goods) and `slot`. The slot filter is
+  deliberately STRICT and this is a real trade-off: only 184 of this install's
+  1646 armour templates carry a slot the editor can confirm, the other 1462
+  falling through to itemSlots' permissive branch. That branch is right when
+  *placing* an item (hiding a legitimate slot on a modded item is the worse
+  error) and wrong when *filtering* (a "boots" search returning 1477 rows
+  including every shirt is useless), so the filter requires a specific slot —
+  one section, or the two a melee weapon genuinely has. Boots returns 15, not
+  1477. Everything else stays reachable through `kind` and the name search, and
+  the UI says so in one line.
+
+  **Personality: fully decoded, and it is editable.** The save stores it as
+  `ints.personality` on CHAR_STATE — a single small integer. Gamedata carries 31
+  type-26 "personality" records holding `tags always/common/never/rare` integer
+  lists, and the records that describe exactly ONE trait pin the value:
+
+      "Honorable"      always=[1]     "Traitorous"  always=[2]
+      "Smart Doc Type" always=[5]     "Dumb"        always=[6]
+      "Brave"          always=[9]     "Fearful"     always=[10]
+      "Crazy"          always=[14]
+
+  Four independent cross-checks agree exactly — "dumb honorable brave"
+  always=[6,1,9]; "Ninja Neutral - brave, hon, crazy, trait" common=[1,9,14,2];
+  "Traitorous brave crazy" common=[2,9,14]; "Not honourable" common= all seven
+  but 1. And the decisive one: the record named **"Random"** lists
+  `common=[1,2,5,6,9,10,14]` — exactly, and only, the seven values that occur
+  across all 555 characters in the save. That independently confirms the FCS
+  guide's warning about unimplemented values: 7, 11 and 12 appear only inside
+  "bandit types" and never on a real character.
+  So `services/personalities.js` is **derived, not editorial** — unlike
+  archetypes/recruits/loadouts — and `setPersonality()` refuses anything outside
+  the seven unless the caller passes `allowUnknown`. The UI shows a named
+  dropdown with the trait's effect, not a raw int.
+
+  **Dialogue: not possible from a save, and here is the proof rather than a
+  shrug.** A CHAR_STATE record carries no dialogue reference of any kind —
+  across all 555 characters there are exactly four distinct CHAR_STATE
+  string-key shapes (`name, owner faction ID, sheath`, plus optional
+  `bountyfac<n>`), and none names a dialogue package, personality record or
+  voice. Dialogue hangs off the type-1 CHARACTER TEMPLATE in gamedata, as
+  `extra['dialogue package']` (what it says to the world) and
+  `extra['dialogue package player']` (what it says to the player — the
+  talkable/recruitable marker; 169 of this install's 659 templates have one).
+  The only thing the save stores is which template a character came from: the
+  squad instance's `target`.
+  That is worth SHOWING, and now is — the Identity section reports the origin
+  template and whether it talks to the player. It explains something real: the
+  characters from a "start- Homeless" game start have no dialogue at all, while
+  a member cloned from a "Lost drone" carries "Player HIVER Ronin" and one from
+  a "Samurai Conscript" has world dialogue only.
+  It is NOT made editable. Repointing `target` at a talkative template is a
+  one-string edit, but that field is the character's whole origin — race
+  template, stats, gear rules and dialogue together — and whether the game
+  re-reads dialogue from it for an already-spawned character cannot be
+  established offline. A test asserts `saveService.setDialogue` stays undefined,
+  and that no CHAR_STATE string key ever matches /dialog|voice|package/ — so if
+  a future save proves otherwise, the suite says so rather than the assumption
+  quietly persisting.

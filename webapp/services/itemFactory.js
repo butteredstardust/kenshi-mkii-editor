@@ -26,7 +26,13 @@ const gamedata = require('./gamedataService');
 // Template typecodes this can mint an ITEM record for: 2 weapon, 3 armour,
 // 4 trade goods, 46 backpack, 107 crossbow. Never 42 — that IS the item
 // instance (2.2(g)).
-const TEMPLATE_TYPES = [2, 3, 4, 46, 107];
+const TEMPLATE_TYPES = [2, 3, 4, 46, 107, 111];
+
+// Robotic limbs (type 111) are the one kind with extra float keys: all 11 live
+// ones carry `wear`, `stun` and `dam` ahead of the usual `charges`/`quality`,
+// and key order is load-bearing in this format (AGENTS.md §3). They are the
+// limb's own condition; a fresh one is 0.
+const LIMB_FLOATS = ['wear', 'stun', 'dam'];
 
 // 2.2(a): the two `strings` key orders differ only by whether `uniform` is
 // present. Confirmed present for template types 2 (weapon), 3 (armour) and 107
@@ -118,6 +124,7 @@ function buildItemRecord(templateSid, opts = {}) {
   else if (tmpl.type === 3) itemFunction = 6; // 882/882 live armour
   else if (tmpl.type === 46) itemFunction = 4; // 42/42 live backpacks
   else if (tmpl.type === 107) itemFunction = 0; // 7/7 live crossbows
+  else if (tmpl.type === 111) itemFunction = 0; // 11/11 live robotic limbs
   else {
     // Type 4: copy the template's own `ints['item function']` (cached on the
     // gamedata index entry as `itemFunction`). Matched the live item on every
@@ -196,10 +203,12 @@ function buildItemRecord(templateSid, opts = {}) {
     ['death', false],
     ['in inventory', true],
   ]);
-  const floats = new Map([
-    ['charges', 1], // 2.2(b): universal on type 2/3, mode for type 4 — never the template's own floats.charges
-    ['quality', qualityValue],
-  ]);
+  const floats = new Map();
+  // A robotic limb's condition floats come FIRST, before charges/quality — that
+  // is the order on all 11 live ones, and key order is load-bearing.
+  if (tmpl.type === 111) for (const key of LIMB_FLOATS) floats.set(key, 0);
+  floats.set('charges', 1); // 2.2(b): universal on type 2/3, mode for type 4 — never the template's own floats.charges
+  floats.set('quality', qualityValue);
   // 2.2(a): this exact 15-key order, verbatim — not alphabetical, not grouped.
   const ints = new Map([
     ['item function', itemFunction],

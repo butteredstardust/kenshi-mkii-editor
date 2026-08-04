@@ -38,6 +38,7 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/itemFactory.js` | Shape of a minted type-42 ITEM record; weapon-grade resolution |
 | `services/loadouts.js` | Named gear sets for bulk equip — editorial, like `archetypes.js` |
 | `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
+| `services/personalities.js` | The `ints.personality` decode — **derived from gamedata**, not editorial |
 | `services/locationsService.js` | Town world positions, read from the **install's** `.level` placement data (never the save). Disk-cached |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
 | `services/recruits.js` | "Roll a recruit" catalogue: 50 entries in 10 archetype groups. Editorial, but races/tiers of the named ones come from the game's type-1 character records |
@@ -138,7 +139,18 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   zone cell, and their naming is a different layer (the save calls the player's
   cell "Heng" where the data places "Trader's Edge"). See
   `services/locationsService.js` for the full evidence.
-- **An item template is typecode 2, 3, 4, 46 or 107 — never 42.** 42 is the
+- **Dialogue is NOT in the save.** A CHAR_STATE record has no dialogue
+  reference of any kind — across 555 live characters there are exactly four
+  CHAR_STATE string-key shapes (`name, owner faction ID, sheath`, plus optional
+  `bountyfac<n>`). Dialogue hangs off the type-1 CHARACTER TEMPLATE in gamedata
+  (`extra['dialogue package']` and `extra['dialogue package player']`), reached
+  through the squad instance's `target`. The editor reports it and offers no
+  setter; do not add one without new evidence.
+- **`ints.personality` is one of seven values**, decoded in
+  `services/personalities.js` from gamedata's type-26 records: 1 Honorable,
+  2 Traitorous, 5 Smart, 6 Dumb, 9 Brave, 10 Fearful, 14 Crazy. The record named
+  "Random" lists exactly those seven, and no live character uses any other.
+- **An item template is typecode 2, 3, 4, 46, 107 or 111 — never 42.** 42 is the
   save-side ITEM *instance*. The two late additions were both whole item classes
   the editor could not reach:
   - **46 (backpack)** — 22 in this install's data; all 42 live type-46-backed
@@ -149,6 +161,17 @@ Full detail in `docs/save-format.md`. The non-negotiables:
     has no manufacturer ladder, so `gradeId` is *refused*, not ignored) and a
     `uniform` key. Worn on `back`: 6 of the 7 are, and the seventh is one being
     carried inside a pack, which is a bucket rather than a competing slot.
+  - **111 (robotic limb)** — CARRIED, never worn: all 11 live ones sit in
+    `backpack_content`. The one kind with extra float keys: `wear`, `stun`,
+    `dam` come BEFORE `charges`/`quality`, and key order is load-bearing.
+
+  **Do not add a typecode here by guesswork.** The list was settled by sweeping
+  all 123 files of a save (6103 ITEM records) for which typecode backs each
+  `base data sid`; `test/equip.test.js` asserts that invariant, so a missing
+  class fails the suite rather than waiting for a bug report. And the supported
+  set lives in `itemFactory.TEMPLATE_TYPES` alone — a second hardcoded copy is
+  exactly how backpacks, crossbows and limbs stayed unreachable through
+  `addItem()` after bulk equip could already place them.
 - **A weapon's grade is the (company sid, material sid) PAIR, and a model sid is
   not a key.** 14 of this install's 24 grade model sids appear under two
   different companies — `1069-gamedata.base` is both "Homemade" and
@@ -213,6 +236,8 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | GET | `/api/locations` | Town positions for the teleport picker: `{ id, name, label, faction, x, y, z, source }[]` plus build stats. From the install's world data, **not** the save — see `services/locationsService.js` for why the two obvious sources are both wrong |
 | POST | `/api/locations/rebuild` | Re-scan the install for town placements (after installing or removing a mod) |
 | POST | `/api/saves/:name/platoons/:file/teleport` | Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`; `sids?` limits it to some of the squad. Edits the SQUAD (30) instances' `pos` **and** the quick.save SQUAD_META position so the map marker follows |
+| GET | `/api/personalities` | The seven working personality values, decoded from gamedata's type-26 records (`services/personalities.js`) |
+| PUT | `/api/saves/:name/platoons/:file/characters/:sid/personality` | Set `ints.personality` on CHAR_STATE. `{ personality, allowUnknown? }`; refuses anything outside the seven unless overridden |
 | GET | `/api/loadouts` | **29 named gear sets** for bulk equip (`services/loadouts.js`) — editorial, read off the game's own NPCs. Items already resolved to names/kinds, plus `tags` (heavy/light/ranged/support/trade/travel/starter) for grouping, advisory `raceNotes`, and a `missing[]` of any template this install cannot resolve |
 | GET | `/api/saves` | List save directories, newest first |
 | GET | `/api/saves/:name/status` | World summary + squads + characters + inventories |

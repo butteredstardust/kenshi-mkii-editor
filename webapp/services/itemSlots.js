@@ -96,13 +96,26 @@ const ARMOUR_SLOT_MAP = new Map([
 // crossbow being CARRIED in a pack, and `backpack_content` is a bucket every
 // item may sit in, not a competing equip slot. Every one that is actually
 // equipped is on the back, which is also where Kenshi wears a crossbow.
+// Type 111 (robotic limb) gets NO equip section: all 11 live ones sit in
+// `backpack_content`, i.e. carried. A limb is not worn from the inventory — you
+// carry it and have it fitted at a bench, after which it lives in the
+// character's limb data rather than as an item. The buckets added below are the
+// whole of its legitimate list.
 const TYPECODE_SECTIONS = new Map([
   [2, ['hip', 'back']],
   [3, ['head', 'shirt', 'armour', 'legs', 'boots']],
   [4, []],
   [46, ['backpack_attach']],
   [107, ['back']],
+  [111, []],
 ]);
+
+// Type-4 (trade goods) `ints.slot` -> section, the same trick ARMOUR_SLOT_MAP
+// plays for armour. Only slot 14 is mapped: it is the money belts ("1,000c",
+// "10,000c", "100,000c") and every one of the six live type-4 items sitting in
+// `belt` is one of them. Slot 7 is ordinary carried goods and slot 12 is the
+// two lanterns, neither of which was ever observed in an equip slot.
+const TRADE_SLOT_MAP = new Map([[14, 'belt']]);
 
 // Legitimate for every item regardless of kind — general carry and pack
 // storage, never a body/equip slot.
@@ -140,6 +153,8 @@ function allowedSections(baseSid, currentSection) {
 
   if (tmpl && tmpl.type === 3 && tmpl.slot != null && ARMOUR_SLOT_MAP.has(tmpl.slot)) {
     base = [ARMOUR_SLOT_MAP.get(tmpl.slot)];
+  } else if (tmpl && tmpl.type === 4 && tmpl.slot != null && TRADE_SLOT_MAP.has(tmpl.slot)) {
+    base = [TRADE_SLOT_MAP.get(tmpl.slot)];
   } else if (tmpl && tmpl.type === 3 && baseSid && loadObservations().has(baseSid)) {
     base = [loadObservations().get(baseSid)];
   } else if (tmpl && TYPECODE_SECTIONS.has(tmpl.type)) {
@@ -165,6 +180,6 @@ function isAllowed(baseSid, currentSection, targetSection) {
 }
 
 module.exports = {
-  ARMOUR_SLOT_MAP, TYPECODE_SECTIONS, BUCKET_SECTIONS, ALL_SECTIONS,
+  ARMOUR_SLOT_MAP, TRADE_SLOT_MAP, TYPECODE_SECTIONS, BUCKET_SECTIONS, ALL_SECTIONS,
   allowedSections, isAllowed,
 };

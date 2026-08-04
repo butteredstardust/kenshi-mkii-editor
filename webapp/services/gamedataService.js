@@ -31,9 +31,12 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
 //
+// 6: `dialoguePackages`/`playerDialoguePackages` on type-1 character templates
+// (the character card's read-only dialogue status).
+//
 // 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
 // every weapon-grade row.
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
 // 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
@@ -44,10 +47,15 @@ const CACHE_VERSION = 5;
 // the equip scripts had to hand-roll a backpack record. All 42 live
 // type-46-backed items confirm the minted shape (see itemFactory.js).
 //
+// 111 is the robotic limb — the class this list was missing when a user went
+// looking for a "KLR Series Arm (left)" and found nothing. A full sweep of all
+// 123 files in a live save (6103 ITEM records) settled the question: exactly
+// six typecodes ever back an item, and these are they.
+//
 // 107 is the crossbow — a whole weapon class that was unreachable until the
 // loadout work went looking for a ranged archetype and found "Ranger" sitting
 // at a typecode nothing accepted.
-const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46, 107]);
+const ITEM_TEMPLATE_TYPES = new Set([2, 3, 4, 46, 107, 111]);
 
 let index = null;
 let stats = null;
@@ -156,7 +164,21 @@ function build() {
         const partCoverage = coverRows && coverRows.length
           ? coverRows.map((r) => r.target).filter(Boolean)
           : null;
-        map.set(rec.sid, { name: asText(rec.name), type: rec.type, slot, stackable, itemFunction, partCoverage });
+        // Dialogue lives on the type-1 CHARACTER template, never in the save
+        // (see saveService.dialogueOf). Cached so the character card can say
+        // whether a character's origin template can talk to the player at all
+        // — 169 of this install's 659 templates carry a player package.
+        // Resolved to sids here and to names after the sweep, since a package
+        // may be defined in a file visited later than the character.
+        const dialogueSids = rec.type === 1
+          ? (rec.extra.get('dialogue package') || []).map((r) => r.target).filter(Boolean) : null;
+        const playerDialogueSids = rec.type === 1
+          ? (rec.extra.get('dialogue package player') || []).map((r) => r.target).filter(Boolean) : null;
+        map.set(rec.sid, {
+          name: asText(rec.name), type: rec.type, slot, stackable, itemFunction, partCoverage,
+          ...(dialogueSids && dialogueSids.length ? { dialogueSids } : {}),
+          ...(playerDialogueSids && playerDialogueSids.length ? { playerDialogueSids } : {}),
+        });
       }
 
       // Material union: collected from EVERY definition, first-definition-wins
@@ -185,6 +207,19 @@ function build() {
 
   const materialIdx = new Map();
   for (const [sid, set] of materials) materialIdx.set(sid, [...set]);
+
+  // Resolve the dialogue-package sids collected above to display names, now
+  // that every file has been read.
+  for (const entry of map.values()) {
+    if (entry.dialogueSids) {
+      entry.dialoguePackages = entry.dialogueSids.map((s) => (map.get(s) || {}).name || s);
+      delete entry.dialogueSids;
+    }
+    if (entry.playerDialogueSids) {
+      entry.playerDialoguePackages = entry.playerDialogueSids.map((s) => (map.get(s) || {}).name || s);
+      delete entry.playerDialogueSids;
+    }
+  }
 
   // De-dupe by (companySid, modelSid) — the same pair can appear more than
   // once across data files (e.g. a mod re-stating a vanilla company's row).

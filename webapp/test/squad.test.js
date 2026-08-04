@@ -405,3 +405,122 @@ test('characterFactory refuses a donor missing any of the six state records', ()
     /name is required/,
   );
 });
+
+// ----------------------------------------------------- personality/dialogue --
+
+test('the personality integers decode to the seven traits the game uses', () => {
+  const personalities = require('../services/personalities');
+  const rows = personalities.catalogue();
+  assert.strictEqual(rows.length, 7);
+  // Decoded from gamedata's type-26 records, each single-trait record's
+  // `always` tag naming its value. Pinned here because it is derived, not
+  // editorial — if it ever changes, the evidence must change with it.
+  assert.deepStrictEqual(
+    Object.fromEntries(rows.map((p) => [p.value, p.label])),
+    { 1: 'Honorable', 2: 'Traitorous', 5: 'Smart', 6: 'Dumb', 9: 'Brave', 10: 'Fearful', 14: 'Crazy' },
+  );
+  assert.strictEqual(personalities.label(9), 'Brave');
+  assert.strictEqual(personalities.label(3), 'unknown (3)');
+  assert.strictEqual(personalities.label(null), 'none');
+  assert.ok(personalities.isKnown(14) && !personalities.isKnown(11));
+});
+
+test('every personality in the live save is one of the seven', (t) => {
+  const src = paths.latestSave();
+  if (!src) return t.skip('no Kenshi save found');
+  const personalities = require('../services/personalities');
+  const pdir = path.join(src.dir, 'platoon');
+  if (!fs.existsSync(pdir)) return t.skip('no platoon directory');
+
+  const seen = new Set();
+  for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon'))) {
+    const { characters } = saveService.readPlatoon(path.join(pdir, f));
+    for (const c of characters) if (c.personality != null) seen.add(c.personality);
+  }
+  assert.ok(seen.size > 0, 'no personalities found');
+  // The decisive evidence for the mapping: gamedata's "Random" personality
+  // record lists exactly these seven as its `common` tags, and the game writes
+  // no others. If a save ever shows an eighth, the decode is incomplete.
+  for (const v of seen) {
+    assert.ok(personalities.isKnown(v), `personality ${v} occurs in the save but is not decoded`);
+  }
+});
+
+test('setPersonality writes one int and refuses the values the game never uses', async (t) => {
+  if (mutation.gameIsRunning()) return t.skip('Kenshi is running');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip('no Kenshi save found');
+  const target = firstPlayerCharacter();
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no player character found'); }
+
+  try {
+    const relFile = path.join('platoon', target.platoonFile);
+    const before = readFile(fs.readFileSync(path.join(scratch.dir, relFile)));
+    const current = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid)
+      .records.state.ints.get('personality');
+    const next = current === 14 ? 9 : 14;
+
+    const receipt = await mutation.mutate(scratch.dir, 'test: personality',
+      (staging) => saveService.setPersonality(staging, target.platoonFile, target.sid, next));
+    assert.deepStrictEqual(receipt.changedFiles, [relFile]);
+
+    const after = readFile(fs.readFileSync(path.join(scratch.dir, relFile)));
+    assert.strictEqual(after.records.length, before.records.length);
+    const { records } = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid);
+    assert.strictEqual(records.state.ints.get('personality'), next);
+    // Exactly one int changed — no other key touched, order preserved.
+    assert.deepStrictEqual([...records.state.ints.keys()],
+      [...before.records.find((r) => r.sid === records.state.sid).ints.keys()]);
+
+    const hashes = backups.hashDir(scratch.dir);
+    for (const [value, pattern] of [[3, /not one of the values/], [11, /not one of the values/], [next, /already/]]) {
+      await assert.rejects(
+        mutation.mutate(scratch.dir, 'test: bad personality',
+          (staging) => saveService.setPersonality(staging, target.platoonFile, target.sid, value)),
+        pattern,
+      );
+    }
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), hashes);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('dialogue is reported from the origin template and is never writable', (t) => {
+  const squad = (() => {
+    const src = paths.latestSave();
+    if (!src) return null;
+    return saveService.status(src.name).squads.find((q) => q.characters.length) || null;
+  })();
+  if (!squad) return t.skip('no player squad');
+
+  // The investigation result this encodes: a CHAR_STATE record carries NO
+  // dialogue reference of any kind. Dialogue hangs off the type-1 character
+  // template in gamedata, reached through the squad instance's `target`. So the
+  // editor reports it and offers no setter — and there must not be one.
+  assert.strictEqual(typeof saveService.setPersonality, 'function');
+  assert.strictEqual(saveService.setDialogue, undefined,
+    'dialogue is not writable from a save; do not add a setter without new evidence');
+
+  for (const c of squad.characters) {
+    if (!c.dialogue) continue; // origin is not a character template (an animal)
+    assert.strictEqual(typeof c.dialogue.template, 'string');
+    assert.ok(Array.isArray(c.dialogue.packages) && Array.isArray(c.dialogue.playerPackages));
+    assert.strictEqual(c.dialogue.talksToPlayer, c.dialogue.playerPackages.length > 0);
+  }
+  // And confirm the save side really is empty of dialogue, rather than us
+  // simply not having looked: no CHAR_STATE string key mentions it.
+  const src = paths.latestSave();
+  const pdir = path.join(src.dir, 'platoon');
+  for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon'))) {
+    const parsed = readFile(fs.readFileSync(path.join(pdir, f)));
+    for (const r of parsed.records) {
+      if (r.type !== saveService.T.CHAR_STATE) continue;
+      for (const k of r.strings.keys()) {
+        assert.doesNotMatch(k, /dialog|voice|package/i,
+          `CHAR_STATE carries "${k}" — dialogue may be save-side after all, re-investigate`);
+      }
+    }
+  }
+});

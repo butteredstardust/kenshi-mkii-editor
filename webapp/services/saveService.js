@@ -8,6 +8,7 @@ const { asText, fromText, byteLength } = require('./kenshi/binary');
 const paths = require('./pathService');
 const gamedata = require('./gamedataService');
 const archetypes = require('./archetypes');
+const personalities = require('./personalities');
 const recruits = require('./recruits');
 const itemCatalog = require('./itemCatalogService');
 const itemSlots = require('./itemSlots');
@@ -296,6 +297,43 @@ function raceOf(appearanceRec) {
   return { sid: row.target, name: gamedata.nameOf(row.target, row.target) };
 }
 
+/**
+ * What a squad instance's `target` template says about this character's
+ * dialogue — reported, never written.
+ *
+ * INVESTIGATION RESULT (the "can we enable dialogue?" question): **no, not from
+ * the save.** A CHAR_STATE record carries no dialogue reference of any kind.
+ * Across all 555 characters in a live save there are exactly four distinct
+ * CHAR_STATE string-key shapes — `name, owner faction ID, sheath` plus optional
+ * `bountyfac<n>` — and none of them names a dialogue package, a personality
+ * record, or a voice.
+ *
+ * Dialogue is attached to the type-1 CHARACTER TEMPLATE in gamedata, as
+ * `extra['dialogue package']` (what the character says to the world) and
+ * `extra['dialogue package player']` (what it says to the player — the marker
+ * of a talkable/recruitable character; 169 of this install's 659 templates
+ * have one). The only thing the save stores is which template a character came
+ * from: the squad instance's `target`.
+ *
+ * That makes the template's dialogue status worth SHOWING — it explains why
+ * the characters from a "start- Homeless" game start have no dialogue at all
+ * while a cloned "Lost drone" carries "Player HIVER Ronin" — but it does not
+ * make dialogue editable. Repointing `target` at a talkative template is one
+ * string edit, but that field is the character's whole origin (race template,
+ * stats, gear rules, dialogue), and whether the game re-reads dialogue from it
+ * for an already-spawned character is untestable offline. Not offered.
+ */
+function dialogueOf(targetSid) {
+  const tmpl = targetSid ? gamedata.lookup(targetSid) : null;
+  if (!tmpl || tmpl.type !== 1) return null;
+  return {
+    template: tmpl.name,
+    packages: tmpl.dialoguePackages || [],
+    playerPackages: tmpl.playerDialoguePackages || [],
+    talksToPlayer: !!(tmpl.playerDialoguePackages || []).length,
+  };
+}
+
 /** Characters in one platoon file, resolved through the squad record. */
 function readPlatoon(file) {
   const parsed = readFile(fs.readFileSync(file));
@@ -315,6 +353,12 @@ function readPlatoon(file) {
       origin: gamedata.nameOf(inst.target),
       isLeader: state ? (state.bools.get('is leader') ?? false) : false,
       personality: state ? state.ints.get('personality') ?? null : null,
+      personalityLabel: personalities.label(state ? state.ints.get('personality') : null),
+      // What the squad instance's `target` template says about this character's
+      // dialogue. READ-ONLY and deliberately so: dialogue is attached to the
+      // type-1 template in gamedata, never to anything in the save, so there is
+      // nothing here to write. See dialogueOf().
+      dialogue: dialogueOf(inst.target),
       age: state ? state.floats.get('age') ?? null : null,
       // Carried on every character read so nothing downstream has to re-scan
       // every platoon file just to learn a race (which is what the equip
@@ -1202,8 +1246,11 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
 
   const tmpl = gamedata.lookup(templateSid);
   if (!tmpl) throw new Error(`unresolvable item template sid "${templateSid}"`);
-  if (![2, 3, 4].includes(tmpl.type)) {
-    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (2/3/4) — see TODO.md 2.2(g)`);
+  // The supported set lives in itemFactory, which is what actually mints the
+  // record — a second hardcoded copy here is how backpacks, crossbows and
+  // robotic limbs each became addable everywhere EXCEPT this route.
+  if (!itemFactory.TEMPLATE_TYPES.includes(tmpl.type)) {
+    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${itemFactory.TEMPLATE_TYPES.join('/')}) — see TODO.md 2.2(g)`);
   }
 
   if (quantity > 1 && !tmpl.stackable) {
@@ -1322,6 +1369,46 @@ function renameCharacter(saveDir, platoonFile, characterSid, newName) {
     bytes: writeFile(parsed),
     before: { name: before, statsRecordName: statsBefore },
     after: { name: text, statsRecordName: statsRec ? text : null },
+  };
+}
+
+/**
+ * Set `ints.personality` on a character's CHAR_STATE (36) record.
+ *
+ * See services/personalities.js for how the seven working values were decoded
+ * from gamedata's type-26 records. `allowUnknown` exists because the guide
+ * warns other values are unimplemented rather than harmful — the editor
+ * defaults to refusing them, but does not pretend to know they are impossible.
+ *
+ * Never mints the key: a character whose record has no `personality` int is
+ * left alone, same discipline as setStats().
+ */
+function setPersonality(saveDir, platoonFile, characterSid, value, { allowUnknown = false } = {}) {
+  const v = Number(value);
+  if (!Number.isInteger(v)) throw new Error('personality must be an integer');
+  if (!allowUnknown && !personalities.isKnown(v)) {
+    throw new Error(
+      `personality ${v} is not one of the values the game uses `
+      + `(${personalities.KNOWN_VALUES.join(', ')}) — the others are unimplemented in vanilla`,
+    );
+  }
+
+  const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
+  const rec = records.state;
+  if (!rec) throw new Error(`${platoonFile}: character "${characterSid}" has no CHAR_STATE record (type 36)`);
+  if (!rec.ints.has('personality')) {
+    throw new Error(`${platoonFile}: character "${characterSid}" has no "personality" int field`);
+  }
+
+  const before = rec.ints.get('personality');
+  if (before === v) throw new Error(`this character's personality is already ${personalities.label(v)}`);
+  rec.ints.set('personality', v);
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    before: { personality: before, label: personalities.label(before) },
+    after: { personality: v, label: personalities.label(v) },
   };
 }
 
@@ -1995,7 +2082,7 @@ module.exports = {
   raceOf, equipMany, teleportSquad,
   playerPlatoonFiles, playerSquadRecords, scanCharacters, availableRaces, defaultRace,
   resolveSquad, squadMetaFor, encodeName, MAX_NAME_BYTES,
-  renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread,
+  renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread, setPersonality, dialogueOf,
   resolveCharacter, setStats, setStat, trainCharacter,
   healPart, damagePart, setHunger, revive, restoreLimbs,
   setItemSection, setItemQuality, updateItem, addItem,

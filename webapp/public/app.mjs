@@ -16,6 +16,7 @@ const envEl = document.getElementById('env');
 const state = {
   env: null, save: null, status: null, current: 'squad', selected: null, filter: '',
   archetypes: [], // catalogue for "train as archetype" dropdowns, fetched once at boot
+  personalities: [], // the seven working personality values, decoded from gamedata
   recruits: [], // "roll a recruit" catalogue (editorial — see services/recruits.js)
   namePool: [], // plausible names from Kenshi's own namesM/F/MF.txt
   races: null, // { races, default } for THIS save — a new member is cloned from
@@ -46,6 +47,7 @@ const state = {
   // would clear the search and force the user to start over to add a second.
   // { key, query, results, total, template, level, gradeId, quantity, section }
   addItem: null,
+  itemKinds: [], itemSlots: [], // filter vocabulary, owned by the server
   weaponGrades: null, // fetched once, lazily — only needed when a weapon is picked
 };
 
@@ -67,6 +69,7 @@ async function boot() {
     : `<span class="ok">ready</span> <span class="muted">· ${esc(state.env.saves.length)} save(s) · ${esc(state.env.saveRoot || 'no save folder found')}</span>`;
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
+  state.personalities = await API.personalities().catch(() => []);
   state.recruits = await API.recruits().catch(() => []);
   // Kenshi's own name pool, so a new member is never called nothing. Fetched
   // once — the files don't change while the app runs.
@@ -75,6 +78,13 @@ async function boot() {
   // Town positions come from the Kenshi install, not the save, so they are
   // fetched once at boot rather than per save.
   state.locations = await API.locations().then((r) => r.locations).catch(() => []);
+  // The item picker's filter vocabulary. Fetched here rather than off the first
+  // search response, because the panel renders its <select>s before any search
+  // has run — piggybacking left them empty until you had already searched.
+  await API.items('', 1).then((r) => {
+    state.itemKinds = r.kinds || [];
+    state.itemSlots = r.slots || [];
+  }).catch(() => {});
   await loadRaces();
   // The grade ladder backs the Gear row's weapon "Quality" select, which is
   // rendered synchronously, so it has to be here rather than fetched lazily.
@@ -514,9 +524,22 @@ function addItemSection(c, file) {
   return `<details class="section" ${pick ? 'open' : ''}>
     ${sectionSummary('add', 'Add item')}
     <div class="section-body stack">
-      <label class="field field--grow">Search items
-        <input type="search" class="add-item-search" placeholder="e.g. katana, first aid"
-          value="${esc(pick ? pick.query || '' : '')}" ${dis()}></label>
+      <div class="field-row">
+        <label class="field field--grow">Search items
+          <input type="search" class="add-item-search" placeholder="e.g. katana, KLR arm"
+            value="${esc(pick ? pick.query || '' : '')}" ${dis()}></label>
+        <label class="field">Category
+          <select class="add-item-kind" ${dis()}>
+            <option value="">All</option>
+            ${(state.itemKinds || []).map((k) => `<option value="${esc(k.kind)}" ${pick && pick.kind === k.kind ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}
+          </select></label>
+        <label class="field">Slot
+          <select class="add-item-slot" ${dis()}>
+            <option value="">Any</option>
+            ${(state.itemSlots || []).map((s) => `<option value="${esc(s)}" ${pick && pick.slot === s ? 'selected' : ''}>${esc(SLOT_LABELS[s] || s)}</option>`).join('')}
+          </select></label>
+      </div>
+      <p class="hint">Slot only lists items whose slot the editor can confirm — search by name for the rest.</p>
       <div class="add-item-results picker-results"></div>
       <div class="add-item-config"></div>
       <p class="hint">Filling an occupied slot sends the current occupant to Carried. Race fit is not checked.</p>
@@ -833,9 +856,13 @@ function renderGear() {
  * so needs the same shape: a labelled field, one primary Apply, a receipt.
  */
 function identitySection(c) {
+  const list = state.personalities || [];
+  const known = list.some((p) => p.value === c.personality);
+  const d = c.dialogue;
+
   return `<details class="section">
     ${sectionSummary('identity', 'Identity')}
-    <div class="section-body">
+    <div class="section-body stack">
       <div class="field-row">
         <label class="field field--grow">Name
           <input type="text" class="char-name" maxlength="63"
@@ -843,6 +870,22 @@ function identitySection(c) {
         <button class="btn btn--primary rename-char" ${dis()}>Apply</button>
       </div>
       <p class="hint">Up to 63 bytes.</p>
+
+      ${c.personality != null ? `<div class="field-row">
+        <label class="field field--grow">Personality
+          <select class="char-personality" data-initial="${esc(c.personality)}" ${dis()}>
+            ${known ? '' : `<option value="${esc(c.personality)}" selected>unknown (${esc(c.personality)})</option>`}
+            ${list.map((p) => `<option value="${esc(p.value)}" ${p.value === c.personality ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+          </select></label>
+        <button class="btn set-personality" ${dis()}>Set</button>
+      </div>
+      <p class="hint">${esc((list.find((p) => p.value === c.personality) || {}).note || 'Seven values the game uses; the rest are unimplemented.')}</p>` : ''}
+
+      ${d ? `<p class="hint">Dialogue comes from the origin template
+        <b>${esc(d.template)}</b>: ${d.talksToPlayer
+    ? `talks to the player (${esc(d.playerPackages.join(', '))})`
+    : (d.packages.length ? `world dialogue only (${esc(d.packages.join(', '))})` : 'none at all')}.
+        Read-only — a save stores no dialogue of its own.</p>` : ''}
     </div>
   </details>`;
 }
@@ -1757,6 +1800,18 @@ function wire() {
       return run(renameBtn, `renamed to ${value}`, () => API.renameCharacter(state.save, file, sid, value), true);
     };
 
+    const persoBtn = card.querySelector('.set-personality');
+    if (persoBtn) persoBtn.onclick = () => {
+      const sel = card.querySelector('.char-personality');
+      if (sel.value === sel.dataset.initial) {
+        return showReceipt(receipt, new Error('Pick a different personality first.'));
+      }
+      const label = sel.selectedOptions[0].textContent;
+      // Re-renders: the card's own hint line describes the chosen personality.
+      return run(persoBtn, `personality set to ${label}`,
+        () => API.setPersonality(state.save, file, sid, Number(sel.value)), true);
+    };
+
     const statsBtn = card.querySelector('.save-stats');
     if (statsBtn) statsBtn.onclick = () => {
       const changed = {};
@@ -1979,16 +2034,27 @@ function wire() {
         });
       };
 
+      const kindSel = card.querySelector('.add-item-kind');
+      const slotSel = card.querySelector('.add-item-slot');
+
       const search = async (query) => {
         const pick = pickOf() || { key: cardKey };
         state.addItem = pick;
         pick.query = query;
+        pick.kind = kindSel ? kindSel.value : '';
+        pick.slot = slotSel ? slotSel.value : '';
+        // The filters are part of the request identity, so a slower earlier
+        // request can't overwrite a newer one that only changed a filter.
+        const token = `${query}|${pick.kind}|${pick.slot}`;
         try {
-          const res = await API.items(query);
-          // A slower earlier request must not overwrite a newer query's results.
-          if (pick.query !== query) return;
+          const res = await API.items(query, 40, { kind: pick.kind, slot: pick.slot });
+          if (`${pick.query}|${pick.kind}|${pick.slot}` !== token) return;
           pick.results = res.items;
           pick.total = res.total;
+          // The server owns the filter vocabulary; cache it the first time it
+          // comes back rather than hardcoding a list that could drift.
+          if (res.kinds) state.itemKinds = res.kinds;
+          if (res.slots) state.itemSlots = res.slots;
         } catch (err) {
           pick.results = [];
           pick.total = 0;
@@ -2003,6 +2069,8 @@ function wire() {
         const q = addSearch.value;
         searchTimer = setTimeout(() => search(q), 180);
       };
+      if (kindSel) kindSel.onchange = () => search(addSearch.value);
+      if (slotSel) slotSel.onchange = () => search(addSearch.value);
       // Opening the panel with nothing typed yet lists the catalogue, so the
       // control is explorable rather than a blank box that only rewards guesses.
       const addDetails = addSearch.closest('details');

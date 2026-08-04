@@ -493,3 +493,87 @@ test('asText is never needed to read back a name written by equipMany receipts',
     assert.strictEqual(c.name, asText(c.name), `${c.name} is not already display text`);
   }
 });
+
+test('robotic limbs (typecode 111) are offered and mint the live shape', (t) => {
+  const limbs = gamedata.itemTemplates().filter((x) => x.type === 111);
+  if (!limbs.length) return t.skip('no typecode-111 templates in this install');
+
+  // A limb is CARRIED, never worn from the inventory: all 11 live ones sit in
+  // backpack_content. You have one fitted at a bench, after which it lives in
+  // the character's limb data rather than as an item.
+  const { sections, widened } = itemSlots.allowedSections(limbs[0].sid, null);
+  assert.deepStrictEqual(sections, ['main', 'backpack_content']);
+  assert.strictEqual(widened, false, 'type 111 is a known kind now, not the permissive fallback');
+
+  const { record } = itemFactory.buildItemRecord(limbs[0].sid, { section: 'main', level: 60 });
+  assert.strictEqual(record.ints.get('item function'), 0);
+  assert.strictEqual(record.ints.get('level'), 60);
+  assert.strictEqual(record.floats.get('quality'), 100);
+  assert.strictEqual(record.strings.get('company sid'), '');
+  assert.ok(record.strings.has('uniform'), 'all 11 live limbs carry a "uniform" key');
+  // The distinguishing feature: three condition floats, BEFORE charges/quality.
+  assert.deepStrictEqual([...record.floats.keys()], ['wear', 'stun', 'dam', 'charges', 'quality'],
+    'key order is load-bearing and this is the order on every live limb');
+  for (const k of ['wear', 'stun', 'dam']) assert.strictEqual(record.floats.get(k), 0);
+});
+
+test('every typecode that backs a live item is offered by the picker', (t) => {
+  const src = paths.latestSave();
+  if (!src) return t.skip('no Kenshi save found');
+
+  // The question the picker must answer: which gamedata typecodes actually
+  // appear as the `base data sid` of a live ITEM record? Sweeping the WHOLE
+  // save (quick.save, every platoon, every zone — vendor stock lives in the
+  // zones, which is where the robotic limbs were hiding) is the only way to be
+  // sure, and is how typecode 111 was found missing.
+  const files = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(save|platoon|zone)$/i.test(e.name)) files.push(full);
+    }
+  }(src.dir));
+
+  const offered = new Set(gamedata.itemTemplates().map((x) => x.type));
+  const seen = new Map();
+  for (const f of files) {
+    let parsed;
+    try { parsed = readFile(fs.readFileSync(f)); } catch { continue; }
+    for (const r of parsed.records) {
+      if (r.type !== saveService.T.ITEM) continue;
+      const tmpl = gamedata.lookup(r.strings.get('base data sid'));
+      if (!tmpl) continue;
+      seen.set(tmpl.type, (seen.get(tmpl.type) || 0) + 1);
+    }
+  }
+  assert.ok(seen.size > 0, 'no items found to check against');
+  for (const [type, count] of seen) {
+    assert.ok(offered.has(type),
+      `typecode ${type} backs ${count} live item(s) but the picker does not offer it`);
+  }
+});
+
+test('the item search filters by kind, and by slot only where the slot is known', (t) => {
+  const all = gamedata.itemTemplates();
+  if (!all.length) return t.skip('no Kenshi install found');
+
+  const BUCKETS = itemSlots.BUCKET_SECTIONS;
+  const equipOf = (sid) => itemSlots.allowedSections(sid, null).sections.filter((s) => !BUCKETS.includes(s));
+  // This is the rule the route applies; asserting it here pins the intent.
+  const strict = (sid, slot) => {
+    const eq = equipOf(sid);
+    return eq.length > 0 && eq.length <= 2 && eq.includes(slot);
+  };
+
+  const boots = all.filter((x) => strict(x.sid, 'boots'));
+  assert.ok(boots.length > 0, 'no boots at all');
+  // The whole point: a strict filter must not return the 1400+ armour
+  // templates whose slot is merely unconfirmed.
+  assert.ok(boots.length < 200, `slot=boots matched ${boots.length} templates — the permissive fallback is leaking`);
+  for (const b of boots) assert.strictEqual(b.type, 3);
+
+  // Weapons legitimately have two slots and must survive the strictness rule.
+  const hips = all.filter((x) => strict(x.sid, 'hip'));
+  assert.ok(hips.length > 0 && hips.every((x) => x.type === 2));
+});

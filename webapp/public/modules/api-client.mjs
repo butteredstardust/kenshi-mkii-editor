@@ -24,6 +24,11 @@ export const API = {
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/stats`,
     { stats }),
   archetypes: () => request('GET', '/api/archetypes'),
+  // The seven working personality values, decoded from gamedata (not editorial).
+  personalities: () => request('GET', '/api/personalities'),
+  setPersonality: (name, file, sid, personality) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/personality`,
+    { personality }),
   // Rename one character (CHAR_STATE strings.name + the STATS record header name).
   renameCharacter: (name, file, sid, newName) => request('PUT',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/name`,
@@ -76,8 +81,9 @@ export const API = {
   // Item-template search for the "Add item" picker. Filtered server-side to
   // template typecodes 2/3/4 — the save-side type-42 ITEM record is an
   // instance, not something you can pick from.
-  items: (q, limit = 40) => request('GET',
-    `/api/gamedata/items?q=${encodeURIComponent(q || '')}&limit=${encodeURIComponent(limit)}`),
+  items: (q, limit = 40, { kind = '', slot = '' } = {}) => request('GET',
+    `/api/gamedata/items?q=${encodeURIComponent(q || '')}&limit=${encodeURIComponent(limit)}`
+    + `&kind=${encodeURIComponent(kind)}&slot=${encodeURIComponent(slot)}`),
   // The weapon grade ladder ("Totally rusted junk" .. "Meitou"). A weapon's
   // grade is the (company sid, material sid) pair, NOT `level` — pass the
   // chosen entry's modelSid as addItem's `materialSid`.

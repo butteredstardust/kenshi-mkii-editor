@@ -10,6 +10,7 @@ const recruits = require('../../services/recruits');
 const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
 const names = require('../../services/names');
+const personalities = require('../../services/personalities');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -34,7 +35,24 @@ router.get('/status', handle(async () => {
 router.get('/gamedata', handle(async () => gamedata.indexStats()));
 router.post('/gamedata/rebuild', handle(async () => { gamedata.rebuild(); return gamedata.indexStats(); }));
 
-const ITEM_KIND_NAMES = { 2: 'weapon', 3: 'armour', 4: 'trade goods' };
+// The six typecodes that ever back a live ITEM record — established by sweeping
+// all 123 files of a save (6103 items), not by guessing. `kind` is the filter
+// key the picker sends.
+const ITEM_KINDS = [
+  { kind: 'weapon', type: 2, label: 'Weapons' },
+  { kind: 'armour', type: 3, label: 'Armour & clothing' },
+  { kind: 'crossbow', type: 107, label: 'Crossbows' },
+  { kind: 'backpack', type: 46, label: 'Backpacks' },
+  { kind: 'limb', type: 111, label: 'Robotic limbs' },
+  { kind: 'trade goods', type: 4, label: 'Trade goods & supplies' },
+];
+const ITEM_KIND_NAMES = Object.fromEntries(ITEM_KINDS.map((k) => [k.type, k.kind]));
+const ITEM_KIND_TYPES = Object.fromEntries(ITEM_KINDS.map((k) => [k.kind, k.type]));
+
+// Armour is 1646 of the ~2100 templates, so kind alone doesn't narrow it much —
+// the body slot is what someone shopping for boots actually wants.
+const ITEM_SLOT_FILTERS = ['head', 'shirt', 'armour', 'legs', 'boots', 'back', 'hip', 'belt', 'backpack_attach'];
+
 const ITEMS_DEFAULT_LIMIT = 50;
 const ITEMS_MAX_LIMIT = 500;
 
@@ -53,6 +71,32 @@ router.get('/gamedata/items', handle(async (req) => {
 
   let templates = gamedata.itemTemplates();
   if (q) templates = templates.filter((t) => t.name.toLowerCase().includes(q));
+
+  // Category filters. `kind` is the typecode by another name; `slot` narrows on
+  // where an item can actually be worn, which is resolved through
+  // services/itemSlots.js so the picker and the write path can never disagree
+  // about what fits where.
+  const kind = typeof req.query.kind === 'string' ? req.query.kind.trim() : '';
+  if (kind && ITEM_KIND_TYPES[kind] !== undefined) {
+    templates = templates.filter((t) => t.type === ITEM_KIND_TYPES[kind]);
+  }
+  // The slot filter is deliberately STRICT. Only 184 of this install's 1646
+  // armour templates carry a slot the editor can confirm; the other 1462 fall
+  // through to itemSlots' permissive branch, which offers all five body slots
+  // because hiding a legitimate one on a modded item is the worse error when
+  // you are *placing* an item. For a *filter* that rule inverts: a "boots"
+  // search that returns 1477 rows including every shirt is useless. So a
+  // template matches only when its slot list is specific — one section, or the
+  // two a melee weapon genuinely has (hip and back). Everything else stays
+  // reachable through `kind` and the name search.
+  const slot = typeof req.query.slot === 'string' ? req.query.slot.trim() : '';
+  if (slot && ITEM_SLOT_FILTERS.includes(slot)) {
+    templates = templates.filter((t) => {
+      const equip = itemSlots.allowedSections(t.sid, null).sections
+        .filter((s) => !itemSlots.BUCKET_SECTIONS.includes(s));
+      return equip.length > 0 && equip.length <= 2 && equip.includes(slot);
+    });
+  }
 
   // Deterministic order: name, then sid, so the list is stable between calls
   // (two templates can share a display name).
@@ -82,7 +126,15 @@ router.get('/gamedata/items', handle(async (req) => {
     };
   });
 
-  return { total, limit, items };
+  // The filter vocabulary rides along with the results so the UI never
+  // hardcodes a kind list that could drift from the server's.
+  return {
+    total,
+    limit,
+    items,
+    kinds: ITEM_KINDS.map(({ kind: k, label }) => ({ kind: k, label })),
+    slots: ITEM_SLOT_FILTERS,
+  };
 }));
 
 // The weapon grade ladder (TODO.md 2.2(i)), for the "Add item" picker's
@@ -99,6 +151,10 @@ router.get('/gamedata/weapon-grades', handle(async () => ({
 // Non-mutating catalogue for the "train as archetype" UI dropdowns — the
 // mapping lives once in services/archetypes.js, not duplicated client-side.
 router.get('/archetypes', handle(async () => archetypes.catalogue()));
+
+// The seven personality values the game actually uses, decoded from gamedata's
+// type-26 records rather than guessed — see services/personalities.js.
+router.get('/personalities', handle(async () => personalities.catalogue()));
 
 // "Roll a recruit" catalogue for the Add member panel. Editorial, not derived
 // from game data — see services/recruits.js.
