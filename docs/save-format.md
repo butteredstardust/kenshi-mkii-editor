@@ -58,6 +58,13 @@ Two traps in `S`:
   mapping) and only decodes to UTF-8 at the display boundary
   (`binary.js` → `asText()`).
 
+A trap in `F`: **a NaN is not just "NaN".** Saves contain hundreds of NaN floats
+(mostly a type-108 spatial cache's instance positions), and some are *signalling*
+NaNs. Reading a float32 into a JS number widens it to a double, which sets the
+quiet bit, so writing it back changes one bit and breaks the byte-identical round
+trip. The codec keeps each NaN's raw 32 bits, keyed by the float's ordinal within
+its record, and restores them on write.
+
 ---
 
 ## 3. File headers
@@ -165,6 +172,7 @@ mistaking the leading one for the start of a section produces a parse that
 | 37 | **faction** — `relation<n>` floats + `relationSID<n>` targets |
 | 41 | **inventory container** — one instance per item |
 | 42 | **item** — `base data sid`, `quantity`, `section`, `material sid`. The *instance*; its template lives in gamedata as typecode 2 (weapon), 3 (armour), 4 (trade goods) or 46 (backpack) |
+| 21 | **research ledger** (exactly one per save) — `num finished` + `finished<N>` strings. Also the gamedata typecode for a research tech; see AGENTS.md §3 |
 | 56 | **game state** — `player money`, `pfaction name`, `area`, clock, camera |
 | 57 | **medical** — per-body-part health, blood, hunger, KO/coma flags |
 | 66 | appearance sliders |

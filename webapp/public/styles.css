@@ -281,7 +281,7 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .badge {
   display: inline-block; font-size: var(--t-xs); text-transform: uppercase;
   letter-spacing: .05em; border: 1px solid currentColor; border-radius: 3px;
-  padding: 0 var(--s1); vertical-align: middle;
+  padding: 0 var(--s1); vertical-align: middle; white-space: nowrap;
 }
 .badge--accent { color: var(--accent); }
 .badge--danger { color: var(--danger); }
@@ -592,3 +592,13 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * research/manufacturer entries. Dimmed rather than hidden: not listing them
  * would make the shop look like it doesn't sell them. */
 .row-muted td { opacity: .62; }
+
+/* Research progress: one big figure and a bar. The number is the answer to
+ * "how far along am I", so it gets the type scale, and the meter gives the
+ * shape of it at a glance without having to divide two numbers. */
+.progress-head { display: flex; align-items: center; gap: var(--s4); margin-bottom: var(--s3); }
+.progress-head .meter { flex: 1; min-width: 120px; }
+.progress-figure { display: flex; align-items: baseline; gap: var(--s2); }
+.progress-figure strong { font-size: var(--t-xl); font-weight: 600; color: var(--ink); }
+/* A hint that closes a block rather than trailing a single control. */
+.hint--block { margin-bottom: var(--s4); }

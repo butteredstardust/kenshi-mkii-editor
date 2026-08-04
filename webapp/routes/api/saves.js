@@ -7,6 +7,7 @@ const saveService = require('../../services/saveService');
 const mutation = require('../../services/mutationService');
 const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
+const research = require('../../services/researchService');
 
 const router = express.Router();
 
@@ -154,6 +155,44 @@ router.post('/saves/:name/equip', handle(async (req) => {
     items: allItems,
     raceNotes: loadout ? loadout.raceNotes || [] : [],
     skipIfSlotFilled: !!skipIfSlotFilled,
+  }));
+}));
+
+// What this save has researched, joined onto the tech tree.
+router.get('/saves/:name/research', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  return research.statusFor(save.dir);
+}));
+
+// Mark research finished. `levels` sets a per-tech target level for repeating
+// techs (default: the tech's maximum); `withRequirements` (default true) also
+// finishes anything a requested tech depends on, so the tree is never left
+// claiming a tech is done while its prerequisite is not.
+router.post('/saves/:name/research/unlock', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { sids, levels, withRequirements } = req.body || {};
+
+  if (!Array.isArray(sids) || !sids.length) {
+    const e = new Error('body must include a non-empty "sids" array of research tech ids'); e.status = 400; throw e;
+  }
+  if (sids.some((s) => typeof s !== 'string' || !s)) {
+    const e = new Error('every entry in "sids" must be a non-empty string'); e.status = 400; throw e;
+  }
+  if (levels !== undefined && (typeof levels !== 'object' || levels === null || Array.isArray(levels))) {
+    const e = new Error('"levels", if given, must be an object of techSid -> level'); e.status = 400; throw e;
+  }
+  if (withRequirements !== undefined && typeof withRequirements !== 'boolean') {
+    const e = new Error('"withRequirements", if given, must be a boolean'); e.status = 400; throw e;
+  }
+
+  const label = sids.length === 1
+    ? `unlock research ${(research.techBySid(sids[0]) || {}).name || sids[0]}`
+    : `unlock ${sids.length} research techs`;
+
+  return mutation.mutate(save.dir, label, (staging) => research.unlock(staging, {
+    sids,
+    levels: levels || {},
+    withRequirements: withRequirements !== false,
   }));
 }));
 

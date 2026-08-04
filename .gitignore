@@ -10,3 +10,6 @@ webapp/config/settings.json
 *.zone
 *.mod
 *.base
+
+# Playwright MCP scratch output from UI verification runs.
+.playwright-mcp/

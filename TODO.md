@@ -2355,3 +2355,92 @@ numbered into Phase 1/2/3.
   carry a reason, and the minted map record is pinned field by field against the
   39 live ones — including the empty `material sid`, the one place the template
   and the items disagree.
+
+- [x] **Research: see what is done, and unlock more of it.**
+
+  A save's **entire** research state turned out to be a single typecode-21 record
+  in `quick.save` — `floats["num finished"]` plus `finished<N>` strings, no name,
+  no instances, no extra rows. A sweep of every key, category and instance in the
+  file for `/finish|research|tech/i` returns that record and nothing else, which
+  is what makes unlocking a genuinely complete one-record edit rather than half a
+  fix. `test/research.test.js` asserts that exclusivity so a future format change
+  cannot quietly falsify it.
+
+  **Three kinds of entry, and telling them apart was the work.** The live save
+  has 6622 of them:
+
+  - `2915-gamedata.base` — a finished tech. 193 of 198.
+  - `2058-gamedata.base.4` — level 4 of a *repeating* tech; level 1 is the bare
+    sid. Confirmed rather than assumed: all 14 base sids carrying one resolve to a
+    tech with `repeats > 0`, the `N`s run contiguously from 2, the bare sid is
+    always present too, and no `repeats: 0` tech ever has one.
+  - `66169-Newwworld.mod.TECH.1` — an unlocked item *blueprint*, 6391 of them,
+    pointing at armour/crossbow/backpack templates and never at a tech.
+
+  The tempting hypothesis — "a finished tech implies the items its `enable *` rows
+  name" — is **false in both directions**: 439 things named by a finished tech are
+  absent from the ledger, and 6344 listed items are named by no tech at all. So
+  the page reports the blueprint count and says plainly that it will not write
+  that dimension, because nothing in the data says what a tech implies. Unlocking
+  a tech writes the tech.
+
+  **Mods override techs, and load order decides which definition wins.** 183 of
+  199 techs are defined more than once. Resolution walks `data/mods.cfg` — the
+  game's own order — base first, unlisted mods last, with each definition
+  overriding only the fields it actually carries (a mod attaching one `enable
+  armour` row must not blank the scalars it never mentioned) and `extra` rows
+  unioned. This is not tidiness: sid `2058-gamedata.base` is "Weapon Smithing"
+  with `repeats: 14` in `gamedata.base` but "Basic Weapon Grades" with
+  `repeats: 5` in `rebirth.mod`, and the save has levels up to exactly 5. 20 techs
+  even display a different **name** depending on the rule. The falsifiable check,
+  now a test: every tech's resolved `repeats` must be >= the highest level the
+  ledger records for it — load order passes 194/194, first-definition-wins fails.
+
+  `RESEARCH_TEMPLATE` is kept out of the tree: it is FCS boilerplate, one of 23
+  records across all gamedata whose sid is a literal name rather than the
+  `<id>-<file>` form every authored record uses (`PLAYER_WEAPONS`, `FISTS`,
+  `blank squad`, …). The game marks it finished in every save, so it is still
+  *classified* — otherwise it would surface as an unrecognised entry — just not
+  offered. Every one of the 6622 entries now classifies; `unknown` is 0 across all
+  four saves, and a test holds it there.
+
+  The page: overall progress, per-branch counts, search (across what a tech
+  unlocks, not just its name — "katana" finds Katanas and Naginatas), branch
+  filter, "only unfinished" on by default, per-row Unlock and multi-select with
+  "include prerequisites". Bulk selection is offered precisely *because* it is one
+  record: ten techs unlocked one at a time would be ten backups and ten
+  intermediate on-disk states for edits that all land in the same place.
+
+  Writes append `finished<N>` and bump `num finished`, never touching an existing
+  entry — the 6391 blueprint rows this service deliberately does not model come
+  back byte-identical. Verified in memory rather than on disk (Kenshi was running,
+  so the gate correctly refused every real write): the bytes are computed,
+  re-parsed, and asserted to preserve all 6622 original entries in order, keep the
+  key/`num finished` invariants, add no duplicates, and leave the record's section
+  shape untouched. **Not yet observed loading in the game.**
+
+- [x] **Codec: signalling NaNs survive the round trip.**
+
+  Found by the round trip failing mid-session on the player's two newest
+  autosaves, having passed on the older ones minutes earlier. Kenshi writes
+  hundreds of NaN floats per `quick.save` (225–333 here, nearly all in a type-108
+  spatial cache's instance positions). Most are quiet NaNs and always round-tripped
+  fine, because a `float32 -> double -> float32` trip through a JS number preserves
+  a NaN's sign and payload. What it does **not** preserve is the quiet bit: the
+  hardware sets it on the widening conversion, so a *signalling* NaN came back as
+  `0x...ff` where the file had `0x...bf`. One bit, one byte, in a 3.6 MB file — and
+  with it the byte-identical round trip that is this editor's entire safety
+  argument, which meant no write to the player's current save was permitted at all.
+
+  `binary.js` now records each NaN's raw 32 bits against the ordinal of that float
+  within its record and restores them on write. Keyed by ordinal rather than by
+  "the Nth NaN" so that editing one float away from NaN cannot shift the others,
+  and held in a `WeakMap` off the record so nothing that reads, diffs or clones a
+  record has to know it exists. A record with no entry (freshly minted or cloned)
+  writes a canonical NaN, which is correct — nothing requires a new record to
+  reproduce bits it never had.
+
+  The regression test builds a file, patches a float's bytes to `0xffbf1409` (the
+  exact pattern from the failing save), and asserts a read-then-write reproduces
+  it. Confirmed to fail with the fix disabled — a test that passes either way
+  would have been worthless here, and the first version of it was exactly that.

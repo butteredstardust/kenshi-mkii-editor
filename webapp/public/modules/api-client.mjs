@@ -113,6 +113,14 @@ export const API = {
   // the map marker follows the characters.
   teleport: (name, file, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/teleport`, body),
+  // What this save has researched, joined onto the tech tree. Save-scoped:
+  // research state is one type-21 record in quick.save, and it is the ONLY
+  // place a save records research (see services/researchService.js).
+  research: (name) => request('GET', `/api/saves/${encodeURIComponent(name)}/research`),
+  // Mark research finished. `{ sids, levels?, withRequirements? }` — one staged
+  // edit however many techs are named, since they all live in that one record.
+  unlockResearch: (name, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/research/unlock`, body),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

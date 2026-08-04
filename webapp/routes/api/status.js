@@ -12,6 +12,7 @@ const locations = require('../../services/locationsService');
 const names = require('../../services/names');
 const personalities = require('../../services/personalities');
 const vendors = require('../../services/vendorsService');
+const research = require('../../services/researchService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -214,5 +215,12 @@ router.get('/vendors-carrying/:sid', handle(async (req) => ({
 router.post('/vendors/rebuild', handle(async () => { vendors.rebuild(); return vendors.stats(); }));
 
 router.post('/locations/rebuild', handle(async () => { locations.rebuild(); return locations.stats(); }));
+
+// The research tech tree, resolved from gamedata in the game's own mod load
+// order (services/researchService.js). Save-independent: what a save has
+// FINISHED comes from GET /saves/:name/research.
+router.get('/research', handle(async () => ({ techs: research.catalogue(), stats: research.stats() })));
+
+router.post('/research/rebuild', handle(async () => { research.rebuild(); return research.stats(); }));
 
 module.exports = router;

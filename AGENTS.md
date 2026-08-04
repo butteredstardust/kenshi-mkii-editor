@@ -224,6 +224,80 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 
 ---
 
+### Research is one record, and three kinds of entry
+
+A save's **entire** research state is a single typecode-21 record in
+`quick.save`. Nothing else in the file mentions research — a sweep of every key,
+category and instance for `/finish|research|tech/i` returns that record and only
+that record, which is what makes unlocking a one-record edit rather than a
+half-fix. It has no name, no instances, no extra rows:
+
+```
+floats:  { "num finished": 6622, "num currents": 0 }
+strings: { "finished0": "<entry>", "finished1": "<entry>", ... }
+```
+
+`finished<N>` keys are contiguous `0..N-1` and `num finished` is the count. Their
+order inside the file is arbitrary (a 6622-entry ledger is thoroughly shuffled),
+so append rather than insert and the rest comes back byte-identical. An entry is
+one of three shapes and **telling them apart is the whole job**:
+
+| Entry | Means |
+|---|---|
+| `2915-gamedata.base` | a finished tech (the type-21 gamedata record) |
+| `2058-gamedata.base.4` | level 4 of a **repeating** tech; level 1 is the bare sid |
+| `66169-Newwworld.mod.TECH.1` | an unlocked **item blueprint** — not a tech at all |
+
+The `.N` reading was confirmed, not assumed: every base sid carrying one resolves
+to a tech with `repeats > 0`, the `N`s run contiguously from 2, the bare sid is
+always present too, and no tech with `repeats: 0` ever has one.
+
+`.TECH.N` points at an item template (armour, crossbows, backpacks), never at a
+tech. **Do not invent a rule linking the two.** The obvious hypothesis — "a
+finished tech implies its `enable armour`/`enable buildings`/... rows are
+listed" — is false in both directions: 439 things named by a finished tech are
+absent from the ledger, and 6344 listed items are named by no tech. Unlocking a
+tech writes the tech.
+
+`RESEARCH_TEMPLATE` is FCS boilerplate, not a tech: it is one of 23 records
+across all of gamedata whose sid is a literal name instead of the
+`<numericId>-<sourceFile>` form every authored record uses (`PLAYER_WEAPONS`,
+`FISTS`, `blank squad`, …). The game marks it finished in every save, so
+classify it — just keep it out of the tree.
+
+### Mods override gamedata records, and load order decides which wins
+
+183 of this install's 199 techs are defined more than once. **The last definition
+wins, and only for the fields it actually carries** — a mod that re-defines a
+tech purely to attach one `enable armour` row must not blank the scalars it never
+mentioned. `extra` rows are unioned across every definition (the same rule as the
+material index).
+
+This is not tidiness. Sid `2058-gamedata.base` is "Weapon Smithing" with
+`repeats: 14` in `gamedata.base` and "Basic Weapon Grades" with `repeats: 5` in
+`rebirth.mod`; the live save has levels up to exactly 5. 20 techs display a
+different **name** depending on which rule you use.
+
+Order comes from `data/mods.cfg`, the game's own load order, with base data first
+and anything installed-but-unlisted last (`rebirth.mod` is exactly that case here
+— absent from mods.cfg yet plainly active). The falsifiable check, asserted by
+`test/research.test.js`: **every tech's resolved `repeats` must be >= the highest
+level the ledger records for it.** Load-order resolution passes 194 of 194;
+first-definition-wins fails.
+
+### NaN floats: the round trip's one-bit trap
+
+Kenshi writes NaN floats into saves — 225 to 333 per `quick.save`, nearly all in
+a type-108 spatial cache's instance positions. A `float32 -> double -> float32`
+trip through a JS number preserves a NaN's sign and payload but **sets the quiet
+bit**, so a *signalling* NaN comes back one bit different and the byte-identical
+round trip fails on that alone. `binary.js` therefore records each NaN's raw bits
+against the ordinal of that float within its record, and `Writer.F()` puts them
+back. Do not "simplify" this away: it is the difference between the codec
+round-tripping the player's current save and refusing to write to it at all.
+
+---
+
 ## 4. Conventions
 
 - **Backend:** CommonJS. Add functions to the matching `services/*.js`, then a
@@ -285,6 +359,10 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quality` | Set `ints.level` and/or `floats.quality` on an item, independently; `{ level?, quality? }`. Both keys must already exist on the record. Thin wrapper over `updateItem()`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid` | **Unified per-item edit** — `{ section?, level?, quality?, quantity?, materialSid? }`, any combination, in ONE staged edit (one gate pass, one backup). This is what the Gear row's single "Apply" calls; the two narrower routes above are wrappers over the same `saveService.updateItem()`. `quantity > 1` is rejected unless the template is stackable. Weapon grade is chosen with `gradeId` and writes `material sid`/`company sid` in lockstep — the **pair** is the grade, `level` is a separate field. Bare `materialSid` still works but is ambiguous (see `/api/gamedata/weapon-grades`) and resolves to the lowest-ranked matching row. |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/inventory` | Add a new item to a character's inventory; mints a type-42 ITEM record and an INVENTORY (41) instance via `services/kenshi/ids.js`. `{ templateSid, section, quantity?, level?, materialSid?, companySid? }`. `templateSid` must resolve to a gamedata item template (typecode 2/3/4); `section` is validated via `itemSlots.allowedSections()`; `quantity > 1` is rejected unless the template is stackable. Displaces a prior occupant of an already-occupied single-occupancy `section` back to `main`, same rule as the `/section` route above. See `services/itemFactory.js` for the minted record's exact shape. |
+| GET | `/api/research` | The research tech tree (`services/researchService.js`): 198 techs resolved from gamedata **in the game's own `data/mods.cfg` load order**, each with category, tier, cost in research artifacts, requirements and what it unlocks. Save-independent |
+| POST | `/api/research/rebuild` | Re-resolve the tech tree (after a mod change) |
+| GET | `/api/saves/:name/research` | What this save has finished, joined onto the tree: per tech `done`/`atLevel`/`maxLevel`/`maxed`/`blockedBy`, plus counts including `blueprints` (the other ledger dimension) and `unknown` (must be 0) |
+| POST | `/api/saves/:name/research/unlock` | **Mark research finished.** `{ sids, levels?, withRequirements? }` — one staged edit however many techs are named, because a save's entire research state is ONE type-21 record. `levels` caps a repeating tech (default: its maximum); `withRequirements` (default true) also finishes unfinished prerequisites |
 | GET | `/api/backups` | List backups |
 | POST | `/api/backups` | Create a labelled backup |
 | POST | `/api/backups/:id/restore` | Restore a save directory from a backup |
