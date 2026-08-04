@@ -11,6 +11,7 @@ const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
 const names = require('../../services/names');
 const personalities = require('../../services/personalities');
+const vendors = require('../../services/vendorsService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -189,6 +190,27 @@ router.get('/locations', handle(async () => ({
   locations: locations.all(),
   stats: locations.stats(),
 })));
+// Who sells what, and where. Built from gamedata's town -> squad -> vendor
+// list -> item chain (services/vendorsService.js), not from the save — shop
+// stock is generated at runtime and is not stored.
+router.get('/vendors', handle(async () => ({ tree: vendors.tree(), stats: vendors.stats() })));
+
+// One shop's contents. Kept off the tree because ~900 shops' item lists is a
+// lot to send for rows nobody has opened.
+router.get('/vendors/:id', handle(async (req) => {
+  const shop = vendors.find(req.params.id);
+  if (!shop) { const e = new Error(`unknown shop "${req.params.id}"`); e.status = 404; throw e; }
+  return shop;
+}));
+
+// The reverse lookup: which shops stock this template?
+router.get('/vendors-carrying/:sid', handle(async (req) => ({
+  templateSid: req.params.sid,
+  shops: vendors.shopsCarrying(req.params.sid),
+})));
+
+router.post('/vendors/rebuild', handle(async () => { vendors.rebuild(); return vendors.stats(); }));
+
 router.post('/locations/rebuild', handle(async () => { locations.rebuild(); return locations.stats(); }));
 
 module.exports = router;

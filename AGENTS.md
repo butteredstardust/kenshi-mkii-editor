@@ -39,6 +39,7 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/loadouts.js` | Named gear sets for bulk equip — editorial, like `archetypes.js` |
 | `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
 | `services/personalities.js` | The `ints.personality` decode — **derived from gamedata**, not editorial |
+| `services/vendorsService.js` | Who sells what, and where: gamedata's town -> squad -> vendor list -> item chain. Disk-cached |
 | `services/locationsService.js` | Town world positions, read from the **install's** `.level` placement data (never the save). Disk-cached |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
 | `services/recruits.js` | "Roll a recruit" catalogue: 50 entries in 10 archetype groups. Editorial, but races/tiers of the named ones come from the game's type-1 character records |
@@ -139,6 +140,16 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   zone cell, and their naming is a different layer (the save calls the player's
   cell "Heng" where the data places "Trader's Edge"). See
   `services/locationsService.js` for the full evidence.
+- **Vendor stock is NOT in the save either.** Shops roll their inventory at
+  runtime. What a shop CAN carry comes from a gamedata chain:
+  town (13) `extra['residents'|'bar squads'|…]` -> squad (52) `extra['vendors']`
+  -> vendor list (49) `extra['items'|'weapons'|'clothing'|'robotics'|…]` -> item
+  template. Collect those extra rows as a **union across every definition of a
+  sid**, exactly like the material index: Black Desert City's first definition
+  carries only `extra['faction']`, and first-definition-wins reports the city as
+  having no shops at all. There is no town -> biome-region link in the data
+  (type-95 regions reference `nests`, not towns), which is why the Vendors page
+  groups by faction and says "Faction", not "Region".
 - **Dialogue is NOT in the save.** A CHAR_STATE record has no dialogue
   reference of any kind — across 555 live characters there are exactly four
   CHAR_STATE string-key shapes (`name, owner faction ID, sheath`, plus optional
@@ -233,6 +244,10 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
 | GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46/107** — type 42 is the save-side item *instance*, not a template. |
 | GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ id, companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the **(company sid, material sid) pair**, not `ints.level` — and **`modelSid` alone is not a key**: 14 of this install's 24 model sids appear under two companies. Pass the row's `id` (`"<companySid>\|<modelSid>"`) as `gradeId`. |
+| GET | `/api/vendors` | Faction -> town -> shop tree (contents excluded — ~900 shops) plus build stats |
+| GET | `/api/vendors/:id` | One shop's full stock. `:id` is `"<townSid>\|<squadSid>"` |
+| GET | `/api/vendors-carrying/:sid` | Reverse lookup: every shop that stocks this template |
+| POST | `/api/vendors/rebuild` | Re-scan gamedata for vendor stock (after a mod change) |
 | GET | `/api/locations` | Town positions for the teleport picker: `{ id, name, label, faction, x, y, z, source }[]` plus build stats. From the install's world data, **not** the save — see `services/locationsService.js` for why the two obvious sources are both wrong |
 | POST | `/api/locations/rebuild` | Re-scan the install for town placements (after installing or removing a mod) |
 | POST | `/api/saves/:name/platoons/:file/teleport` | Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`; `sids?` limits it to some of the squad. Edits the SQUAD (30) instances' `pos` **and** the quick.save SQUAD_META position so the map marker follows |

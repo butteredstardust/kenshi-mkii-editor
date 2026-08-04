@@ -32,6 +32,10 @@ const state = {
   panelReceipt: null,
   loadouts: [], // named gear sets for bulk equip (editorial — services/loadouts.js)
   locations: [], // town positions, from the INSTALL's world data (not the save)
+  vendors: null, // { tree, stats } — who sells what, from gamedata not the save
+  vendorSel: null, // { faction, town, shopId } drill-down selection
+  vendorShop: null, // the loaded shop's full contents
+  vendorTarget: null, // "<file>::<sid>" of the character an Add goes to
   teleport: null, // { locationId } — survives the re-render a jump triggers
   // Bulk equip: a Set of the same stable "<file>::<sid>" keys `selected` uses,
   // never indices — the roster can be filtered and the save re-read between
@@ -78,6 +82,7 @@ async function boot() {
   // Town positions come from the Kenshi install, not the save, so they are
   // fetched once at boot rather than per save.
   state.locations = await API.locations().then((r) => r.locations).catch(() => []);
+  state.vendors = await API.vendors().catch(() => null);
   // The item picker's filter vocabulary. Fetched here rather than off the first
   // search response, because the panel renders its <select>s before any search
   // has run — piggybacking left them empty until you had already searched.
@@ -1339,6 +1344,105 @@ function renderSquad() {
     </div>`;
 }
 
+// ---------------------------------------------------------------- Vendors --
+
+/**
+ * Who sells what, and where.
+ *
+ * Three cascading pickers — faction, town, shop — then the shop's stock, with a
+ * per-row Add that writes the item straight onto a chosen character. That is
+ * the whole point of the page: you find a thing in a shop and take it.
+ *
+ * The top level is FACTION, not region. Kenshi's biome regions are real records
+ * but nothing in the data links a town to one (see services/vendorsService.js),
+ * and labelling faction as "region" would be a claim the data can't support.
+ *
+ * Stock comes from gamedata, not the save: shops generate their inventory at
+ * runtime, so this is what a shop CAN carry, not what it holds right now.
+ */
+function vendorPicker() {
+  const v = state.vendors;
+  if (!v || !v.tree.length) {
+    return `<div class="empty-state"><strong>No vendor data</strong>Nothing could be read from your Kenshi install.</div>`;
+  }
+  const sel = state.vendorSel || {};
+  const faction = v.tree.find((f) => f.faction === sel.faction) || v.tree[0];
+  const town = faction.towns.find((t) => t.town === sel.town) || faction.towns[0];
+  const shopId = sel.shopId && town.shops.some((s) => s.id === sel.shopId)
+    ? sel.shopId : town.shops[0].id;
+
+  return `<div class="field-row">
+    <label class="field field--grow">Faction
+      <select id="vendor-faction">
+        ${v.tree.map((f) => `<option value="${esc(f.faction)}" ${f === faction ? 'selected' : ''}>${esc(f.faction)} (${esc(f.towns.length)})</option>`).join('')}
+      </select></label>
+    <label class="field field--grow">Location
+      <select id="vendor-town">
+        ${faction.towns.map((t) => `<option value="${esc(t.town)}" ${t === town ? 'selected' : ''}>${esc(t.town)} (${esc(t.shops.length)})</option>`).join('')}
+      </select></label>
+    <label class="field field--grow">Shop
+      <select id="vendor-shop">
+        ${town.shops.map((s) => `<option value="${esc(s.id)}" ${s.id === shopId ? 'selected' : ''}>${esc(s.shop)} — ${esc(s.items)} items</option>`).join('')}
+      </select></label>
+  </div>`;
+}
+
+/** The selected shop's stock, with a per-row Add. Rendered imperatively. */
+function vendorStock(shop) {
+  if (!shop) return '<p class="hint">Pick a shop.</p>';
+  if (!shop.items.length) return '<p class="hint">This shop stocks nothing this editor can add.</p>';
+
+  const KIND = { 2: 'weapon', 3: 'armour', 4: 'trade goods', 46: 'backpack', 107: 'crossbow', 111: 'limb' };
+  return `<p class="hint">${esc(shop.shop)} in ${esc(shop.town)} — stock lists:
+      ${esc(shop.lists.map((l) => l.name).join(', '))}.
+      What the shop <em>can</em> carry; actual stock is rolled in game.</p>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th class="col-item">Item</th><th>Kind</th><th>From list</th><th class="shrink"></th></tr></thead>
+      <tbody>${shop.items.map((it) => `<tr data-template="${esc(it.sid)}">
+        <td class="col-item"><span class="item-name">${icon(ITEM_KIND_ICONS[it.type] || 'bag', KIND[it.type] || '')}<span>${esc(it.name)}</span></span></td>
+        <td class="muted">${esc(KIND[it.type] || it.type)}</td>
+        <td class="muted">${esc(it.category)}</td>
+        <td class="shrink"><span class="actions">
+          <button class="btn btn--xs vendor-add" data-template="${esc(it.sid)}" ${dis()}>Add</button>
+        </span></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+// Which glyph stands for each item typecode in the vendor table.
+const ITEM_KIND_ICONS = { 2: 'weapon', 3: 'armour', 4: 'bag', 46: 'backpack', 107: 'weapon', 111: 'identity' };
+
+function renderVendors() {
+  const r = buildRoster();
+  const chars = r ? r.all : [];
+  const targetKey = state.vendorTarget && chars.some(({ c, file }) => keyOf(file, c.sid) === state.vendorTarget)
+    ? state.vendorTarget : (chars[0] ? keyOf(chars[0].file, chars[0].c.sid) : null);
+
+  return `${savePicker()}
+    <section class="panel">
+      <div class="panel-head"><h2>${icon('cats', 'Vendors')} Vendors</h2>
+        <span class="muted">${esc(state.vendors ? state.vendors.stats.shops : 0)} shops ·
+          ${esc(state.vendors ? state.vendors.stats.towns : 0)} towns</span></div>
+      ${vendorPicker()}
+      ${chars.length ? `<div class="action-bar">
+        <span class="action-bar-label">${icon('add', 'Add')} Add to</span>
+        <label class="field">Character
+          <select id="vendor-target" ${dis()}>
+            ${chars.map(({ c, file }) => `<option value="${esc(keyOf(file, c.sid))}" ${keyOf(file, c.sid) === targetKey ? 'selected' : ''}>${esc(c.name || '(unnamed)')}</option>`).join('')}
+          </select></label>
+        <label class="field">Place in
+          <select id="vendor-section" ${dis()}>
+            <option value="main">Carried</option>
+            <option value="backpack_content">In backpack</option>
+          </select></label>
+        <label class="field">Quantity
+          <input type="number" id="vendor-qty" class="w-sm" min="1" step="1" value="1" ${dis()}></label>
+      </div>` : '<p class="hint">No player squad in this save to add items to.</p>'}
+      <div id="vendor-stock"></div>
+      <pre class="receipt" id="vendor-receipt" hidden></pre>
+    </section>`;
+}
+
 function renderWorld() {
   const s = state.status;
   if (!s) return '<p>No save found.</p>';
@@ -1387,8 +1491,9 @@ async function renderBackups() {
 async function render() {
   page.innerHTML = state.current === 'squad' ? renderSquad()
     : state.current === 'gear' ? renderGear()
-      : state.current === 'world' ? renderWorld()
-        : await renderBackups();
+      : state.current === 'vendors' ? renderVendors()
+        : state.current === 'world' ? renderWorld()
+          : await renderBackups();
   wire();
 }
 
@@ -1560,6 +1665,71 @@ function wireBulkEquip() {
       },
       { details: bulkDetails });
   };
+}
+
+/**
+ * The Vendors page. The three pickers re-render (they cascade, so the town and
+ * shop lists change with the faction), but loading a shop's stock does not —
+ * it is fetched and written into #vendor-stock directly, the same rule the item
+ * picker follows.
+ */
+function wireVendors() {
+  const factionSel = document.getElementById('vendor-faction');
+  if (!factionSel) return;
+  const townSel = document.getElementById('vendor-town');
+  const shopSel = document.getElementById('vendor-shop');
+  const stockEl = document.getElementById('vendor-stock');
+  const receipt = document.getElementById('vendor-receipt');
+  const targetSel = document.getElementById('vendor-target');
+  const sectionSel = document.getElementById('vendor-section');
+  const qtyInput = document.getElementById('vendor-qty');
+
+  if (state.panelReceipt) {
+    showReceipt(receipt, state.panelReceipt.result, { label: state.panelReceipt.label });
+    state.panelReceipt = null;
+  }
+
+  const loadStock = async () => {
+    const id = shopSel.value;
+    state.vendorSel = { faction: factionSel.value, town: townSel.value, shopId: id };
+    stockEl.innerHTML = '<p class="hint">Loading…</p>';
+    try {
+      const shop = await API.vendorShop(id);
+      if (shopSel.value !== id) return; // a newer selection won
+      state.vendorShop = shop;
+      stockEl.innerHTML = vendorStock(shop);
+      wireAddButtons();
+    } catch (err) {
+      stockEl.innerHTML = '';
+      showReceipt(receipt, err);
+    }
+  };
+
+  const wireAddButtons = () => {
+    for (const btn of stockEl.querySelectorAll('.vendor-add')) {
+      btn.onclick = () => {
+        if (!targetSel) return showReceipt(receipt, new Error('No character to add to.'));
+        const [file, sid] = targetSel.value.split('::');
+        const templateSid = btn.dataset.template;
+        const row = (state.vendorShop.items || []).find((i) => i.sid === templateSid);
+        const qty = Math.max(1, Number(qtyInput.value) || 1);
+        return runMutation(btn, receipt, `added ${row ? row.name : 'item'}`,
+          () => API.addItem(state.save, file, sid, {
+            templateSid,
+            section: sectionSel.value,
+            ...(qty > 1 ? { quantity: qty } : {}),
+          }),
+          async () => { await refresh(); });
+      };
+    }
+  };
+
+  factionSel.onchange = () => { state.vendorSel = { faction: factionSel.value }; render(); };
+  townSel.onchange = () => { state.vendorSel = { faction: factionSel.value, town: townSel.value }; render(); };
+  shopSel.onchange = loadStock;
+  if (targetSel) targetSel.onchange = () => { state.vendorTarget = targetSel.value; };
+
+  loadStock();
 }
 
 function wireSquadPanel() {
@@ -1742,6 +1912,7 @@ function wire() {
 
   wireSquadPanel();
   wireBulkEquip();
+  wireVendors();
 
   const money = document.getElementById('save-money');
   if (money) money.onclick = () => runMutation(

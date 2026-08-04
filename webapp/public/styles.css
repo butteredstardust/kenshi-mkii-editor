@@ -568,3 +568,22 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
   main { padding: var(--s3); }
   .cards { grid-template-columns: 1fr; }
 }
+
+/* ----------------------------------------------------------- action bar -- */
+
+/* A strip of controls that decide where an action LANDS, as opposed to the
+ * controls above them that decide what you are looking at. The Vendors page
+ * needs the distinction: three pickers browse shops, and this row says which
+ * character an Add writes to — visually separating them stops the two reading
+ * as one six-field form. */
+.action-bar {
+  display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3);
+  margin-top: var(--s3); padding: var(--s2) var(--s3);
+  background: var(--sunken); border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+}
+.action-bar-label {
+  display: inline-flex; align-items: center; gap: var(--s1);
+  font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); padding-bottom: var(--s1);
+}

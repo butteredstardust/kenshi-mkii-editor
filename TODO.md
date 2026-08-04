@@ -2248,3 +2248,62 @@ numbered into Phase 1/2/3.
   and that no CHAR_STATE string key ever matches /dialog|voice|package/ — so if
   a future save proves otherwise, the suite says so rather than the assumption
   quietly persisting.
+
+- [x] **Vendors page — who sells what, and where.**
+
+  Prompted by "KLR Series Arm (left), found in the robotics shop in Black Desert
+  City". That is a gamedata fact, not a save fact: **shops roll their inventory
+  at runtime**, so a save holds no vendor stock at all (the type-42 items in a
+  save's `zone/*.zone` files are building storage — crates — reached through a
+  `0-buildinglist`, not shop inventory).
+
+  The chain, traced end to end against that exact example:
+
+      town (13)  --extra['residents' | 'bar squads' | 'default resident'
+                          | 'roaming squads']-->
+        squad (52)  --extra['vendors']-->
+          vendor list (49)  --extra['items'|'weapons'|'clothing'|'robotics'|...]-->
+            item template (2/3/4/46/107/111)
+
+  Black Desert City lists a resident squad "Robotics shop (black desert)", whose
+  vendor list "Robotics limb vendor (best)" carries the KLR arms. Exactly as
+  reported.
+
+  **The union rule is load-bearing here.** Extra rows must be collected across
+  EVERY definition of a sid, not first-definition-wins — the same rule (and the
+  same reason) as gamedataService's material index. Black Desert City's first
+  definition carries only `extra['faction']`; its residents, including the
+  robotics shop, are attached by a later one, so first-definition-wins reports
+  the city as having no shops whatsoever. There is a test for that specific
+  case.
+
+  Result: **898 shops across 228 towns and 49 factions.** Only items this editor
+  can actually mint are offered — a vendor list also names tech (21), map (102)
+  and manufacturer (51) records, and putting those on the page would mean a
+  button that always fails.
+
+  **On "region".** The request was region -> location -> type -> contents. The
+  top level is the town's FACTION, and the UI says "Faction" rather than
+  "Region", because nothing in the data links a town to a biome region: type-95
+  region records reference `nests` and factions reference `biomes`, but neither
+  gives town -> region. The save knows a region for a position (`map area sid`)
+  but only for places the player has visited. Faction is real, complete, and how
+  Kenshi territory actually divides — calling it a region would be a claim the
+  data cannot support.
+
+  UI: three cascading pickers (faction / location / shop), the shop's stock as a
+  table with a glyph per item kind, and a per-row Add that writes straight to a
+  chosen character. The destination controls live in their own `.action-bar`
+  strip so "what am I looking at" and "where does this land" do not read as one
+  six-field form. Stock is labelled as what the shop *can* carry.
+
+  Also added a reverse lookup (`GET /api/vendors-carrying/:sid`) — every shop
+  stocking a given template — which is the "where do I buy this?" question and
+  falls straight out of the same index.
+
+  Tests (`webapp/test/vendors.test.js`, 5, all read-only): the chain resolves
+  with plausible coverage and unique ids; every offered item is one `addItem`
+  would accept; the Black Desert City union case specifically; the reverse
+  lookup round-trips; and the tree groups without dropping or duplicating a
+  shop, with every `locationId` resolving in the placement catalogue so the
+  Vendors page and the teleport picker agree about which town is which.

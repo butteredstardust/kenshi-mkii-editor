@@ -344,6 +344,6 @@ function itemTemplates() {
 }
 
 module.exports = {
-  nameOf, lookup, rebuild, indexStats, dataFiles, itemTemplates,
+  nameOf, lookup, rebuild, indexStats, dataFiles, itemTemplates, ITEM_TEMPLATE_TYPES,
   materialCandidates, weaponGrades,
 };

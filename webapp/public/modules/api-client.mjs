@@ -103,6 +103,11 @@ export const API = {
   // Town positions, derived from the install's own world placement data (not
   // from the save) — see services/locationsService.js.
   locations: () => request('GET', '/api/locations'),
+  // Who sells what, and where — from gamedata's town/squad/vendor-list chain,
+  // not from the save (shop stock is generated at runtime and never stored).
+  vendors: () => request('GET', '/api/vendors'),
+  vendorShop: (id) => request('GET', `/api/vendors/${encodeURIComponent(id)}`),
+  shopsCarrying: (sid) => request('GET', `/api/vendors-carrying/${encodeURIComponent(sid)}`),
   // Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`;
   // `sids` limits it to some of the squad. Writes the platoon and quick.save so
   // the map marker follows the characters.
