@@ -1,0 +1,12 @@
+node_modules/
+webapp/.cache/
+webapp/config/settings.json
+.temp/
+*.log
+
+# Never commit save data or game data
+*.save
+*.platoon
+*.zone
+*.mod
+*.base

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kenshi MKII Editor</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2314120f'/><path d='M4 3h2v4l4-4h2.5L8 8l4.5 5H10L6 9v4H4z' fill='%23d4a94e'/></svg>">
+</head>
+<body>
+  <header class="shell-header">
+    <h1>Kenshi MKII Editor</h1>
+    <div id="env" class="env">loading…</div>
+  </header>
+
+  <nav class="tabs">
+    <button data-page="squad" class="active">Squad</button>
+    <button data-page="gear">Gear</button>
+    <button data-page="world">World</button>
+    <button data-page="backups">Backups</button>
+  </nav>
+
+  <main id="page">loading…</main>
+
+  <script type="module" src="/app.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,321 @@
+/*
+ * Kenshi MKII Editor — design system.
+ *
+ * Read docs/ui-style-guide.md before changing anything here or adding UI.
+ * The rule that matters: features compose the classes below, they do not
+ * invent per-feature class names. If a feature seems to need a new component,
+ * add it here with a comment, don't inline styles at the call site.
+ */
+
+:root {
+  /* Surfaces — warm, desaturated, Kenshi-ish. Darkest to lightest. */
+  --bg:        #14120f;
+  --surface:   #1c1915;
+  --raised:    #232019;
+  --sunken:    #100e0b;
+  --line:      #353026;
+  --line-soft: #292419;
+
+  /* Ink */
+  --ink:       #e2dacb;
+  --muted:     #9c9280;   /* >= 4.5:1 on --surface; do not darken further */
+
+  /* Intent. Colour is meaning, never decoration — see the style guide §3. */
+  --accent:    #d4a94e;   /* primary action / brand */
+  --ok:        #86ab55;
+  --warn:      #d4a02f;
+  --danger:    #c25a44;
+
+  /* Space scale — use these, never magic numbers. */
+  --s1: .25rem; --s2: .5rem; --s3: .75rem; --s4: 1rem; --s5: 1.5rem; --s6: 2rem;
+
+  /* Type scale */
+  --t-xs: .72rem; --t-sm: .82rem; --t-md: .9rem; --t-base: .95rem; --t-lg: 1.05rem;
+
+  --radius: 5px;
+  --radius-lg: 7px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--t-base)/1.5 "Segoe UI", system-ui, sans-serif;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+.shell-header {
+  display: flex; align-items: baseline; gap: var(--s4); flex-wrap: wrap;
+  padding: var(--s3) var(--s5); border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.shell-header h1 {
+  margin: 0; font-size: var(--t-lg); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--accent);
+}
+.env { font-size: var(--t-sm); color: var(--muted); }
+
+.tabs { display: flex; gap: var(--s1); padding: var(--s2) var(--s5); border-bottom: 1px solid var(--line); }
+.tabs button {
+  background: none; border: 1px solid transparent; color: var(--muted);
+  padding: var(--s1) var(--s3); cursor: pointer; font: inherit; border-radius: var(--radius);
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.active { color: var(--ink); border-color: var(--line); background: var(--raised); }
+
+main { padding: var(--s5); max-width: 1240px; }
+
+/* --------------------------------------------------------------- panels -- */
+
+.panel {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); padding: var(--s4);
+}
+.panel + .panel { margin-top: var(--s4); }
+.panel-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--s3); margin-bottom: var(--s3);
+}
+.panel-head h2, .panel-head h3 { margin: 0; font-size: var(--t-md); font-weight: 600; letter-spacing: .02em; }
+
+/* A labelled group inside a panel. The ONLY approved way to sub-divide a
+ * card — features must not invent their own `.foo-editor` wrappers. */
+.section { border-top: 1px solid var(--line-soft); margin-top: var(--s3); padding-top: var(--s3); }
+.section > summary {
+  cursor: pointer; color: var(--muted); font-size: var(--t-sm);
+  text-transform: uppercase; letter-spacing: .06em; list-style: none;
+}
+.section > summary::-webkit-details-marker { display: none; }
+.section > summary::before { content: "▸ "; color: var(--muted); }
+.section[open] > summary::before { content: "▾ "; }
+.section > summary:hover { color: var(--ink); }
+.section-body { padding-top: var(--s3); }
+
+/* --------------------------------------------------------------- fields -- */
+
+select, input, button, textarea {
+  font: inherit; background: var(--raised); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--s1) var(--s2);
+}
+input:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+
+/* Numeric inputs are sized to their content, never full-bleed. */
+input[type=number] { width: 5.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+input[type=number].w-sm { width: 4.25rem; }
+
+/* The generic `input` rule above (padding/border meant for text/number boxes)
+ * would draw an oversized bordered rectangle around a checkbox — reset it
+ * back to a normal native checkbox. */
+input[type=checkbox] { width: auto; padding: 0; border: none; background: none; }
+
+.field { display: inline-flex; flex-direction: column; gap: var(--s1); font-size: var(--t-xs); color: var(--muted); }
+.field-row { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: flex-end; }
+
+/* Checkbox + label on one line (e.g. "train as archetype"'s raise-only
+ * toggle) — .field stacks its label above the control, which reads wrong for
+ * a checkbox where the control is small and the label is the important part. */
+.field-check { display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--t-xs); color: var(--muted); }
+
+/* Heading for a subgroup of fields inside a section (e.g. skill categories).
+ * A real heading rather than a styled <p>, so the card keeps a valid h3 -> h4
+ * outline for screen readers. */
+.group-label {
+  margin: var(--s3) 0 0; font-size: var(--t-xs); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+}
+.group-label:first-child { margin-top: 0; }
+
+/* Dense grid of small numeric fields (stats, attributes). */
+.field-grid {
+  display: grid; gap: var(--s2);
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+}
+
+/* -------------------------------------------------------------- buttons -- */
+
+.btn {
+  cursor: pointer; background: var(--raised); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--s1) var(--s3); font-size: var(--t-sm); white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--muted); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Intent tiers — see style guide §3. Primary = writes a staged edit.
+ * Danger = irreversible in-game consequence; MUST also confirm(). */
+.btn--primary { border-color: var(--accent); color: var(--accent); }
+.btn--primary:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
+.btn--danger { border-color: var(--danger); color: var(--danger); }
+.btn--danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
+.btn--ghost { background: none; border-color: transparent; color: var(--muted); }
+.btn--ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--line); }
+.btn--xs { padding: 0 var(--s2); font-size: var(--t-xs); }
+
+/* Horizontal action group. Table action cells use this so buttons never stack. */
+.actions { display: flex; gap: var(--s1); align-items: center; flex-wrap: nowrap; }
+.actions--end { justify-content: flex-end; }
+
+/* --------------------------------------------------------------- tables -- */
+
+.data-table { border-collapse: collapse; width: 100%; font-size: var(--t-sm); }
+.data-table caption {
+  caption-side: bottom; text-align: left; color: var(--muted);
+  font-size: var(--t-xs); padding-top: var(--s2);
+}
+.data-table th, .data-table td {
+  text-align: left; padding: var(--s1) var(--s2);
+  border-bottom: 1px solid var(--line-soft); vertical-align: middle;
+}
+.data-table tr:last-child td { border-bottom: none; }
+.data-table th { color: var(--muted); font-weight: 500; font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .05em; }
+.data-table td.n, .data-table th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table td.shrink { width: 1%; white-space: nowrap; }
+
+/* Any table that can outgrow its container scrolls itself — the page body
+ * must never scroll horizontally. */
+.table-wrap { overflow-x: auto; }
+
+/* A meter in a table must not grow with the pane, or the numbers drift far
+ * from the label they belong to on a wide screen. */
+/* A data table does not have to span the whole pane. On a wide screen an
+ * unconstrained table drags its numeric columns far from the labels they
+ * belong to; cap the readable ones instead of stretching them. */
+.table--compact { max-width: 46rem; }
+/* Name column in a control-heavy row: give it the slack so long item names
+ * ("Azuchi Blue Heavy Armour") don't wrap to one word per line. */
+.data-table .col-item { width: 30%; min-width: 11rem; }
+.data-table .col-meter { width: 34%; }
+
+.kv th { width: 16rem; color: var(--muted); font-weight: 500; }
+
+/* --------------------------------------------------- meters and badges --- */
+
+.meter {
+  display: block; width: 100%; min-width: 4rem; height: 6px;
+  background: var(--sunken); border-radius: 999px; overflow: hidden;
+}
+.meter-fill { display: block; height: 100%; border-radius: 999px; }
+.meter-fill.ok { background: var(--ok); }
+.meter-fill.warn { background: var(--warn); }
+.meter-fill.danger { background: var(--danger); }
+
+.badge {
+  display: inline-block; font-size: var(--t-xs); text-transform: uppercase;
+  letter-spacing: .05em; border: 1px solid currentColor; border-radius: 3px;
+  padding: 0 var(--s1); vertical-align: middle;
+}
+.badge--accent { color: var(--accent); }
+.badge--danger { color: var(--danger); }
+.badge--muted { color: var(--muted); }
+
+/* ---------------------------------------------------------------- cards -- */
+
+.cards { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--s4); min-width: 0; }
+.card-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
+.card-head h3 { margin: 0; font-size: var(--t-md); font-weight: 600; }
+.card-vitals { display: flex; gap: var(--s3); flex-wrap: wrap; margin-top: var(--s1); font-size: var(--t-sm); color: var(--muted); }
+
+/* ------------------------------------------------------- master/detail -- */
+
+/* Roster (pick a character) beside the editor for the selected one. A squad can
+ * be 10+ characters; a grid of expanded cards does not scale, so the list stays
+ * compact and exactly one character is edited at a time. */
+.workspace { display: grid; grid-template-columns: minmax(230px, 280px) 1fr; gap: var(--s4); align-items: start; }
+
+/* A grid item defaults to `min-width: auto`, i.e. it refuses to shrink below
+ * its content's intrinsic width. Without this, the detail pane's widest item
+ * table drags the whole track wider than the viewport and the PAGE scrolls
+ * sideways (style guide §2.7) instead of the table scrolling inside its own
+ * .table-wrap — which also stretched the roster to match. */
+.workspace > * { min-width: 0; }
+
+.roster { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.roster-filter { width: 100%; border: none; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--sunken); padding: var(--s2) var(--s3); }
+.roster-filter:focus-visible { outline-offset: -2px; }
+.roster-group { padding: var(--s2) var(--s3) var(--s1); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-top: 1px solid var(--line-soft); }
+.roster-group:first-of-type { border-top: none; }
+.roster-list { list-style: none; margin: 0; padding: 0; }
+
+.roster-item {
+  display: flex; align-items: center; gap: var(--s2); width: 100%;
+  background: none; border: none; border-left: 2px solid transparent;
+  border-radius: 0; padding: var(--s2) var(--s3); cursor: pointer;
+  text-align: left; color: var(--ink); font-size: var(--t-sm);
+}
+.roster-item:hover { background: var(--raised); }
+.roster-item[aria-current="true"] { background: var(--raised); border-left-color: var(--accent); }
+.roster-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-item .meter { width: 34px; min-width: 34px; flex: none; }
+
+/* Small round state marker — cheaper to scan than a word at list density. */
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
+.dot--warn { background: var(--warn); }
+.dot--danger { background: var(--danger); }
+
+.empty-state { color: var(--muted); padding: var(--s6) var(--s4); text-align: center; }
+
+@media (max-width: 860px) {
+  .workspace { grid-template-columns: 1fr; }
+  .roster-list { max-height: 15rem; overflow-y: auto; }
+}
+
+.summary-bar {
+  display: flex; gap: var(--s5); flex-wrap: wrap; padding: var(--s2) var(--s4);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); margin-bottom: var(--s4);
+}
+
+.picker { display: inline-flex; gap: var(--s2); align-items: center; margin-bottom: var(--s4); color: var(--muted); font-size: var(--t-sm); }
+
+/* ------------------------------------------------------------- receipts -- */
+
+/* One shared result surface for every mutation. Features must not add their
+ * own <pre> variants — call the same helper (see style guide §5). */
+.receipt {
+  margin: var(--s2) 0 0; background: var(--sunken); border: 1px solid var(--line);
+  border-left: 3px solid var(--muted); padding: var(--s2) var(--s3);
+  font-size: var(--t-xs); border-radius: var(--radius);
+  white-space: pre-wrap; word-break: break-word; max-height: 12rem; overflow-y: auto;
+}
+.receipt--ok { border-left-color: var(--ok); }
+.receipt--error { border-left-color: var(--danger); color: #edb9ad; }
+
+/* --------------------------------------------------------------- picker -- */
+
+/* Scrolling result list for a search that can match hundreds of rows (the
+ * "Add item" template picker: this install has 2000+ item templates). Without
+ * its own scroll the list pushes Equipped/Carried/Backpack off-screen, which
+ * defeats the progressive disclosure the collapsible sections exist for.
+ * Collapses to nothing when there are no results so it leaves no empty box. */
+.picker-results {
+  max-height: 17rem; overflow-y: auto;
+  border: 1px solid var(--line-soft); border-radius: var(--radius);
+}
+.picker-results:empty { display: none; }
+
+/* A .field whose control should take the width it needs rather than the
+ * inline-flex shrink-to-fit default — a search box you type sentences into
+ * reads badly at the default input width. */
+.field--grow { display: flex; }
+.field--grow input { width: 100%; max-width: 24rem; }
+
+/* ------------------------------------------------------------ utilities -- */
+
+.muted { color: var(--muted); font-size: var(--t-sm); font-weight: normal; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.critical, .danger { color: var(--danger); }
+.hint { color: var(--muted); font-size: var(--t-xs); margin: var(--s1) 0 0; }
+.stack > * + * { margin-top: var(--s3); }
+
+@media (max-width: 560px) {
+  main { padding: var(--s3); }
+  .cards { grid-template-columns: 1fr; }
+}

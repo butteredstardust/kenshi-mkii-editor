@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "_readme": [
+    "Hand-maintained corrections applied on top of wiki-items.snapshot.json when",
+    "build-item-catalog.js produces items.canonical.json. This file is the ONLY",
+    "one in the pipeline a human should edit; the snapshot and the canonical file",
+    "are both regenerated and will lose manual edits.",
+    "",
+    "Keys are canonical ids (slug of the wiki page title). Values are a partial",
+    "item, deep-merged over the generated entry, plus a mandatory `comment`",
+    "explaining why the override exists. An entry whose key does not exist in the",
+    "snapshot is admitted as a new catalog item.",
+    "",
+    "Setting `stringId` flips matchMethod to `override` and reviewed to true —",
+    "so only do it when you have actually confirmed the stringID resolves in",
+    "gamedata (check `node -e` against services/gamedataService.lookup(sid)).",
+    "Never put a guessed stringID here: Phase 2.2 writes these into a save."
+  ],
+  "items": {
+    "shopkeepers-goods-bag": {
+      "comment": "Wiki page is 'Shopkeepers goods bag'; gamedata calls the same backpack 'Shopkeeper goods bag' (singular). Verified: gamedataService.lookup('1389-gamedata.base') -> { name: 'Shopkeeper goods bag', type: 46 }, and no other catalog entry claims that stringID. Too far apart for the conservative normaliser (which only folds case, apostrophes and punctuation) to join on its own.",
+      "stringId": "1389-gamedata.base",
+      "match": { "gamedataName": "Shopkeeper goods bag", "gamedataType": 46, "candidateCount": 1 }
+    }
+  }
+}
