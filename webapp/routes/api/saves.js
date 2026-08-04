@@ -6,6 +6,7 @@ const paths = require('../../services/pathService');
 const saveService = require('../../services/saveService');
 const mutation = require('../../services/mutationService');
 const loadouts = require('../../services/loadouts');
+const locations = require('../../services/locationsService');
 
 const router = express.Router();
 
@@ -154,6 +155,40 @@ router.post('/saves/:name/equip', handle(async (req) => {
     raceNotes: loadout ? loadout.raceNotes || [] : [],
     skipIfSlotFilled: !!skipIfSlotFilled,
   }));
+}));
+
+// Teleport a squad (TODO.md 1.4). Either name a catalogued town via
+// `locationId`, or give raw `{ x, y, z }` — the town is the safe path and what
+// the UI offers; raw coordinates are accepted for anyone who knows where they
+// want to land.
+router.post('/saves/:name/platoons/:file/teleport', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { locationId, x, y, z, sids } = req.body || {};
+
+  let dest = null;
+  if (locationId !== undefined) {
+    if (typeof locationId !== 'string' || !locationId) {
+      const e = new Error('"locationId", if given, must be a non-empty string'); e.status = 400; throw e;
+    }
+    const loc = locations.find(locationId);
+    if (!loc) { const e = new Error(`unknown location "${locationId}"`); e.status = 400; throw e; }
+    dest = { x: loc.x, y: loc.y, z: loc.z, label: loc.label };
+  } else {
+    for (const [key, value] of Object.entries({ x, y, z })) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        const e = new Error(`"${key}" must be a number when no locationId is given`); e.status = 400; throw e;
+      }
+    }
+    dest = { x, y, z, label: null };
+  }
+
+  if (sids !== undefined && (!Array.isArray(sids) || sids.some((s) => typeof s !== 'string' || !s))) {
+    const e = new Error('"sids", if given, must be an array of non-empty strings'); e.status = 400; throw e;
+  }
+
+  return mutation.mutate(save.dir, `teleport ${req.params.file} to ${dest.label || `${Math.round(dest.x)}, ${Math.round(dest.z)}`}`,
+    (staging) => saveService.teleportSquad(staging, req.params.file,
+      { ...dest, ...(sids === undefined ? {} : { sids }) }));
 }));
 
 function findSaveOr404(name) {

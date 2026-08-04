@@ -29,6 +29,8 @@ const state = {
   // Only one of those panels exists at a time (they are on different tabs).
   panelReceipt: null,
   loadouts: [], // named gear sets for bulk equip (editorial — services/loadouts.js)
+  locations: [], // town positions, from the INSTALL's world data (not the save)
+  teleport: null, // { locationId } — survives the re-render a jump triggers
   // Bulk equip: a Set of the same stable "<file>::<sid>" keys `selected` uses,
   // never indices — the roster can be filtered and the save re-read between
   // renders. Empty means "not in selection mode", so single-character editing
@@ -66,6 +68,9 @@ async function boot() {
   state.archetypes = await API.archetypes();
   state.recruits = await API.recruits().catch(() => []);
   state.loadouts = await API.loadouts().catch(() => []);
+  // Town positions come from the Kenshi install, not the save, so they are
+  // fetched once at boot rather than per save.
+  state.locations = await API.locations().then((r) => r.locations).catch(() => []);
   await loadRaces();
   // The grade ladder backs the Gear row's weapon "Quality" select, which is
   // rendered synchronously, so it has to be here rather than fetched lazily.
@@ -139,7 +144,7 @@ function healthSection(m) {
   const hurt = flags.length > 0 || (m.parts || []).some((p) => (p.percentOfIntact ?? 100) < 100);
 
   return `<details class="section" ${hurt ? 'open' : ''}>
-    <summary>Health</summary>
+    ${sectionSummary('heart', 'Health')}
     <div class="section-body stack">
       ${flags.length ? `<div class="actions">
         <button class="btn btn--primary revive-btn" ${dis()}>Revive</button>
@@ -196,7 +201,7 @@ function trainSection() {
   const firstSubs = cats[0].subs || [];
   const subOptions = firstSubs.map((s) => `<option value="${esc(s.id)}">${esc(s.label)}</option>`).join('');
   return `<details class="section">
-    <summary>Train as archetype</summary>
+    ${sectionSummary('stats', 'Train as archetype')}
     <div class="section-body stack">
       <div class="field-row">
         <label class="field">Main archetype
@@ -239,7 +244,7 @@ function statsSection(c) {
     </div>` : '';
 
   return `<details class="section">
-    <summary>Stats &amp; skills</summary>
+    ${sectionSummary('stats', 'Stats & skills')}
     <div class="section-body stack">
       <div class="field-grid">
         ${ATTR_LABELS.map(([key, label]) => statField(key, label, a[key === 'toughness2' ? 'toughness' : key] ?? 0)).join('')}
@@ -261,7 +266,7 @@ function statsSection(c) {
 
 function inventorySection(c) {
   return `<details class="section">
-    <summary>Inventory (${esc(c.inventory.length)})</summary>
+    ${sectionSummary('list', `Inventory (${esc(c.inventory.length)})`)}
     <div class="section-body table-wrap">
       <table class="data-table"><tbody>${c.inventory.map((it) => `<tr>
         <td>${esc(it.name)}</td>
@@ -303,6 +308,17 @@ const LEVEL_PRESETS = [
  */
 const ICON_PATHS = {
   head: '<path d="M3.5 9.5a4.5 4.5 0 0 1 9 0v3h-9z"/><path d="M3.5 10.5h9"/>',
+  // Non-slot glyphs. Each labels a section whose heading would otherwise be a
+  // bare word among several identical ones — a squad of collapsed <details>
+  // rows is much faster to scan by shape (style guide §1).
+  squad: '<path d="M6 4.5a2 2 0 1 0 0 .01"/><path d="M2.5 13v-1.5a3.5 3.5 0 0 1 7 0V13"/><path d="M11 5.5a1.6 1.6 0 1 0 0 .01"/><path d="M10.6 13v-1.8c0-.7-.2-1.3-.6-1.8a2.8 2.8 0 0 1 3.5 2.7V13"/>',
+  rename: '<path d="M2.5 13.5h11"/><path d="M4 10.5 10.8 3.7a1.4 1.4 0 0 1 2 2L6 12.5l-2.6.6z"/>',
+  add: '<path d="M8 3.5v9"/><path d="M3.5 8h9"/>',
+  teleport: '<path d="M8 1.8c2 2.4 3 4.4 3 6.2a3 3 0 0 1-6 0c0-1.8 1-3.8 3-6.2z"/><circle cx="8" cy="7.6" r="1.1"/><path d="M4 13.6h8"/>',
+  heart: '<path d="M8 13.2C4.5 10.7 2.5 8.9 2.5 6.8A2.8 2.8 0 0 1 8 5.6a2.8 2.8 0 0 1 5.5 1.2c0 2.1-2 3.9-5.5 6.4z"/>',
+  stats: '<path d="M2.5 13.5h11"/><path d="M4.5 13.5v-4"/><path d="M8 13.5v-8"/><path d="M11.5 13.5v-6"/>',
+  identity: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><circle cx="6" cy="7.5" r="1.4"/><path d="M3.8 11c.4-1.1 1.2-1.7 2.2-1.7s1.8.6 2.2 1.7"/><path d="M10 7h3M10 9.5h3"/>',
+  list: '<path d="M5.5 4.5h8M5.5 8h8M5.5 11.5h8"/><path d="M2.5 4.5h.01M2.5 8h.01M2.5 11.5h.01"/>',
   shirt: '<path d="M6 2.5 2.5 4.5 4 7l2-1.2v7.7h4V5.8L12 7l1.5-2.5L10 2.5 8 4z"/>',
   armour: '<path d="M4 3h8v5.5A4 4 0 0 1 8 13a4 4 0 0 1-4-4.5z"/><path d="M8 3v10"/>',
   legs: '<path d="M4 2.5h8l-.6 11H9.2L8 7l-1.2 6.5H4.6z"/>',
@@ -334,6 +350,15 @@ function icon(name, label) {
   return `<svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor"
     stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"
     role="img" aria-label="${esc(label || name)}">${d}</svg>`;
+}
+
+/**
+ * A `<summary>` with a leading glyph. The icon names the section by shape so a
+ * card of five collapsed disclosures is scannable without reading each label —
+ * it is carrying information, not decorating the word (style guide §1).
+ */
+function sectionSummary(glyph, label) {
+  return `<summary>${icon(glyph, label)}<span>${label}</span></summary>`;
 }
 
 function itemSlotSelect(it) {
@@ -446,7 +471,7 @@ function itemTable(items, emptyText) {
 function addItemSection(c, file) {
   const pick = state.addItem && state.addItem.key === keyOf(file, c.sid) ? state.addItem : null;
   return `<details class="section" ${pick ? 'open' : ''}>
-    <summary>Add item</summary>
+    ${sectionSummary('add', 'Add item')}
     <div class="section-body stack">
       <label class="field field--grow">Search items
         <input type="search" class="add-item-search" placeholder="e.g. katana, first aid"
@@ -534,6 +559,35 @@ function addItemConfig(pick) {
   </div>`;
 }
 
+/**
+ * One worn pack and what is inside it.
+ *
+ * The pack itself keeps the normal editable row (it is an item on the
+ * character like any other). Its contents are listed read-only: they live in
+ * the pack's own inventory record, and nothing in this editor can write there
+ * yet — offering a Slot select that silently did nothing would be worse than
+ * showing them plainly.
+ */
+function packBlock(pack) {
+  const total = pack.contents.reduce((n, it) => n + (it.quantity || 1), 0);
+  return `<div class="pack">
+    ${itemTable([pack], '')}
+    <div class="pack-contents">
+      <h4 class="group-label">${icon('bag', 'Contents')} Inside — ${esc(pack.contents.length)} stack(s), ${esc(total)} item(s)</h4>
+      ${pack.contents.length ? `<div class="table-wrap"><table class="data-table table--compact"><tbody>
+        ${pack.contents.map((it) => `<tr>
+          <td class="col-item"><span class="item-name">${icon('bag', it.section)}<span>${esc(it.name)}</span></span></td>
+          <td class="n shrink">${it.quantity > 1 ? `&times;${esc(it.quantity)}` : ''}</td>
+          <td class="muted">${esc(it.catalog?.category || '')}</td>
+        </tr>`).join('')}
+      </tbody></table></div>`
+    : '<p class="hint">This pack is empty.</p>'}
+      <p class="hint">Pack contents are read-only: they sit in the pack's own inventory record, which this
+        editor does not write to yet.</p>
+    </div>
+  </div>`;
+}
+
 function gearCard(c, file) {
   const items = c.inventory || [];
   const bySection = new Map();
@@ -544,6 +598,12 @@ function gearCard(c, file) {
   const equipped = EQUIP_SLOTS.flatMap((slot) => bySection.get(slot) || []);
   const carried = bySection.get('main') || [];
   const backpack = [...(bySection.get('backpack_attach') || []), ...(bySection.get('backpack_content') || [])];
+  // A worn pack keeps its contents in its own inventory record, one hop past
+  // the character's — see saveService.packContentsOf(). `it.contents` is that
+  // hop already resolved; before it existed this section could only ever show
+  // the empty pack.
+  const packs = backpack.filter((it) => it.section === 'backpack_attach');
+  const packCount = backpack.length + packs.reduce((n, p) => n + p.contents.length, 0);
   const known = new Set([...EQUIP_SLOTS, 'main', 'backpack_attach', 'backpack_content']);
   const other = items.filter((it) => !known.has(it.section));
   const anyWidened = items.some((it) => it.slotsWidened);
@@ -564,24 +624,26 @@ function gearCard(c, file) {
     ${addItemSection(c, file)}
 
     <details class="section" open>
-      <summary>Equipped (${esc(equipped.length)}/${esc(EQUIP_SLOTS.length)})</summary>
+      ${sectionSummary('armour', `Equipped (${esc(equipped.length)}/${esc(EQUIP_SLOTS.length)})`)}
       <div class="section-body">
         ${itemTable(equipped, 'Nothing equipped.')}
       </div>
     </details>
 
     <details class="section">
-      <summary>Carried (${esc(carried.length)})</summary>
+      ${sectionSummary('bag', `Carried (${esc(carried.length)})`)}
       <div class="section-body">${itemTable(carried, 'Nothing carried.')}</div>
     </details>
 
     <details class="section">
-      <summary>Backpack (${esc(backpack.length)})</summary>
-      <div class="section-body">${itemTable(backpack, 'Empty.')}</div>
+      ${sectionSummary('backpack', `Backpack (${esc(packCount)})`)}
+      <div class="section-body stack">${packs.length
+    ? packs.map(packBlock).join('')
+    : itemTable(backpack, 'No backpack worn.')}</div>
     </details>
 
     ${other.length ? `<details class="section">
-      <summary>Other (${esc(other.length)})</summary>
+      ${sectionSummary('list', `Other (${esc(other.length)})`)}
       <div class="section-body">${itemTable(other, '')}</div>
     </details>` : ''}
     <pre class="receipt" hidden></pre>
@@ -619,7 +681,7 @@ function bulkPanel(picked) {
       grounds of race, it tells you afterwards which ones look like a bad fit.</p>
 
     <details class="section" open>
-      <summary>Apply a loadout</summary>
+      ${sectionSummary('armour', 'Apply a loadout')}
       <div class="section-body stack">
         <div class="field-row">
           <label class="field field--grow">Loadout
@@ -715,7 +777,7 @@ function renderGear() {
  */
 function identitySection(c) {
   return `<details class="section">
-    <summary>Identity</summary>
+    ${sectionSummary('identity', 'Identity')}
     <div class="section-body">
       <div class="field-row">
         <label class="field field--grow">Name
@@ -878,7 +940,7 @@ function rosterNav(groups, { selectable = false } = {}) {
  */
 function renameSquadSection(s) {
   return `<details class="section">
-    <summary>Rename squad</summary>
+    ${sectionSummary('rename', 'Rename squad')}
     <div class="section-body stack">
       <div class="field-row">
         <label class="field field--grow">Name
@@ -899,7 +961,7 @@ function addMemberSection(groups) {
   const form = state.addMember || {};
   if (!races.length) {
     return `<details class="section">
-      <summary>Add member</summary>
+      ${sectionSummary('add', 'Add member')}
       <div class="section-body">
         <p class="hint">No usable race found in this save. A new member is built by cloning a living
           character of the chosen race out of this save — that is the only way to get a correct per-race
@@ -918,7 +980,7 @@ function addMemberSection(groups) {
   const subs = main ? main.subs : [];
 
   return `<details class="section" ${form.open ? 'open' : ''}>
-    <summary>Add member</summary>
+    ${sectionSummary('add', 'Add member')}
     <div class="section-body stack">
       <div class="field-row">
         <label class="field field--grow">Ready-made recruit
@@ -976,11 +1038,65 @@ const TIER_OPTIONS = [
   ['green', 'Green'], ['capable', 'Capable'], ['veteran', 'Veteran'], ['legend', 'Legend'],
 ];
 
+/**
+ * Move the whole squad to a town.
+ *
+ * The destination list is built from the install's own world data, not from the
+ * save and not from a hardcoded table — see services/locationsService.js for
+ * why the two obvious sources are both wrong. Only towns that actually exist in
+ * this install are offered, so nothing here can strand a squad in a place its
+ * data doesn't have.
+ */
+function teleportSection(groups) {
+  const list = state.locations || [];
+  if (!list.length) {
+    return `<details class="section">
+      ${sectionSummary('teleport', 'Teleport')}
+      <div class="section-body"><p class="hint">No town positions could be read from your Kenshi
+        install, so there is nowhere to jump to.</p></div>
+    </details>`;
+  }
+  const files = groups.map((g) => g.file);
+  const chosen = (state.teleport || {}).locationId;
+
+  // Grouped by faction so a 293-entry list is navigable.
+  const byFaction = new Map();
+  for (const l of list) {
+    const key = l.faction || 'Unaligned';
+    if (!byFaction.has(key)) byFaction.set(key, []);
+    byFaction.get(key).push(l);
+  }
+  const options = [...byFaction.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([faction, rows]) => `<optgroup label="${esc(faction)}">
+      ${rows.map((l) => `<option value="${esc(l.id)}" ${chosen === l.id ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
+    </optgroup>`).join('');
+
+  return `<details class="section">
+    ${sectionSummary('teleport', 'Teleport')}
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field field--grow">Destination
+          <select id="teleport-to" ${dis()}>${options}</select></label>
+        ${files.length > 1 ? `<label class="field">Squad
+          <select id="teleport-file" ${dis()}>
+            ${files.map((f) => `<option value="${esc(f)}">${esc(f.replace(/\.platoon$/, ''))}</option>`).join('')}
+          </select></label>` : ''}
+        <button class="btn btn--danger" id="teleport-go" ${dis()}>Teleport</button>
+      </div>
+      <p class="hint" id="teleport-note"></p>
+      <p class="hint">Everyone in the squad is placed in a small circle on the town's own recorded position,
+        and the squad's map marker moves with them. Heights come from the world data, so on a slope the game
+        settles them itself. There is no undo beyond the automatic backup.</p>
+    </div>
+  </details>`;
+}
+
 function squadPanel(s, groups) {
   return `<section class="panel" id="squad-panel">
-    <div class="panel-head"><h2>Squad</h2></div>
+    <div class="panel-head"><h2>${icon('squad', 'Squad')} Squad</h2></div>
     ${renameSquadSection(s)}
     ${addMemberSection(groups)}
+    ${teleportSection(groups)}
     <pre class="receipt" id="squad-receipt" hidden></pre>
   </section>`;
 }
@@ -999,10 +1115,13 @@ function renderSquad() {
       <span class="muted">${esc(s.world.money)} cats</span>
       <span class="muted">${esc(all.length)} member(s)</span>
     </section>
-    ${squadPanel(s, groups)}
     <div class="workspace">
-      ${rosterNav(groups)}
-      <div id="detail">${sel ? characterCard(sel.c, sel.file) : '<div class="empty-state">Select a character to edit.</div>'}</div>
+      <div class="side">
+        ${rosterNav(groups)}
+        ${squadPanel(s, groups)}
+      </div>
+      <div id="detail">${sel ? characterCard(sel.c, sel.file)
+    : '<div class="empty-state"><strong>No character selected</strong>Pick someone from the roster to edit them.</div>'}</div>
     </div>`;
 }
 
@@ -1255,6 +1374,40 @@ function wireSquadPanel() {
     }
     return run(factionBtn, `squad renamed to ${value}`, () => API.renameFaction(state.save, value));
   };
+
+  // ---- teleport ----
+  const tpSel = document.getElementById('teleport-to');
+  const tpGo = document.getElementById('teleport-go');
+  const tpNote = document.getElementById('teleport-note');
+  const tpFile = document.getElementById('teleport-file');
+  if (tpSel && tpGo) {
+    const groupFiles = (state.status ? state.status.squads : []).map((q) => q.file);
+    const chosen = () => (state.locations || []).find((l) => l.id === tpSel.value) || null;
+    const describe = () => {
+      const l = chosen();
+      state.teleport = { locationId: tpSel.value };
+      if (!l || !tpNote) return;
+      const file = tpFile ? tpFile.value : groupFiles[0];
+      const squad = (state.status.squads || []).find((q) => q.file === file);
+      const n = squad ? squad.characters.length : 0;
+      tpNote.textContent = `${n} character(s) to ${l.name}${l.faction ? ` (${l.faction})` : ''} at ${Math.round(l.x)}, ${Math.round(l.z)}.`;
+    };
+    tpSel.onchange = describe;
+    if (tpFile) tpFile.onchange = describe;
+    describe();
+
+    tpGo.onclick = () => {
+      const l = chosen();
+      if (!l) return showReceipt(receipt, new Error('Pick a destination first.'));
+      const file = tpFile ? tpFile.value : groupFiles[0];
+      if (!file) return showReceipt(receipt, new Error('This save has no player squad.'));
+      // .btn--danger, so it confirms and names the consequence (style guide §3).
+      if (!confirm(`Teleport everyone in ${file.replace(/\.platoon$/, '')} to ${l.name}?\n\n`
+        + 'They are moved instantly across the world. Nothing checks whether the destination is safe, '
+        + 'and the only way back is the automatic backup.')) return undefined;
+      return run(tpGo, `teleported to ${l.name}`, () => API.teleport(state.save, file, { locationId: l.id }));
+    };
+  }
 
   // ---- add member ----
   const nameInput = document.getElementById('member-name');

@@ -555,7 +555,7 @@ squad (30) → instance → state records structure already read by
 
 ### 1.4 Character coordinates / teleport
 
-- [ ] **Teleport a character**: the instance's `pos` (vec3) inside the
+- [x] **Teleport a character**: the instance's `pos` (vec3) inside the
   squad (type 30) record's `instances` array — NOT a field inside any of the
   states records. This is a different mutation shape from everything else in
   this phase: it edits the squad record's own instance list, not a
@@ -569,6 +569,15 @@ squad (30) → instance → state records structure already read by
   floats. Note in the UI that off-map coordinates can strand a character.
   Test: round-trip, assert `pos` changed and `rot`/`states`/`id`/`target`
   unchanged on that instance, and no other instance touched.
+
+  **Implemented** as `saveService.teleportSquad()` — squad-scoped rather than
+  one character at a time (`sids` narrows it), because moving one member of a
+  squad across the world is rarely what anyone wants. It also writes the
+  quick.save SQUAD_META position, which this task didn't anticipate: leaving it
+  behind puts the squad's map marker in one place and its characters in another.
+  The "copy from character X" picker became a town picker instead — see the
+  teleport entry in Editor-only additions for where town positions actually
+  live, which was the real work.
 
 ### 1.5 Character race
 
@@ -1890,3 +1899,107 @@ numbered into Phase 1/2/3.
 
   **Left alone deliberately:** `scripts/build-locations-catalog.js` and
   `data/locations-catalog.json` — teleport groundwork for 1.4, unrelated to this.
+
+- [x] **Teleport the squad to a town, backpack contents, and a Squad-page
+  layout fix.** (Closes 1.4.)
+
+  **Where towns actually are — three sources checked, two of them wrong.**
+  A type-13 town record (Admag, The Hub, ...) holds only the town's *template*:
+  radius, population, whether it is public. It has **no position**. The
+  placement is an INSTANCE targeting it, and those live in
+  `<Kenshi>/data/newland/leveldata/<mod>/leveldata.level`.
+
+  1. `<Kenshi>/data/leveldata.level` — the obvious file, and the wrong one. One
+     20-instance townlist, every entry with a sentinel height (-99 or 0), at
+     positions that disagree with the world: it places "Traders edge" at
+     (-3273, -99, 63366) when the real one is at (48030, 1504, -41953) — 8 units
+     in y from where the player's own squad is standing in that town right now.
+     This was the only file the ad-hoc `build-locations-catalog.js` read, so its
+     20-entry output was not merely incomplete but positionally wrong.
+     Sentinel-height placements are dropped outright (22 of 403).
+  2. The save's own type-94 town states — 330 of them, named, which looks ideal.
+     But they carry only a zone-grid cell (`zzX0`/`zzY0`). The grid was derived
+     (`world = cell * 4500 - 141000`, fitted exactly on Trader's Edge and Bast
+     and consistent with the save's own `zone.X.Y.zone` filenames) — and it is
+     still useless here, because a cell is 4500 units square and standing in a
+     town does not reliably put you in that town's recorded cell. Worse, the
+     naming is a different layer: the save calls the player's cell "Heng" while
+     the data places "Trader's Edge" there, and the game agrees the player is in
+     the *region* Heng ("Heng" exists as a type-95 region record, not a town).
+     Joining the two by name gave a consistent cell for only 188 of 255.
+  3. `<Kenshi>/data/leveldata/*.zone` — no town placements at all.
+
+  **Verification of the source that is used**, against the live save. NPC squads
+  name a town as their `basetown`, so a garrison's centroid is an independent
+  "where is this town really": Traders edge 99 units from the placement, Barren
+  Village 394, Trader's Edge 871 — all well inside a town, whose own
+  `size radius` starts at 350. The player's squad sits 520 units from its town's
+  placement.
+
+  `services/locationsService.js` yields **293 locations across 59 factions** on
+  this install (168 distinct names; several towns are genuinely placed more than
+  once, and this install has five distinct Cannibal Villages). Duplicates of the
+  same name within 2000 units are collapsed; further apart they are kept as
+  separate entries. Ids are made unique defensively rather than assumed: this
+  install has "Trade outpost" placed twice (wanting `trade-outpost-2`) *and* a
+  separate town literally named "Trade outpost 2", which slugs to the same
+  thing. `- Copy` files are skipped — `leveldata - Copy.level` and
+  `leveldata - Copy (2).level` are a mod author's own backups sitting next to
+  the real file, and including them tripled every town in that mod. Disk-cached
+  (~650ms to build); `POST /api/locations/rebuild` after a mod change.
+
+  `saveService.teleportSquad()` writes the SQUAD (30) instances' `pos` — the
+  squad record's own instance list, not a field inside any state record — plus
+  the quick.save SQUAD_META (34) position, so the map marker follows the
+  characters instead of being left behind. Characters land on a small ring
+  rather than stacked on one point. `sids` moves part of a squad.
+  Route: `POST /api/saves/:name/platoons/:file/teleport`; UI is a
+  faction-grouped destination picker in the Squad panel, `.btn--danger` with a
+  confirm naming the consequence.
+
+  **Unique Recruits mapping.** Each entry in `services/recruits.js` gained a
+  `where` list of the towns the wiki's "possible locations" put them in,
+  resolved at request time against the towns this install actually has. Like
+  `race`, it is a hint: a heavily modded world renames and moves towns, and
+  several vanilla names simply do not exist here (Squin, Mourn, Stoat). An
+  unresolved name is *reported* as unresolved rather than dropped, so the UI
+  never implies the wiki and the install agree when they don't. Every one of the
+  20 recruits resolves to at least one real place in this install.
+
+  **Backpack contents — a structural gap, not a display bug.** A worn pack is a
+  type-42 ITEM in the character's inventory, and it holds ONE instance pointing
+  at its **own** INVENTORY (41) record, whose instances are the contents
+  (type-42 items sectioned `backpack_content`). Verified on a live save: a Garru
+  Backpack (sid 250) has one instance targeting sid 251, a type-41 record with
+  13 instances, none of which appear in the character's own inventory. So
+  nothing reading only the character's INVENTORY could ever see them, and all
+  152 `backpack_content` items in this save were invisible. `packContentsOf()`
+  follows that second hop; the Gear page nests the contents under the pack's own
+  editable row. They are shown **read-only** — they live in a record this editor
+  does not write to yet, and a Slot select that silently did nothing would be
+  worse than plain text.
+
+  **Squad-page layout.** The squad-level actions (rename, add member, teleport)
+  were a full-width panel above the workspace: three collapsed rows spending
+  1240px and pushing the character card — the thing you came to edit — a screen
+  down the page. They are squad-scoped, so they now sit in the left column under
+  the roster (`.side`), and the character card starts at the top of the
+  workspace. Sidebar-width panels stack their field rows and stretch their
+  controls; the roster gets its own scroll so the panel under it stays reachable
+  on a 30-character squad.
+
+  **Icons.** Every card and panel section summary now carries a glyph
+  (`sectionSummary()`), so a card of five collapsed disclosures is scannable by
+  shape rather than by reading each label — the same "carries information, not
+  decoration" test the equip-slot icons already passed (style guide §1).
+
+  Tests: `webapp/test/teleport.test.js` (6) — the catalogue carrying only real
+  positions with unique ids and no under-deduped near-duplicates; catalogued
+  positions cross-checked against the save's own garrisons (using only towns
+  with 3+ squads: a single squad naming a town as home proves nothing, and one
+  in this save is standing 17.7 km from its Telbooze home); every recruit
+  location resolving or being reported unresolved; a teleport moving all ten
+  characters onto a ring with the marker following and no record added; a
+  partial teleport leaving everyone else exactly where they were; five rejection
+  cases including a `../quick.save` path escape, each byte-identical; and a
+  backpack reporting its contents through the second hop.

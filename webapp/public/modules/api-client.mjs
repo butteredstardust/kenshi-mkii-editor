@@ -91,6 +91,14 @@ export const API = {
   // intermediate on-disk states.
   equipMany: (name, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/equip`, body),
+  // Town positions, derived from the install's own world placement data (not
+  // from the save) — see services/locationsService.js.
+  locations: () => request('GET', '/api/locations'),
+  // Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`;
+  // `sids` limits it to some of the squad. Writes the platoon and quick.save so
+  // the map marker follows the characters.
+  teleport: (name, file, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/teleport`, body),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

@@ -38,6 +38,7 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/itemFactory.js` | Shape of a minted type-42 ITEM record; weapon-grade resolution |
 | `services/loadouts.js` | Named gear sets for bulk equip — editorial, like `archetypes.js` |
 | `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
+| `services/locationsService.js` | Town world positions, read from the **install's** `.level` placement data (never the save). Disk-cached |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
 | `services/recruits.js` | "Roll a recruit" catalogue — editorial, like `archetypes.js`, not save-derived |
 | `services/backupService.js` | Whole-directory versioned backups with hash manifests |
@@ -121,6 +122,21 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   record-id sequence. So a new squad member burns **seven** ids: six state
   records plus its own handle. `ids.addInstance()` takes an explicit `id` for
   this case and refuses a duplicate.
+- **A backpack's contents are one hop further than they look.** A worn pack is a
+  type-42 ITEM in the character's INVENTORY, and it holds a single instance
+  pointing at its **own** INVENTORY (41) record, whose instances are the
+  contents (type-42 items sectioned `backpack_content`). Nothing that reads only
+  the character's own inventory can see them — which is why 152 items in the
+  live save were invisible to this editor until `packContentsOf()` existed.
+- **A town's position is in the install, not the save, and not where you'd
+  think.** A type-13 town record carries no position at all; the placement is an
+  *instance* targeting it, in `data/newland/leveldata/<mod>/leveldata.level`.
+  The root `data/leveldata.level` looks like the file you want and is not: 20
+  entries, all with a sentinel height, at positions that disagree with the
+  world. The save's type-94 town states are named but carry only a 4500-unit
+  zone cell, and their naming is a different layer (the save calls the player's
+  cell "Heng" where the data places "Trader's Edge"). See
+  `services/locationsService.js` for the full evidence.
 - **An item template is typecode 2, 3, 4 or 46 — never 42.** 42 is the save-side
   ITEM *instance*. 46 (backpack) was the late addition: 22 exist in this
   install's data, all 42 live type-46-backed items sit in `backpack_attach`, and
@@ -188,6 +204,9 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
 | GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46** — type 42 is the save-side item *instance*, not a template. |
 | GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ id, companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the **(company sid, material sid) pair**, not `ints.level` — and **`modelSid` alone is not a key**: 14 of this install's 24 model sids appear under two companies. Pass the row's `id` (`"<companySid>\|<modelSid>"`) as `gradeId`. |
+| GET | `/api/locations` | Town positions for the teleport picker: `{ id, name, label, faction, x, y, z, source }[]` plus build stats. From the install's world data, **not** the save — see `services/locationsService.js` for why the two obvious sources are both wrong |
+| POST | `/api/locations/rebuild` | Re-scan the install for town placements (after installing or removing a mod) |
+| POST | `/api/saves/:name/platoons/:file/teleport` | Move a squad. `{ locationId }` for a catalogued town, or raw `{ x, y, z }`; `sids?` limits it to some of the squad. Edits the SQUAD (30) instances' `pos` **and** the quick.save SQUAD_META position so the map marker follows |
 | GET | `/api/loadouts` | Named gear sets for bulk equip (`services/loadouts.js`) — editorial, with items already resolved to names/kinds, plus advisory `raceNotes` and a `missing[]` of any template this install can't resolve |
 | GET | `/api/saves` | List save directories, newest first |
 | GET | `/api/saves/:name/status` | World summary + squads + characters + inventories |

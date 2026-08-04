@@ -317,11 +317,28 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * .table-wrap — which also stretched the roster to match. */
 .workspace > * { min-width: 0; }
 
+/* The left column: roster on top, squad-level actions under it. Those actions
+ * (rename, add member, teleport) used to be a full-width panel above the
+ * workspace, which pushed the character card — the thing you actually came to
+ * edit — a screen down the page while spending 1240px on three collapsed rows.
+ * They are squad-scoped, they belong beside the squad list. */
+.side { display: grid; gap: var(--s4); align-content: start; }
+.side .panel { padding: var(--s3); }
+.side .panel-head h2 { font-size: var(--t-md); display: flex; align-items: center; gap: var(--s2); }
+/* A sidebar-width panel has no room for a row of fields side by side. */
+.side .field-row { flex-direction: column; align-items: stretch; gap: var(--s2); }
+.side .field, .side .field--grow { display: flex; }
+.side .field select, .side .field input[type=text] { width: 100%; max-width: none; }
+.side .btn { width: 100%; }
+.side .actions .btn { width: auto; }
+
 .roster {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--elev-1);
-  position: sticky; top: 6.5rem;
 }
+/* A long roster gets its own scroll so the squad panel underneath it stays
+ * reachable without scrolling past 30 characters. */
+.side .roster-list { max-height: 26rem; overflow-y: auto; }
 .roster-filter { width: 100%; border: none; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--sunken); padding: var(--s2) var(--s3); }
 .roster-filter:focus-visible { outline-offset: -2px; }
 .roster-group { padding: var(--s3) var(--s3) var(--s1); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-top: 1px solid var(--line-soft); }
@@ -384,9 +401,18 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 
 @media (max-width: 860px) {
   .workspace { grid-template-columns: 1fr; }
-  .roster { position: static; }
-  .roster-list { max-height: 15rem; overflow-y: auto; }
+  .roster-list, .side .roster-list { max-height: 15rem; overflow-y: auto; }
 }
+
+/* ------------------------------------------------------------ backpacks -- */
+
+/* A worn pack and its contents read as one thing: the pack's own editable row,
+ * then what is inside it. Recessed so the nesting is visible without another
+ * level of disclosure. */
+.pack { border: 1px solid var(--line-soft); border-radius: var(--radius); overflow: hidden; }
+.pack + .pack { margin-top: var(--s3); }
+.pack-contents { background: var(--sunken); padding: var(--s2) var(--s3) var(--s3); }
+.pack-contents .group-label { display: flex; align-items: center; gap: var(--s2); }
 
 .summary-bar {
   display: flex; gap: var(--s5); flex-wrap: wrap; align-items: baseline;

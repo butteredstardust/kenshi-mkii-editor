@@ -130,14 +130,57 @@ function worldSummary(world) {
  * guide — it's a company-sid/material-sid combination, which this editor does
  * not attempt to map (see setWeaponVariant's absence and TODO.md 3.4).
  */
-function itemOf(rec) {
+/**
+ * A worn backpack holds its contents in its OWN inventory record, not in the
+ * character's.
+ *
+ * The chain is one hop longer than it looks, and missing that hop is why this
+ * editor showed no backpack contents at all despite 152 `backpack_content`
+ * items sitting in the live save:
+ *
+ *   character
+ *     -> INVENTORY (41)              the character's own
+ *          -> ITEM (42)              the backpack itself, section backpack_attach
+ *               -> instance -> INVENTORY (41)    the PACK's own container
+ *                                 -> instances -> ITEM (42) x N, section backpack_content
+ *
+ * Verified on a live save: a Garru Backpack (sid 250) has exactly one instance
+ * targeting sid 251, which is a type-41 record with 13 instances, every one of
+ * them a type-42 item whose `section` is `backpack_content`. None of those 13
+ * appear in the character's own inventory record, so nothing that reads only
+ * the character's INVENTORY can ever see them.
+ *
+ * Returns the container's sid (so a future write can target it) and the
+ * resolved contents.
+ */
+function packContentsOf(rec, bySid) {
+  if (!bySid || !rec.instances.length) return { containerSid: null, contents: [] };
+  for (const inst of rec.instances) {
+    const container = bySid.get(inst.target);
+    if (!container || container.type !== T.INVENTORY) continue;
+    const contents = container.instances
+      .map((ii) => bySid.get(ii.target))
+      .filter((r) => r && r.type === T.ITEM)
+      // One level only: a pack inside a pack is not a thing Kenshi does, and
+      // recursing without a depth guard on save data is how you hang a request.
+      .map((r) => itemOf(r));
+    return { containerSid: container.sid, contents };
+  }
+  return { containerSid: null, contents: [] };
+}
+
+function itemOf(rec, bySid = null) {
   const s = rec.strings;
   const baseSid = s.get('base data sid');
   const cat = itemCatalog.lookup(baseSid);
   const section = asText(s.get('section') || '');
   const { sections: allowedSections, widened: slotsWidened } = itemSlots.allowedSections(baseSid, section);
+  const pack = packContentsOf(rec, bySid);
   return {
     sid: rec.sid,
+    // Non-empty only for a container (a backpack) — see packContentsOf().
+    contents: pack.contents,
+    containerSid: pack.containerSid,
     base: asText(baseSid || ''),
     name: gamedata.nameOf(baseSid),
     material: gamedata.nameOf(s.get('material sid'), ''),
@@ -281,7 +324,7 @@ function readPlatoon(file) {
       medical: medicalOf(pick(T.MEDICAL)),
       stats: statsOf(pick(T.STATS)),
       inventory: bag
-        ? bag.instances.map((ii) => bySid.get(ii.target)).filter(Boolean).map(itemOf)
+        ? bag.instances.map((ii) => bySid.get(ii.target)).filter(Boolean).map((r) => itemOf(r, bySid))
         : [],
     });
   }
@@ -1650,6 +1693,103 @@ function addSquadMember(saveDir, platoonFile, {
   ];
 }
 
+// ------------------------------------------------------------- teleport --
+
+// Characters are placed on a ring rather than all on one point. The game will
+// push overlapping bodies apart on load anyway, but a squad that arrives as a
+// neat circle reads as intentional, and it keeps anyone from being buried
+// inside a building's collision at the exact town centre. 30 units is small
+// against a town: a type-13 town's own `size radius` starts at 350, and the
+// player's squad currently sits 520 units from its town's centre.
+const TELEPORT_RING = 30;
+
+/**
+ * Move characters to a world position — the squad (30) record's instance `pos`,
+ * NOT a field inside any state record (TODO.md 1.4).
+ *
+ * Writes two files, like addSquadMember(): the platoon, and `quick.save` so the
+ * squad's own SQUAD_META (34) map position follows its members. Leaving the
+ * type-34 position behind would put the squad's map marker in one place and its
+ * characters in another.
+ *
+ * `y` is the terrain height recorded with the town placement
+ * (services/locationsService.js). It is not re-derived from the heightmap —
+ * this editor does not read terrain — so on a slope the game settles the
+ * characters itself. Off-map or underground coordinates can strand a squad;
+ * the caller is trusted, and the UI only offers catalogued towns.
+ *
+ * @param {string} saveDir
+ * @param {string} platoonFile
+ * @param {object} opts
+ * @param {number} opts.x
+ * @param {number} opts.y
+ * @param {number} opts.z
+ * @param {string[]} [opts.sids]  which characters; default every one in the squad
+ * @param {string} [opts.label]   destination name, for the receipt only
+ */
+function teleportSquad(saveDir, platoonFile, { x, y, z, sids, label = null } = {}) {
+  for (const [key, value] of Object.entries({ x, y, z })) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`teleport: "${key}" must be a finite number`);
+    }
+  }
+
+  const { relFile, parsed, squad } = resolveSquad(saveDir, platoonFile);
+  if (!squad.instances.length) throw new Error(`${platoonFile}: this squad has no characters`);
+
+  let targets = squad.instances;
+  if (sids !== undefined) {
+    if (!Array.isArray(sids) || !sids.length) throw new Error('teleport: sids, if given, must be a non-empty array');
+    const wanted = new Set(sids);
+    targets = squad.instances.filter((i) => wanted.has(i.id));
+    const missing = sids.filter((s) => !squad.instances.some((i) => i.id === s));
+    if (missing.length) throw new Error(`${platoonFile}: no character with sid ${missing.join(', ')}`);
+  }
+
+  const bySid = new Map(parsed.records.map((r) => [r.sid, r]));
+  const nameOfInstance = (inst) => {
+    const st = inst.states.map((s) => bySid.get(s)).find((r) => r && r.type === T.CHAR_STATE);
+    return asText(st ? (st.strings.get('name') || '') : '');
+  };
+
+  const moved = targets.map((inst, i) => {
+    const angle = (2 * Math.PI * i) / targets.length;
+    const to = [
+      x + Math.cos(angle) * TELEPORT_RING,
+      y,
+      z + Math.sin(angle) * TELEPORT_RING,
+    ];
+    const from = [...inst.pos];
+    inst.pos = to;
+    return { sid: inst.id, name: nameOfInstance(inst), from, to };
+  });
+
+  // The squad's own marker in quick.save follows its members.
+  const world = readSaveFile(saveDir, 'quick.save');
+  const meta = squadMetaFor(world, platoonFile);
+  let metaBefore = null;
+  if (meta && meta.vec3.has('position')) {
+    metaBefore = [...meta.vec3.get('position')];
+    meta.vec3.set('position', [x, y, z]);
+  }
+
+  const results = [{
+    file: relFile,
+    bytes: writeFile(parsed),
+    destination: { label, x, y, z },
+    moved,
+    movedCount: moved.length,
+    squadMarker: { before: metaBefore, after: metaBefore ? [x, y, z] : null },
+  }];
+  // Only write quick.save if it actually changed — mutationService rejects a
+  // no-op edit, and a squad whose type-34 record has no position (or is already
+  // there) should not drag an unchanged file into `changedFiles`.
+  if (metaBefore && (metaBefore[0] !== x || metaBefore[1] !== y || metaBefore[2] !== z)) {
+    results.push({ file: 'quick.save', bytes: writeFile(world) });
+  }
+  return results;
+}
+
 // ----------------------------------------------------------- bulk equip --
 
 // Every field an `items[]` entry may carry. Rejected rather than ignored, same
@@ -1852,7 +1992,7 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
 
 module.exports = {
   T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
-  raceOf, equipMany,
+  raceOf, equipMany, teleportSquad,
   playerPlatoonFiles, playerSquadRecords, scanCharacters, availableRaces, defaultRace,
   resolveSquad, squadMetaFor, encodeName, MAX_NAME_BYTES,
   renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread,

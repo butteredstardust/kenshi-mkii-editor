@@ -8,6 +8,7 @@ const mutation = require('../../services/mutationService');
 const archetypes = require('../../services/archetypes');
 const recruits = require('../../services/recruits');
 const loadouts = require('../../services/loadouts');
+const locations = require('../../services/locationsService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -106,5 +107,15 @@ router.get('/recruits', handle(async () => recruits.catalogue()));
 // each row carries its items already resolved to names/kinds so the client
 // never looks a template up itself.
 router.get('/loadouts', handle(async () => loadouts.catalogue()));
+
+// Town positions for the teleport picker. Derived from the install's own
+// `.level` placement data, not from the save — see services/locationsService.js
+// for why the obvious sources (the root leveldata.level, the save's type-94
+// town states) are both wrong for this.
+router.get('/locations', handle(async () => ({
+  locations: locations.all(),
+  stats: locations.stats(),
+})));
+router.post('/locations/rebuild', handle(async () => { locations.rebuild(); return locations.stats(); }));
 
 module.exports = router;
