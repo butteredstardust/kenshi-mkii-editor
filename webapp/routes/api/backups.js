@@ -8,7 +8,9 @@ const mutation = require('../../services/mutationService');
 
 const router = express.Router();
 
-router.get('/backups', handle(async () => backups.list()));
+// Summaries, not manifests — a hash per file per backup is megabytes of JSON
+// nothing on the page renders. See backupService.summary().
+router.get('/backups', handle(async () => backups.list().map(backups.summary)));
 
 router.post('/backups', handle(async (req) => {
   const save = paths.findSave(req.body?.save) || paths.latestSave();
@@ -20,7 +22,7 @@ router.post('/backups', handle(async (req) => {
     e.status = 409;
     throw e;
   }
-  return backups.create(save.dir, req.body?.label || 'manual');
+  return backups.summary(backups.create(save.dir, req.body?.label || 'manual'));
 }));
 
 // Gated: see mutationService.restoreBackup().

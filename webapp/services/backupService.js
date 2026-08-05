@@ -74,6 +74,22 @@ function list() {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/**
+ * A manifest without its `hashes` map, for anything that only wants to LIST
+ * backups.
+ *
+ * The hash map is one SHA-256 per file of a whole save directory — ~42 KB of
+ * JSON per backup, and the API was shipping all of it: 37 backups of this save
+ * made `GET /api/backups` a 1.5 MB response to draw a 37-row table, none of
+ * whose columns is a hash. The hashes exist for `restore()` to verify against
+ * and are still read from disk there; they are not list data. `files` is the
+ * one thing the table wants out of them.
+ */
+function summary(manifest) {
+  const { hashes, ...rest } = manifest;
+  return { ...rest, files: Object.keys(hashes || {}).length };
+}
+
 /** A backup's manifest, or a thrown error if there is no such backup. */
 function read(id) {
   return JSON.parse(fs.readFileSync(path.join(backupDir(id), 'manifest.json'), 'utf8'));
@@ -138,4 +154,6 @@ function remove(id) {
   return { deleted: id };
 }
 
-module.exports = { create, list, read, restore, remove, hashDir, sha256, copyDir, walk };
+module.exports = {
+  create, list, read, summary, restore, remove, hashDir, sha256, copyDir, walk,
+};

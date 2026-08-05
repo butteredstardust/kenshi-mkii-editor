@@ -1559,6 +1559,41 @@ test('restore puts a backup back over the save it came from', (t) => {
   }
 });
 
+/**
+ * The list payload is not the manifest.
+ *
+ * A manifest carries one SHA-256 per file of a whole save directory — 447 of
+ * them here — and `GET /api/backups` was serialising all of it for every
+ * backup: 1.5 MB of JSON to draw a 37-row table with no hash column in it. The
+ * hashes still exist and restore() still verifies against them; they are just
+ * not list data. If this fails, the Backups page is shipping megabytes again.
+ */
+test('a backup summary carries the file count, not the hashes', (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  try {
+    const manifest = backups.create(scratch.dir, 'test: summary');
+    const files = Object.keys(manifest.hashes).length;
+    assert.ok(files > 0, 'fixture should have files to hash');
+
+    const summary = backups.summary(manifest);
+    assert.strictEqual(summary.hashes, undefined, 'a summary must not carry the hash map');
+    assert.strictEqual(summary.files, files);
+    for (const key of ['id', 'label', 'saveName', 'createdAt']) {
+      assert.strictEqual(summary[key], manifest[key], `summary lost ${key}`);
+    }
+    // The whole point: the summary is a fraction of the manifest's size.
+    assert.ok(JSON.stringify(summary).length * 20 < JSON.stringify(manifest).length,
+      'summary should be at least 20x smaller than the manifest');
+
+    // And restore still has what it needs, read from disk rather than the list.
+    assert.deepStrictEqual(backups.read(manifest.id).hashes, manifest.hashes);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
 test('a corrupt backup is refused, and the save it would have overwritten is untouched', (t) => {
   const scratch = scratchSave();
   if (!scratch) return t.skip(fixture.NO_FIXTURE);

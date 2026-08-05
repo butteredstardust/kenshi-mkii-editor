@@ -111,7 +111,13 @@ The same logic applies to text: `.ok` for healthy state, `.warn` for degraded,
 
 ## 4. Layout
 
-- **Page:** `main` is capped at `1240px`.
+- **Page:** one content column, `--shell-max` (1240px) wide, **centred**. The
+  header, the tabs, `main` and the footer all take their horizontal padding from
+  `--shell-pad`, so the title, the active tab and the first card sit on one
+  vertical line at every width. Do not give a shell element its own
+  `padding-inline` — `main` used to be `max-width: 1240px` with no centring, and
+  on a 2560px monitor the whole app hugged the left edge against 1300px of empty
+  page. The narrow breakpoint overrides the **token**, not one element's padding.
 
 ### Every control in a row is the same height
 
@@ -187,6 +193,14 @@ off-screen, which defeats the collapsible sections. Pair it with a
 `.field--grow` search input — a box you type words into should not be
 shrink-to-fit.
 
+`.field--grow` grows a **text input**, and it needs the grow factor to do it:
+`display: flex` alone leaves the field a flex item at `flex: 0 1 auto`, so it
+still sizes to its content and the input's `width: 100%` resolves against a
+shrink-to-fit box. Every search box in the app was 148px wide in a 1159px row
+for exactly that reason. A `<select>` in the same class is capped instead of
+grown — it already sizes to its longest option, and three of them sharing a row
+each hit the cap and became a wall (the Vendors pickers).
+
 Render picker results **imperatively** (assign `innerHTML` on the results
 container and re-bind its buttons) rather than calling `render()`. A full
 re-render per keystroke tears down the search box mid-type. Debounce the
@@ -242,6 +256,18 @@ Two rules the Gear pickers follow, both worth copying:
   label doing a comment's job — the label is `Fed`, and the constraint goes in
   a `.hint` under the field or on the input's `min`/`max`.
 - Buttons are verbs: `Apply`, `Revive`, `Restore limbs`.
+- **A count agrees with its noun. Use `plural()`, never `(s)`.** `10
+  character(s)` is a developer declining to write the label; it reads as a form
+  field and it is wrong whenever n is 1. This is not only display text —
+  a mutation label is stored in the backup manifest and is the only description
+  of that backup the Backups page can show, so `routes/api/saves.js` carries the
+  same helper.
+- **A label is English, never a key name.** The World page was
+  `Object.entries(world)` into a table, which put `GAMEVERSION` and `CAMERAPOS`
+  on screen as headings. Name the keys, and compose the ones that are one fact
+  in several fields (day + hour + minute is a clock, not three rows). Anything
+  the mapping doesn't name must still render — see §4's rule about mappings
+  never hiding save data.
 - State the consequence where it isn't obvious, in a `.hint`, once — not
   repeated next to every control.
 - Numbers: one decimal for display (`num`), two for editable values

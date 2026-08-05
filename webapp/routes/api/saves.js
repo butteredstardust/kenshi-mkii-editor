@@ -12,6 +12,12 @@ const racesService = require('../../services/racesService');
 
 const router = express.Router();
 
+// A mutation label is not throwaway text: it is stored in the backup manifest
+// and is the only description of that backup the Backups page can show. So it
+// agrees in number, the same as the UI's `plural()` — "equip 1 item on 1
+// character", never "1 item(s) on 1 character(s)".
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 router.get('/saves', handle(async () => paths.listSaves()));
 
 router.get('/saves/:name/status', handle(async (req) => saveService.status(req.params.name)));
@@ -155,8 +161,8 @@ router.post('/saves/:name/equip', handle(async (req) => {
   }
 
   const label = loadout
-    ? `equip ${loadout.label} on ${targets.length} character(s)`
-    : `equip ${allItems.length} item(s) on ${targets.length} character(s)`;
+    ? `equip ${loadout.label} on ${plural(targets.length, 'character')}`
+    : `equip ${plural(allItems.length, 'item')} on ${plural(targets.length, 'character')}`;
 
   return mutation.mutate(save.dir, label, (staging) => saveService.equipMany(staging, {
     targets,
@@ -207,7 +213,7 @@ router.post('/saves/:name/regrade', handle(async (req) => {
   if (includeCarried !== undefined) patch.includeCarried = includeCarried;
   if (includePackContents !== undefined) patch.includePackContents = includePackContents;
 
-  return mutation.mutate(save.dir, `re-grade gear on ${targets.length} character(s)`,
+  return mutation.mutate(save.dir, `re-grade gear on ${plural(targets.length, 'character')}`,
     (staging) => saveService.regradeMany(staging, patch));
 }));
 
@@ -232,8 +238,8 @@ router.post('/saves/:name/unequip', handle(async (req) => {
   if (itemSids !== undefined) patch.itemSids = itemSids;
 
   const label = sections && sections.length === 1
-    ? `unequip ${sections[0]} on ${targets.length} character(s)`
-    : `unequip on ${targets.length} character(s)`;
+    ? `unequip ${sections[0]} on ${plural(targets.length, 'character')}`
+    : `unequip on ${plural(targets.length, 'character')}`;
   return mutation.mutate(save.dir, label, (staging) => saveService.unequipMany(staging, patch));
 }));
 

@@ -27,6 +27,20 @@ export const num = (v, d = 1) => (typeof v === 'number' ? v.toFixed(d) : '—');
  */
 export const inputNum = (v, d = 2) => (typeof v === 'number' ? String(Number(v.toFixed(d))) : '');
 
+/**
+ * "1 character" / "2 characters" — a count and its noun, agreeing.
+ *
+ * Every count in this app used to be written `${n} character(s)`, which is a
+ * developer writing a label they did not want to think about: it reads as a
+ * form field, it leaks into the backup labels the mutation gate stores (`auto:
+ * unequip head on 10 character(s)` is on disk in this save's backup folder),
+ * and it is wrong in the common case where n is 1. Pass an explicit plural for
+ * the words English does not pluralise with an -s.
+ */
+export function plural(n, one, many = `${one}s`) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 /** Proportion bar. `percent` is 0..100; tone is derived, never passed in. */
 export function meter(percent) {
   const p = Math.max(0, Math.min(100, percent ?? 0));

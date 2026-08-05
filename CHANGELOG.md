@@ -35,8 +35,41 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   execute the round trip — the release workflow refuses to run unless the
   round trip has been confirmed locally.
 
+### Changed
+
+- **The Backups page is a list you can actually use.** It shows one save's
+  backups (every save is a checkbox away) and the newest 25 of them, with the
+  time in your own clock — "Today 16:31" rather than
+  `2026-08-05T13:31:43.519Z` — and without the id column, which was the widest
+  in the table and only ever repeated the save name and that same timestamp.
+  Editor-taken backups are no longer prefixed `auto:` on every row; the manual
+  ones carry a badge instead.
+- **The World page reads as English.** It was the save model's own field names
+  put through a table's uppercase — `GAMEVERSION`, `CAMERAPOS`, and the clock
+  spread over three rows of one number each. The keys are named and the clock,
+  the roster and the money are one row each. Fields the mapping doesn't know
+  still render, so a save gaining one can't make it invisible.
+- Counts agree with their nouns: `1 item`, `2 items`, never `2 item(s)`. This
+  reaches the backup labels too, which are stored on disk and are all the
+  Backups page has to describe what a backup was taken before.
+- A faction row no longer repeats its relation as both a number beside the
+  standing badge and the value in the input two cells along, and the preset
+  dropdown on all 113 rows says "Set…" rather than "…".
+
 ### Fixed
 
+- **`GET /api/backups` was a 1.5 MB response.** It served every backup's full
+  manifest, including one SHA-256 per file of a whole save directory — 447 of
+  them per backup — to draw a table with no hash column. It now returns
+  summaries and a file count: the same 37 backups are 8.5 KB, 183× smaller. The
+  hashes stay on disk, where `restore()` still verifies against them.
+- **Search boxes were 148px wide.** `.field--grow` set `display: flex` but no
+  grow factor, so the field stayed shrink-to-fit and the input's `width: 100%`
+  resolved against it — in a 1159px row. "tech name or what it unlocks" was
+  clipped mid-word on the Research page.
+- The app is centred. `main` was capped at 1240px but never centred, so on a
+  wide monitor the whole editor sat against the left edge; the header, tabs,
+  content and footer now share one gutter and line up at every width.
 - **Restoring a backup was the one write path with no safety gate.** It could
   run while Kenshi was open — the game rewrites its save directory from memory,
   so the restore was silently discarded the next time the player saved — and it

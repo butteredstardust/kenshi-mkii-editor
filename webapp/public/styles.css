@@ -50,6 +50,14 @@
   --radius: 6px;
   --radius-lg: 9px;
 
+  /* The content column. `main` was capped at 1240px but never centred, so on a
+   * 2560px monitor the whole app sat in the left half against 1300px of empty
+   * page. Everything in the shell — header, tabs, main, footer — is offset by
+   * the same rule below, so the title, the active tab and the first card stay
+   * on one vertical line at every width. */
+  --shell-max: 1240px;
+  --shell-pad: max(var(--s5), calc((100% - var(--shell-max)) / 2));
+
   /* One height for every interactive control that can sit in a row with
    * another one — buttons, inputs, selects. Without it each control is as tall
    * as its own font and padding happen to make it (a .btn ran ~2.4rem against
@@ -93,7 +101,7 @@ body {
 .shell-header {
   position: sticky; top: 0; z-index: 3;
   display: flex; align-items: baseline; gap: var(--s4); flex-wrap: wrap;
-  padding: var(--s3) var(--s5); border-bottom: 1px solid var(--line);
+  padding: var(--s3) var(--shell-pad); border-bottom: 1px solid var(--line);
   background: var(--surface); box-shadow: var(--elev-1);
 }
 .shell-header h1 {
@@ -104,7 +112,7 @@ body {
 
 .tabs {
   position: sticky; top: 2.9rem; z-index: 2;
-  display: flex; gap: var(--s1); padding: var(--s2) var(--s5);
+  display: flex; gap: var(--s1); padding: var(--s2) var(--shell-pad);
   border-bottom: 1px solid var(--line); background: var(--bg);
 }
 .tabs button {
@@ -122,7 +130,7 @@ body {
   height: 2px; background: var(--accent); border-radius: 2px;
 }
 
-main { padding: var(--s5); max-width: 1240px; }
+main { padding: var(--s5) var(--shell-pad); }
 
 /* --------------------------------------------------------------- panels -- */
 
@@ -405,6 +413,11 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 /* A sidebar-width panel has no room for a row of fields side by side. */
 .side .field-row { flex-direction: column; align-items: stretch; gap: var(--s2); }
 .side .field, .side .field--grow { display: flex; }
+/* The sidebar's rows stack, so the row is a COLUMN flex container and
+ * .field--grow's `flex: 1 1 14rem` would set a 14rem basis on the field's
+ * HEIGHT. Width is already full-bleed here — the grow factor has nothing left
+ * to do. */
+.side .field--grow { flex: none; max-width: none; }
 .side .field select, .side .field input[type=text] { width: 100%; max-width: none; }
 .side .btn { width: 100%; }
 .side .actions .btn { width: auto; }
@@ -621,9 +634,23 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 
 /* A .field whose control should take the width it needs rather than the
  * inline-flex shrink-to-fit default — a search box you type sentences into
- * reads badly at the default input width. */
-.field--grow { display: flex; }
-.field--grow input { width: 100%; max-width: 24rem; }
+ * reads badly at the default input width.
+ *
+ * `display: flex` alone did NOT do that. A flex ITEM defaults to `flex: 0 1
+ * auto`, so the field still sized to its content and the `width: 100%` below
+ * resolved against a shrink-to-fit parent: measured in a 1159px .field-row,
+ * every search box in the app was 148px, and "tech name or what it unlocks"
+ * was clipped mid-word. The grow factor is what the component was named for. */
+.field--grow { display: flex; flex: 1 1 14rem; max-width: 24rem; }
+.field--grow input { width: 100%; }
+
+/* A <select> is the other thing wearing this class, and it does not want the
+ * same treatment: it already sizes itself to its longest option, so a grow
+ * factor only makes it eat its share of the row — the Vendors page's three
+ * pickers each hit the 24rem cap and became a wall. Here --grow means "you may
+ * be as wide as your longest town name", not "take a third of the row". */
+.field--grow:has(select) { flex: 0 1 auto; }
+.field--grow select { max-width: 100%; }
 
 /* ------------------------------------------------------------ utilities -- */
 
@@ -635,7 +662,10 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .stack > * + * { margin-top: var(--s3); }
 
 @media (max-width: 560px) {
-  main { padding: var(--s3); }
+  /* Tighter gutters, but still ONE gutter — set the shared token rather than
+   * main's padding alone, or the header and tabs stay indented past the card
+   * edge they are supposed to line up with. */
+  :root { --shell-pad: var(--s3); }
   .cards { grid-template-columns: 1fr; }
 }
 
@@ -693,9 +723,11 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * receipt or a warning. */
 .shell-footer {
   margin-top: var(--s6);
-  padding: var(--s4) var(--s5);
+  padding: var(--s4) var(--shell-pad);
   border-top: 1px solid var(--line);
   color: var(--muted); font-size: var(--t-xs); line-height: 1.6;
-  max-width: 70ch;
 }
+/* The rule spans the page like every other shell divider; the text keeps a
+ * readable measure. */
+.shell-footer > p { margin: 0; max-width: 70ch; }
 .shell-footer code { color: var(--ink); }

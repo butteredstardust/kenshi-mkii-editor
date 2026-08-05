@@ -1,5 +1,5 @@
 import { API } from './modules/api-client.mjs';
-import { esc, num, inputNum, meter, showReceipt, runMutation } from './modules/core.mjs';
+import { esc, num, inputNum, meter, plural, showReceipt, runMutation } from './modules/core.mjs';
 
 /*
  * Reference implementation for docs/ui-style-guide.md. New features compose the
@@ -99,6 +99,9 @@ const state = {
   addItem: null,
   itemKinds: [], itemSlots: [], // filter vocabulary, owned by the server
   weaponGrades: null, // fetched once, lazily — only needed when a weapon is picked
+  // Backups accumulate one per edit and never expire, so the list is long and
+  // mostly about saves you are not looking at. Both filters are view-only.
+  backupFilter: { allSaves: false, showAll: false },
 };
 
 const keyOf = (file, sid) => `${file}::${sid}`;
@@ -116,7 +119,7 @@ async function boot() {
   state.save = s ? s.name : null;
   envEl.innerHTML = state.env.gameRunning
     ? '<span class="critical">Kenshi is running — edits are blocked until you close it</span>'
-    : `<span class="ok">ready</span> <span class="muted">· ${esc(state.env.saves.length)} save(s) · ${esc(state.env.saveRoot || 'no save folder found')}</span>`;
+    : `<span class="ok">ready</span> <span class="muted">· ${esc(plural(state.env.saves.length, 'save'))} · ${esc(state.env.saveRoot || 'no save folder found')}</span>`;
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
   state.personalities = await API.personalities().catch(() => []);
@@ -497,6 +500,7 @@ const ICON_PATHS = {
   belt: '<path d="M2 6h12v4H2z"/><path d="M6.5 6v4M9.5 6v4"/>',
   backpack: '<path d="M4 5.5h8v8H4z"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5"/><path d="M6 9.5h4"/>',
   bag: '<path d="M3 5.5h10l-1 8H4z"/><path d="M6 5.5V4.2a2 2 0 0 1 4 0v1.3"/>',
+  backup: '<rect x="2.5" y="3" width="11" height="3" rx=".8"/><path d="M3.5 6.5v6a.8.8 0 0 0 .8.8h7.4a.8.8 0 0 0 .8-.8v-6"/><path d="M6.5 9h3"/>',
 };
 
 // Human labels for the raw on-disk `section` strings. Display only — every
@@ -656,13 +660,16 @@ function itemRow(it) {
 }
 
 function itemTable(items, emptyText) {
+  // Column headings over no rows are furniture: "ITEM QTY SLOT QUALITY" above
+  // "Nothing equipped" describes a table that is not there.
+  if (!items.length) return `<p class="hint">${esc(emptyText)}</p>`;
   // Deliberately NOT .table--compact: that cap suits the read-mostly body-part
   // table, but this row carries a select per concept, and under a 46rem cap the
   // item-name column collapses and wraps every name to 4 lines.
   return `<div class="table-wrap"><table class="data-table"><thead><tr>
       <th class="col-item">Item</th><th class="n">Qty</th><th>Slot</th><th>Quality</th><th></th>
     </tr></thead>
-    <tbody>${items.map(itemRow).join('') || `<tr><td colspan="5" class="muted">${esc(emptyText)}</td></tr>`}</tbody>
+    <tbody>${items.map(itemRow).join('')}</tbody>
   </table></div>`;
 }
 
@@ -803,7 +810,7 @@ function packBlock(pack) {
   return `<div class="pack">
     ${itemTable([pack], '')}
     <div class="pack-contents">
-      <h4 class="group-label">${icon('bag', 'Contents')} Inside — ${esc(pack.contents.length)} stack(s), ${esc(total)} item(s)</h4>
+      <h4 class="group-label">${icon('bag', 'Contents')} Inside — ${esc(plural(pack.contents.length, 'stack'))}, ${esc(plural(total, 'item'))}</h4>
       ${pack.contents.length ? `<div class="table-wrap"><table class="data-table table--compact"><tbody>
         ${pack.contents.map((it) => `<tr>
           <td class="col-item"><span class="item-name">${icon('bag', it.section)}<span>${esc(it.name)}</span></span></td>
@@ -919,7 +926,7 @@ function bulkPanel(picked) {
       ${loadout.items.map((it) => `<span class="chip">${esc(it.name || it.templateSid)}
         <span class="slot">${esc(SLOT_LABELS[it.section] || it.section)}</span></span>`).join('')}
     </div>
-    ${loadout.missing.length ? `<p class="hint note-warn">${esc(loadout.missing.length)} item(s) in this set are not in your installed data and will be rejected.</p>` : ''}` : '';
+    ${loadout.missing.length ? `<p class="hint note-warn">${esc(plural(loadout.missing.length, 'item'))} in this set are not in your installed data and will be rejected.</p>` : ''}` : '';
 
   return `<article class="card" id="bulk-card">
     <div class="card-head">
@@ -1110,10 +1117,10 @@ function bulkRegradePreflight(picked, opts) {
     }
     if (gradeId && weapons.length) {
       const g = (state.weaponGrades || []).find((x) => x.id === gradeId);
-      parts.push(`${esc(weapons.length)} weapon(s) → ${esc(g ? g.modelName : gradeId)}`);
+      parts.push(`${esc(plural(weapons.length, 'weapon'))} → ${esc(g ? g.modelName : gradeId)}`);
     }
     if (weaponLevel !== undefined && (weapons.length || bows.length)) {
-      parts.push(`${esc(weapons.length + bows.length)} weapon level(s) → ${esc(weaponLevel)}`);
+      parts.push(`${esc(plural(weapons.length + bows.length, 'weapon level'))} → ${esc(weaponLevel)}`);
     }
     return parts.map((p) => `<div>${p}</div>`).join('');
   });
@@ -1287,7 +1294,7 @@ function bulkPreflight(picked, loadout, skip = false) {
       <span class="what">
         ${gets.length ? esc(gets.map((it) => it.name || it.templateSid).join(', ')) : '<em>nothing — every slot already filled</em>'}
         ${replaces.length ? `<div class="muted">replaces ${esc(replaces.join(', '))}</div>` : ''}
-        ${skipped.length ? `<div class="muted">skipping ${esc(skipped.length)} already-filled slot(s)</div>` : ''}
+        ${skipped.length ? `<div class="muted">skipping ${esc(plural(skipped.length, 'already-filled slot'))}</div>` : ''}
         ${fit.map((w) => `<div class="note-warn">${esc(w)}</div>`).join('')}
         ${notes.map((n) => `<div class="note-warn">${esc(n)}</div>`).join('')}
       </span>
@@ -1314,7 +1321,7 @@ function renderGear() {
   return `${savePicker()}
     <section class="summary-bar">
       <span><b>Gear</b></span>
-      <span class="muted">${esc(all.length)} character(s)</span>
+      <span class="muted">${esc(plural(all.length, 'character'))}</span>
       <span class="actions">
         <button class="btn btn--xs" id="toggle-select">${state.selectMode ? 'Done selecting' : 'Equip several at once'}</button>
       </span>
@@ -1981,8 +1988,8 @@ function vendorStock(shop) {
   return `<p class="hint">${esc(shop.shop)} in ${esc(shop.town)} — stock lists:
       ${esc(shop.lists.map((l) => l.name).join(', '))}.
       What the shop <em>can</em> carry; actual stock is rolled in game.${blocked
-    ? ` ${esc(blocked)} row(s) are weapon-manufacturer entries rather than objects, so they have no Add.` : ''}${bps
-    ? ` ${esc(bps)} row(s) are blueprints — the shop sells the blueprint, not the thing it unlocks.` : ''}</p>
+    ? ` ${esc(plural(blocked, 'row'))} are weapon-manufacturer entries rather than objects, so they have no Add.` : ''}${bps
+    ? ` ${esc(plural(bps, 'row'))} are blueprints — the shop sells the blueprint, not the thing it unlocks.` : ''}</p>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th class="col-item">Item</th><th>Kind</th><th>From list</th><th class="shrink"></th></tr></thead>
       <tbody>${shop.items.map((it) => `<tr data-row="${esc(it.key)}"${it.addable ? '' : ' class="row-muted"'}>
@@ -2120,7 +2127,7 @@ function researchRow(t) {
       <td class="muted">Tier ${esc(t.level)}</td>
       <td>${researchBadge(t)}</td>
       <td class="muted">${esc(cost || '—')}</td>
-      <td class="muted">${t.unlocks.length ? esc(`${t.unlocks.length} item(s)`) : '—'}</td>
+      <td class="muted">${t.unlocks.length ? esc(plural(t.unlocks.length, 'item')) : '—'}</td>
       <td class="shrink"><span class="actions actions--end">
         ${t.maxed ? '<span class="muted">—</span>'
     : `<button class="btn btn--xs research-one" data-tech="${esc(t.sid)}" ${dis()}>Unlock</button>`}
@@ -2218,10 +2225,18 @@ const RELATION_PRESETS = [
 
 const editKey = (from, to) => `${from}|${to}`;
 
-function standingBadge(standing, relation) {
+/**
+ * The standing word. The NUMBER behind it is deliberately not repeated here:
+ * every editable row already shows it, two cells to the right, in the input the
+ * user is about to change — printing "NEUTRAL 0.0" beside an input reading 0
+ * put the same figure on screen twice and made the row look like it had two
+ * different values. A row that cannot be edited has no input, so that one keeps
+ * the number.
+ */
+function standingBadge(standing, relation, editable) {
   const [label, cls] = STANDINGS[standing] || [standing, 'badge--muted'];
   return `<span class="badge ${cls}">${esc(label)}</span>
-    <span class="muted">${esc(num(relation))}</span>`;
+    ${editable ? '' : `<span class="muted">${esc(num(relation))}</span>`}`;
 }
 
 /**
@@ -2238,7 +2253,10 @@ function relationInput(from, to, relation, editable) {
         data-from="${esc(from)}" data-to="${esc(to)}" data-initial="${esc(inputNum(relation))}"
         value="${esc(pending === undefined ? inputNum(relation) : inputNum(pending))}" ${dis()}>
       <select class="relation-preset" data-key="${esc(key)}" ${dis()} aria-label="Preset">
-        <option value="">…</option>
+        <!-- Named, not "…": this control appears on all 113 rows, and a
+             dropdown whose only visible text is an ellipsis is a control the
+             reader has to open to find out what it does. -->
+        <option value="">Set…</option>
         ${RELATION_PRESETS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}
       </select>
     </span>`;
@@ -2273,9 +2291,9 @@ function factionTable(r) {
         <th class="n">Turns hostile at</th><th class="shrink">Relation</th><th class="shrink"></th>
       </tr></thead>
       <tbody>${shown.map((f) => `<tr${f.notReal ? ' class="row-muted"' : ''}>
-        <td class="col-item"><span class="item-name">${icon('squad', 'faction')}<span>${esc(f.name)}</span></span>
+        <td class="col-item">${esc(f.name)}
           ${f.notReal ? '<div class="muted">engine utility faction, not a real one</div>' : ''}</td>
-        <td>${standingBadge(f.standing, f.relation)}</td>
+        <td>${standingBadge(f.standing, f.relation, f.editable)}</td>
         <td class="muted">${f.met ? 'yes' : 'not yet'}</td>
         <td class="muted n">${esc(f.enemyAt)}</td>
         <td class="shrink">${relationInput(f.sid, r.player.gamedataSid, f.relation, f.editable)}</td>
@@ -2301,10 +2319,10 @@ function factionViewTable() {
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th class="col-item">Toward</th><th>Standing</th><th class="shrink">Relation</th></tr></thead>
       <tbody>${shown.map((f) => `<tr${f.notReal || f.isSelf ? ' class="row-muted"' : ''}>
-        <td class="col-item"><span class="item-name">${icon('squad', 'faction')}<span>${esc(f.name)}</span></span>
+        <td class="col-item">${esc(f.name)}
           ${f.isPlayer ? '<div class="muted">your squad</div>' : ''}
           ${f.isSelf ? '<div class="muted">itself — always 100, not editable</div>' : ''}</td>
-        <td>${standingBadge(f.standing, f.relation)}</td>
+        <td>${standingBadge(f.standing, f.relation, f.editable)}</td>
         <td class="shrink">${relationInput(v.faction.sid, f.sid, f.relation, f.editable)}</td>
       </tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing matches.</td></tr>'}</tbody>
     </table></div>`;
@@ -2362,7 +2380,7 @@ async function renderFactions() {
         own carries none. Values run -100 to 100; the "turns hostile at" column is that faction's own
         threshold from gamedata, not a rule this editor invented. Every pending change is written in one
         staged edit through the mutation gate.
-        ${c.met < c.total ? `${esc(c.total - c.met)} faction(s) you have not met can still be edited, but the
+        ${c.met < c.total ? `${esc(plural(c.total - c.met, 'faction'))} you have not met can still be edited, but the
           game will not show them to you until you run into them.` : ''}</p>
       <pre class="receipt" id="faction-receipt" hidden></pre>
 
@@ -2382,12 +2400,59 @@ async function renderFactions() {
     </section>`;
 }
 
+/*
+ * World.
+ *
+ * This page used to be `Object.entries(s.world)` straight into a table, which
+ * meant the LABELS were the save model's own key names put through the kv
+ * table's uppercase: "GAMEVERSION", "CAMERAPOS", and day / hour / minute as
+ * three separate rows of one number each. Those are field names, not English
+ * (style guide §5), and the reader has to reassemble the clock themselves.
+ *
+ * So the keys are named and grouped here. The mapping is presentation-only and
+ * deliberately not exhaustive: anything it does not name still renders, under
+ * "Other", because a save gaining a field must never make that field invisible.
+ */
+const WORLD_LABELS = {
+  gameVersion: 'Game version',
+  cameraPos: 'Camera position',
+};
+
+// Keys the rows below compose into something better than one number each — the
+// clock out of day/hour/minute, the roster out of squads/members — so they must
+// not also appear raw.
+const WORLD_COMPOSED = ['day', 'hour', 'minute', 'squads', 'members', 'faction', 'region', 'money'];
+
+function worldValue(v) {
+  if (Array.isArray(v)) return v.map((n) => (typeof n === 'number' ? Math.round(n) : n)).join(', ');
+  return v;
+}
+
+function worldRows(s) {
+  const w = s.world;
+  const hh = String(w.hour ?? 0).padStart(2, '0');
+  const mm = String(w.minute ?? 0).padStart(2, '0');
+  const night = w.hour != null && (w.hour < 6 || w.hour >= 20);
+  const rest = Object.entries(w).filter(([k]) => !WORLD_COMPOSED.includes(k));
+
+  const row = (label, value) => `<tr><th>${esc(label)}</th><td>${esc(value)}</td></tr>`;
+  return `${row('Squad name', w.faction)}
+    ${w.region ? row('Region', w.region) : ''}
+    <tr><th>Time</th><td>Day ${esc(w.day)}, ${esc(hh)}:${esc(mm)}
+      <span class="muted">${esc(night ? 'after dark' : 'daylight')}</span></td></tr>
+    ${row('Roster', `${plural(w.members, 'character')} in ${plural(w.squads, 'squad')}`)}
+    ${row('Cats', w.money)}
+    ${rest.map(([k, v]) => row(WORLD_LABELS[k] || k, worldValue(v))).join('')}
+    ${row('Records in quick.save', s.recordCount)}
+    ${row('Save directory', s.save.dir)}`;
+}
+
 function renderWorld() {
   const s = state.status;
-  if (!s) return '<p>No save found.</p>';
+  if (!s) return `${savePicker()}<div class="empty-state"><strong>No save</strong>No Kenshi save was found to read.</div>`;
   return `${savePicker()}
     <section class="panel">
-      <div class="panel-head"><h2>Player money</h2></div>
+      <div class="panel-head"><h2>${icon('cats', 'Player money')} Player money</h2></div>
       <div class="field-row">
         <label class="field">Cats
           <input type="number" id="money" min="0" value="${esc(s.world.money)}"></label>
@@ -2398,34 +2463,116 @@ function renderWorld() {
     </section>
 
     <section class="panel">
-      <div class="panel-head"><h2>World</h2></div>
+      <div class="panel-head"><h2>${icon('list', 'World')} World</h2>
+        <span class="muted">read-only</span></div>
       <div class="table-wrap"><table class="data-table kv"><tbody>
-        ${Object.entries(s.world).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(Array.isArray(v) ? v.map((n) => Math.round(n)).join(', ') : v)}</td></tr>`).join('')}
-        <tr><th>records in quick.save</th><td>${esc(s.recordCount)}</td></tr>
-        <tr><th>save directory</th><td>${esc(s.save.dir)}</td></tr>
+        ${worldRows(s)}
       </tbody></table></div>
     </section>`;
 }
 
+/*
+ * Backups.
+ *
+ * Every edit takes one automatically, so this list only ever grows — 37 after a
+ * single afternoon on this machine — and the page has to stay readable at 300.
+ * Three things follow from that, and they are the whole design:
+ *
+ *  1. **Show one save's backups.** Restoring save1 from save2's backup is not a
+ *     thing anyone wants; the other saves' rows are noise around the row you
+ *     came for. "All saves" is one checkbox away.
+ *  2. **Show the recent ones.** A restore point older than the last 25 edits is
+ *     something you go looking for deliberately, so it is behind "Show all".
+ *  3. **The id is not information.** `save1__2026-08-05T13-31-43-351Z` is the
+ *     save name and the timestamp, both of which have their own column. It was
+ *     the widest column in the table and said nothing the other two didn't.
+ *
+ * Restore keeps `.btn--danger` (style guide §3 — it replaces a whole save
+ * directory). The rule that a repeated row should not carry a loud button is
+ * satisfied by there being few rows, not by understating what the button does.
+ */
+
+/** "Today 14:31" / "Yesterday 14:31" / "3 Aug 14:31", in the user's own zone. */
+function whenLabel(iso) {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return iso;
+  const time = t.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const yesterday = new Date(midnight); yesterday.setDate(yesterday.getDate() - 1);
+  if (t >= midnight) return `Today ${time}`;
+  if (t >= yesterday) return `Yesterday ${time}`;
+  return `${t.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/**
+ * A backup's label, split into what it was and whether the editor took it
+ * itself. The `auto: ` prefix is on 36 of this machine's 37 backups, so as a
+ * column it is pure repetition; as a badge it is the one bit that matters.
+ */
+function backupLabel(b) {
+  const auto = b.label.startsWith('auto: ');
+  return `<span class="item-name">
+      <span>${esc(auto ? b.label.slice(6) : b.label)}</span>
+      ${auto ? '' : '<span class="badge badge--accent">manual</span>'}
+    </span>`;
+}
+
+const BACKUP_PAGE = 25;
+
 async function renderBackups() {
-  const list = await API.backups();
+  const all = await API.backups();
+  const f = state.backupFilter;
+  const mine = f.allSaves || !state.save ? all : all.filter((b) => b.saveName === state.save);
+  const shown = f.showAll ? mine : mine.slice(0, BACKUP_PAGE);
+  const hidden = mine.length - shown.length;
+
+  // No file-count column: a backup is the whole directory, so it is the same
+  // number on every row of a given save (447 here) and a column of one repeated
+  // figure is a column of nothing. It rides along in the row's tooltip, and the
+  // restore receipt reports it for the one that matters.
+  const rows = shown.map((b) => `<tr>
+      <td class="shrink" title="${esc(b.createdAt)}">${esc(whenLabel(b.createdAt))}</td>
+      <td title="${esc(plural(b.files ?? 0, 'file'))}">${backupLabel(b)}</td>
+      ${f.allSaves ? `<td class="muted shrink">${esc(b.saveName)}</td>` : ''}
+      <td class="shrink"><span class="actions actions--end">
+        <button class="btn btn--xs btn--danger" data-restore="${esc(b.id)}" ${dis()}>Restore</button>
+        <button class="btn btn--xs btn--ghost" data-delete="${esc(b.id)}">Delete</button>
+      </span></td>
+    </tr>`).join('');
+
+  const table = shown.length
+    ? `<div class="table-wrap"><table class="data-table">
+        <thead><tr>
+          <th class="shrink">Taken</th><th>Before</th>
+          ${f.allSaves ? '<th class="shrink">Save</th>' : ''}<th class="shrink"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        ${hidden > 0 ? `<caption>${esc(plural(hidden, 'older backup'))} not shown.</caption>` : ''}
+      </table></div>`
+    : `<div class="empty-state"><strong>No backups yet</strong>${
+      all.length ? 'None for this save. Tick "All saves" to see the others.'
+        : 'One is taken automatically before every edit, so the first write will make one.'}</div>`;
+
   return `<section class="panel">
       <div class="panel-head">
-        <h2>Backups</h2>
+        <h2>${icon('backup', 'Backups')} Backups</h2>
+        <span class="muted">${esc(plural(mine.length, 'backup'))}${
+  f.allSaves || mine.length === all.length ? '' : ` of ${esc(all.length)}`}</span>
+      </div>
+      <p class="hint hint--block">One whole-directory backup is taken automatically before every
+        edit, and restoring one replaces the entire save directory — not just the file that changed.</p>
+      ${canWrite() ? '' : '<p class="hint note-warn">Close Kenshi to back up or restore. The game rewrites its save directory from memory, so a backup taken now could catch it mid-write, and a restore would be overwritten the next time you save.</p>'}
+
+      <div class="action-bar">
+        <span class="action-bar-label">${icon('backup', 'Show')} Show</span>
+        <label class="field-check"><input type="checkbox" id="backup-all-saves" ${f.allSaves ? 'checked' : ''}>
+          Every save, not just ${esc(state.save || 'this one')}</label>
+        ${mine.length > BACKUP_PAGE ? `<label class="field-check"><input type="checkbox" id="backup-show-all" ${f.showAll ? 'checked' : ''}>
+          All ${esc(mine.length)}, not just the newest ${esc(BACKUP_PAGE)}</label>` : ''}
         <button class="btn btn--primary" id="make-backup" ${dis()}>Back up ${esc(state.save || '')}</button>
       </div>
-      ${canWrite() ? '' : '<p class="hint">Close Kenshi to back up or restore. The game rewrites its save directory from memory, so a backup taken now could catch it mid-write, and a restore would be overwritten the next time you save.</p>'}
-      <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Backup</th><th>Label</th><th>Created</th><th class="shrink"></th></tr></thead>
-        <tbody>${list.map((b) => `<tr>
-          <td>${esc(b.id)}</td><td>${esc(b.label)}</td><td class="muted">${esc(b.createdAt)}</td>
-          <td class="shrink"><span class="actions actions--end">
-            <button class="btn btn--xs btn--danger" data-restore="${esc(b.id)}" ${dis()}>Restore</button>
-            <button class="btn btn--xs btn--ghost" data-delete="${esc(b.id)}">Delete</button>
-          </span></td>
-        </tr>`).join('') || '<tr><td colspan="4" class="muted">No backups yet.</td></tr>'}</tbody>
-      </table></div>
       <pre class="receipt" id="backup-receipt" hidden></pre>
+      ${table}
     </section>`;
 }
 
@@ -2469,12 +2616,12 @@ async function refresh() {
 function bulkDetails(result) {
   const r = (result.receipts || [])[0];
   if (!r || !r.characters) return null;
-  const lines = [`${r.itemsAdded} item(s) → ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  const lines = [`${plural(r.itemsAdded, 'item')} → ${plural(r.charactersTouched, 'character')} in ${plural(r.filesTouched, 'file')}`];
   for (const c of r.characters) {
     const got = c.added.map((a) => a.name).join(', ') || 'nothing';
     lines.push(`  ${c.name || '(unnamed)'} — ${got}`);
     if (c.displaced.length) lines.push(`      displaced: ${c.displaced.map((d) => d.name).join(', ')}`);
-    if (c.skipped.length) lines.push(`      skipped ${c.skipped.length} filled slot(s)`);
+    if (c.skipped.length) lines.push(`      skipped ${plural(c.skipped.length, 'filled slot')}`);
     for (const w of c.warnings) lines.push(`      ! ${w.text}`);
   }
   return lines;
@@ -2604,7 +2751,7 @@ function wireBulkEquip() {
     if (!loadout) return showReceipt(receipt, new Error('No loadout to apply.'));
 
     const targets = picked.map(({ c, file }) => ({ file, sid: c.sid }));
-    const label = `${loadout.label} → ${picked.length} character(s)`;
+    const label = `${loadout.label} → ${plural(picked.length, 'character')}`;
     return runMutation(applyBtn, receipt, label,
       () => API.equipMany(state.save, {
         targets,
@@ -2687,7 +2834,7 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
     const c = choice();
     if (isEmpty(c)) return showReceipt(receipt, new Error('Choose an armour tier, a weapon grade or a weapon level first.'));
 
-    const label = `re-graded gear on ${picked.length} character(s)`;
+    const label = `re-graded gear on ${plural(picked.length, 'character')}`;
     return runMutation(applyBtn, receipt, label,
       () => API.regradeMany(state.save, { targets: picked.map(({ c: ch, file }) => ({ file, sid: ch.sid })), ...c }),
       async (result) => {
@@ -2705,16 +2852,16 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
 function regradeDetails(result) {
   const r = (result.receipts || [])[0];
   if (!r || !r.characters) return null;
-  const lines = [`${r.itemsChanged} item(s) → ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  const lines = [`${plural(r.itemsChanged, 'item')} → ${plural(r.charactersTouched, 'character')} in ${plural(r.filesTouched, 'file')}`];
   for (const c of r.characters) {
-    lines.push(`  ${c.name || '(unnamed)'} — ${c.changed.length} item(s)`);
+    lines.push(`  ${c.name || '(unnamed)'} — ${plural(c.changed.length, 'item')}`);
     for (const it of c.changed) {
       const bits = [];
       if (it.before.level !== it.after.level) bits.push(`level ${it.before.level} → ${it.after.level}`);
       if (it.before.materialSid !== it.after.materialSid) bits.push('grade set');
       lines.push(`      ${it.name} (${SLOT_LABELS[it.section] || it.section}) — ${bits.join(', ')}`);
     }
-    if (c.skipped) lines.push(`      ${c.skipped} item(s) of an unknown kind left alone`);
+    if (c.skipped) lines.push(`      ${plural(c.skipped, 'item')} of an unknown kind left alone`);
   }
   return lines;
 }
@@ -2763,7 +2910,7 @@ function wireBulkUnequip({ receipt, rosterEntries }) {
     if (templateSid) body.templateSids = [templateSid];
 
     const what = slot ? (SLOT_LABELS[slot] || slot) : 'everything worn';
-    const label = `unequipped ${what} on ${picked.length} character(s)`;
+    const label = `unequipped ${what} on ${plural(picked.length, 'character')}`;
     return runMutation(applyBtn, receipt, label,
       () => API.unequipMany(state.save, body),
       async (result) => {
@@ -2794,7 +2941,7 @@ function fitDetails(result) {
 function unequipDetails(result) {
   const r = (result.receipts || [])[0];
   if (!r || !r.characters) return null;
-  const lines = [`${r.itemsMoved} item(s) → Carried, on ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  const lines = [`${plural(r.itemsMoved, 'item')} → Carried, on ${plural(r.charactersTouched, 'character')} in ${plural(r.filesTouched, 'file')}`];
   for (const c of r.characters) {
     const moved = c.moved.map((m) => `${m.name} (${SLOT_LABELS[m.from] || m.from})`).join(', ');
     lines.push(`  ${c.name || '(unnamed)'} — ${moved || 'nothing'}`);
@@ -2892,7 +3039,7 @@ function wireBulkItem({ receipt, rosterEntries }) {
       if (gradeSel && gradeSel.value) item.gradeId = gradeSel.value;
       if (qtyInput && qtyInput.value !== '') item.quantity = Number(qtyInput.value);
 
-      const label = `${pick.template.name} → ${picked.length} character(s)`;
+      const label = `${pick.template.name} → ${plural(picked.length, 'character')}`;
       return runMutation(applyBtn, receipt, label,
         () => API.equipMany(state.save, {
           targets: picked.map(({ c, file }) => ({ file, sid: c.sid })),
@@ -3297,7 +3444,7 @@ function wireResearch() {
   applyBtn.onclick = () => {
     const sids = [...state.researchSel];
     if (!sids.length) return undefined;
-    return run(applyBtn, sids, `unlocked ${sids.length} tech(s)`);
+    return run(applyBtn, sids, `unlocked ${plural(sids.length, 'tech')}`);
   };
 
   for (const btn of panel.querySelectorAll('.research-one')) {
@@ -3353,7 +3500,7 @@ function wireSquadPanel() {
       const file = tpFile ? tpFile.value : groupFiles[0];
       const squad = (state.status.squads || []).find((q) => q.file === file);
       const n = squad ? squad.characters.length : 0;
-      tpNote.textContent = `${n} character(s) to ${l.name}${l.faction ? ` (${l.faction})` : ''} at ${Math.round(l.x)}, ${Math.round(l.z)}.`;
+      tpNote.textContent = `${plural(n, 'character')} to ${l.name}${l.faction ? ` (${l.faction})` : ''} at ${Math.round(l.x)}, ${Math.round(l.z)}.`;
     };
     tpSel.onchange = describe;
     if (tpFile) tpFile.onchange = describe;
@@ -3635,7 +3782,7 @@ function wire() {
         if (input.value !== input.dataset.initial && !Number.isNaN(value)) changed[input.dataset.stat] = value;
       });
       if (Object.keys(changed).length === 0) return showReceipt(receipt, new Error('No stats changed.'));
-      return run(statsBtn, `${Object.keys(changed).length} stat(s) set`,
+      return run(statsBtn, `${plural(Object.keys(changed).length, 'stat')} set`,
         () => API.setStats(state.save, file, sid, changed));
     };
 
@@ -3969,6 +4116,19 @@ function wire() {
   const keepReceipt = (label, details) => async (result) => {
     state.panelReceipt = { result, label, details: details ? details(result) : null };
   };
+
+  // View-only filters: neither writes anything, so both just re-render.
+  const allSaves = document.getElementById('backup-all-saves');
+  if (allSaves) {
+    allSaves.onchange = () => {
+      state.backupFilter.allSaves = allSaves.checked;
+      render();
+    };
+  }
+  const showAll = document.getElementById('backup-show-all');
+  if (showAll) {
+    showAll.onchange = () => { state.backupFilter.showAll = showAll.checked; render(); };
+  }
 
   const mk = document.getElementById('make-backup');
   if (mk) {
