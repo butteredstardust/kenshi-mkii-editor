@@ -32,12 +32,19 @@ const scratchSave = fixture.scratchSave;
 // while the write goes to a copy of the fixture (see fixture.fixtureStatus()).
 const playerSquad = fixture.fixtureSquad;
 
+// Everything that resolves a template sid to a name, a kind, a coverage list or
+// a grade needs the game's own data on disk. Without it these assertions are not
+// failures, they are "nothing to check" — and CI runs on a machine that has
+// never seen Kenshi. Same guard as vendors.test.js.
+const hasInstall = !!paths.installDir();
+
 const ITEM = saveService.T.ITEM;
 const countItems = (parsed) => parsed.records.filter((r) => r.type === ITEM).length;
 
 // ------------------------------------------------------------- catalogues --
 
-test('every loadout resolves and every section is legal for its item kind', () => {
+test('every loadout resolves and every section is legal for its item kind', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   const result = loadouts.validate();
   assert.strictEqual(result.ok, true);
   assert.deepStrictEqual(result.unresolved, [],
@@ -68,7 +75,8 @@ test('a loadout tagged "full" dresses every armour slot the game itself uses', (
   }
 });
 
-test('the catalogue covers a real spread of archetypes, not variations on one', () => {
+test('the catalogue covers a real spread of archetypes, not variations on one', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   const rows = loadouts.catalogue();
   assert.ok(rows.length >= 20, `expected 20+ loadouts, got ${rows.length}`);
 
@@ -139,7 +147,8 @@ test('backpack templates (typecode 46) are offered and mint a live-shaped record
 
 // -------------------------------------------------- weapon grade (company) --
 
-test('a grade is the (company, model) PAIR — gradeId resolves it exactly', () => {
+test('a grade is the (company, model) PAIR — gradeId resolves it exactly', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   const grades = gamedata.weaponGrades();
   assert.ok(grades.length > 0);
   for (const g of grades) assert.strictEqual(g.id, `${g.companySid}|${g.modelSid}`);
@@ -167,7 +176,8 @@ test('a grade is the (company, model) PAIR — gradeId resolves it exactly', () 
 
 // -------------------------------------------------------------- fitCheck --
 
-test('fitCheck warns only about parts a character actually lacks', () => {
+test('fitCheck warns only about parts a character actually lacks', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   const helmet = loadouts.find('ancient-samurai').items.find((i) => i.section === 'head');
   const coverage = gamedata.lookup(helmet.templateSid).partCoverage;
   assert.ok(coverage && coverage.length, 'the helmet template should carry part coverage rows');

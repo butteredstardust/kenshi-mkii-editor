@@ -21,6 +21,11 @@ const scratchSave = fixture.scratchSave;
 // player's live save folder (see fixture.fixtureStatus()).
 const playerSquad = fixture.fixtureSquad;
 
+// Town placements come from the INSTALL's world data, so a machine that has
+// never seen Kenshi has no towns for a recruit's `where` to resolve against.
+// Same guard as vendors.test.js.
+const hasInstall = !!paths.installDir();
+
 // ------------------------------------------------------------- catalogue --
 
 test('the location catalogue only carries real world positions', (t) => {
@@ -100,7 +105,8 @@ test('catalogued town positions agree with where the save says those towns are',
   assert.ok(checked > 0, 'no garrisoned town could be cross-checked against the save');
 });
 
-test('recruit locations resolve against the towns this install actually has', () => {
+test('recruit locations resolve against the towns this install actually has', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   for (const r of recruits.catalogue()) {
     assert.ok(Array.isArray(r.where), `${r.name} has no where[]`);
     assert.ok(Array.isArray(r.locations));
