@@ -17,3 +17,10 @@ webapp/.fixtures/
 
 # Playwright MCP scratch output from UI verification runs.
 .playwright-mcp/
+
+# Installer build output. build.ps1 stages a full copy of the app (node_modules
+# and a bundled node.exe included) and Inno Setup writes the setup .exe and the
+# generated .iss beside it.
+releases/build/
+releases/*.exe
+releases/*.iss

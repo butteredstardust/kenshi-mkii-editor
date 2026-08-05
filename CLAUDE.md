@@ -17,6 +17,13 @@ Other canonical docs:
 - **`docs/ui-style-guide.md`** — the design system and the rules for adding UI.
   Read it before touching anything in `webapp/public/`.
 - **`README.md`** — what the project is and how to run it.
+- **`INSTALL_GUIDE.md`** — installing from the installer or from source, the
+  paths and env vars, troubleshooting, and how `releases/build.ps1` packages the
+  app. Read it before touching `releases/` or `webapp/bin/`.
+- **`ACKNOWLEDGEMENTS.md`** — game-data attribution and third-party licences.
+  Add an entry here when you add a dependency or ship derived game data.
+- **`CHANGELOG.md`** — user-facing history. Add to `## [Unreleased]` when a
+  change is something a user would notice.
 
 There is no root `package.json`; every `npm`/`node` command runs from `webapp/`.
 

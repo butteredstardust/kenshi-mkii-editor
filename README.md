@@ -14,6 +14,15 @@ runtime dependency.
 - Kenshi installed (the editor reads `gamedata.base` and your workshop mods to
   turn internal ids into readable names)
 
+## Install
+
+Two routes, both covered step by step in [`INSTALL_GUIDE.md`](INSTALL_GUIDE.md):
+
+- **Windows installer** — `kenshi-mkii-editor-<version>.exe`. Per-user, no
+  elevation, bundles its own Node runtime, works offline. Build one from a
+  checkout with `powershell -ExecutionPolicy Bypass -File releases\build.ps1`.
+- **From source** — the three commands below.
+
 ## Run
 
 ```bash
@@ -63,11 +72,25 @@ node webapp/scripts/status.js save1    # a named save
 
 ## Docs
 
+- [`INSTALL_GUIDE.md`](INSTALL_GUIDE.md) — installing, running, troubleshooting,
+  and building the installer
 - [`AGENTS.md`](AGENTS.md) — architecture, safety model, conventions, API
 - [`docs/save-format.md`](docs/save-format.md) — the binary format and how it
   was reverse-engineered
+- [`docs/ui-style-guide.md`](docs/ui-style-guide.md) — the design system and the
+  rules for adding UI
 - [`tools/py-reference/`](tools/py-reference/) — the independent Python
   implementation used to derive and cross-check the format
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed between versions
+- [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) — game-data attribution,
+  third-party licences, and the unofficial-project disclaimer
+
+## Licence
+
+MIT, for the editor's source code — see [`webapp/LICENSE`](webapp/LICENSE). The
+bundled item catalog derives from the Kenshi Wiki on Fandom and is redistributed
+under CC BY-SA 3.0. This project is unofficial and not affiliated with Lo-Fi
+Games; details in [`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md).
 
 ## Status
 

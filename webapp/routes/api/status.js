@@ -16,10 +16,15 @@ const research = require('../../services/researchService');
 const racesService = require('../../services/racesService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
+const pkg = require('../../package.json');
+
+const APP_ID = 'kenshi-mkii-editor';
 
 const router = express.Router();
 
-router.get('/health', handle(async () => ({ ok: true })));
+// The installed launcher polls this to decide whether the thing on the port is
+// *this* editor at *this* version, so it must keep reporting appId/appVersion.
+router.get('/health', handle(async () => ({ ok: true, appId: APP_ID, appVersion: pkg.version })));
 
 router.get('/status', handle(async () => {
   const saves = paths.listSaves();
