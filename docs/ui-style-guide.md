@@ -11,7 +11,10 @@ Canonical files:
 - `public/styles.css` — the design system. Tokens and components live here.
 - `public/modules/core.mjs` — `esc`, `num`, `inputNum`, `meter`, `numField`,
   `showReceipt`, `runMutation`.
-- `public/app.mjs` — the reference implementation. Copy its patterns.
+- `public/modules/` — the reference implementation. Copy its patterns. A tab
+  lives in `modules/features/<tab>.mjs`; the shell that renders and wires them
+  is `modules/system/shell.mjs`; `public/app.mjs` is only the entry point. See
+  AGENTS.md §1 for the full map.
 
 ---
 
@@ -39,7 +42,7 @@ one user on one machine. That drives every decision below:
   - **Inline SVG glyphs are allowed where they carry information** — the
     equip-slot icons in the Gear rows encode which slot a row occupies, so they
     replace text rather than dress it up, and make a 30-item inventory scannable
-    by shape. Add them to `ICON_PATHS` in `app.mjs`, size them in `em`, and draw
+    by shape. Add them to `ICON_PATHS` in `modules/icons.mjs`, size them in `em`, and draw
     them in `currentColor` so they inherit tone instead of introducing a colour.
     An icon that merely sits next to a label it duplicates is decoration —
     delete it.

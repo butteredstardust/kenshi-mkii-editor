@@ -36,7 +36,7 @@ build step, one runtime dependency.
 | Runtime | Node.js `>=22`, no build step, no bundler |
 | Framework | Express 4.x, bound to `127.0.0.1` only |
 | Save format | Hand-derived binary codec (`webapp/services/kenshi/`), latin1, zero dependencies |
-| Frontend | Vanilla ES modules — `public/index.html` loads `public/app.mjs`; design system in `public/styles.css` |
+| Frontend | Vanilla ES modules, no bundler — `public/index.html` loads `public/app.mjs`, a six-line entry point; one module per tab under `public/modules/features/`; design system in `public/styles.css` |
 | Testing | Node's built-in runner (`node --test`), 183 tests, including a byte-identical round trip of your live save |
 | Dependencies | `express`, and nothing else |
 | Cross-check | An independent Python implementation in `tools/py-reference/`, used to derive the format and confirm suspicious results |

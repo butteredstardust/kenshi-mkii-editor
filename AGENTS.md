@@ -56,10 +56,36 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 
 ### Frontend
 
-`public/index.html` → `public/app.mjs`, with `public/modules/core.mjs`
-(`esc`, `num`, `bar`), `public/modules/api-client.mjs` (typed fetch wrappers,
-CSRF handling) and `public/modules/combo.mjs` (searchable dropdowns). Styles in
-`public/styles.css`.
+`public/index.html` → `public/app.mjs`, which is a **six-line entry point**: it
+imports `start()` from the shell and calls it. Everything else lives under
+`public/modules/`, and the split is by tab. Styles in `public/styles.css`.
+
+| File | Role |
+|---|---|
+| `modules/system/shell.mjs` | `boot`, `render`, `refresh`, `wire`, `savePicker`, the tab buttons. `render()` dispatches on `state.current` to the seven feature renderers; `wire()` owns the per-card loop and calls each feature's own `wire*()` |
+| `modules/state.mjs` | The single `state` object, `page`/`envEl`, `keyOf`, `findCharacter`, `canWrite`/`dis`. Every module reads state from here — there is no second copy |
+| `modules/nav.mjs` | `render`/`refresh`/`savePicker` as **live bindings**, set once by the shell via `setNav()`. This exists solely to break the cycle: the shell imports every feature, so a feature importing the shell back would close the loop |
+| `modules/features/squad.mjs` | Squad tab: the character card, stats, health, identity, add-member, teleport, rename |
+| `modules/features/gear.mjs` | Gear tab: the gear card and the whole bulk panel (equip / re-grade / unequip / give-one-item), with their wiring and receipt formatters |
+| `modules/features/roster.mjs` | The roster sidebar — shared by Squad and Gear, which is why it is its own module |
+| `modules/features/vendors.mjs`, `research.mjs`, `factions.mjs`, `world.mjs`, `backups.mjs` | One tab each, `render*` + `wire*` |
+| `modules/items.mjs` | The item vocabulary shared by Squad, Gear and Vendors: `itemRow`/`itemTable`/`itemSlotSelect`, the add-item picker, `packBlock`, `raceFitWarnings`, `fitNotice` |
+| `modules/slots.mjs` | Slot vocabulary: `EQUIP_SLOTS`/`ITEM_SLOTS`/`SLOT_LABELS`, `isWorn`, `carryFirst`/`wearFirst` |
+| `modules/grades.mjs` | The armour tier ladder and the weapon-grade select: `LEVEL_PRESETS`, `defaultGradeId()`, `gradeOptions()`, `tierLabel()` |
+| `modules/icons.mjs` | Inline SVG glyphs and `sectionSummary()` |
+| `modules/core.mjs` | `esc`, `num`, `inputNum`, `meter`, `plural`, `showReceipt`, `runMutation` |
+| `modules/api-client.mjs` | Typed fetch wrappers, CSRF handling |
+| `modules/combo.mjs` | Searchable dropdowns (below) |
+
+**Explicit ES imports only — there is no global registry and nothing is attached
+to `window`.** A dependency you cannot name in an `import` line is a dependency
+the next reader cannot find. When a genuine cycle appears, add a live binding to
+`nav.mjs` rather than reaching for a shared mutable bag; `nav.mjs` is deliberately
+tiny and its three exports are the entire set of things that need this.
+
+**A new tab is a new file in `modules/features/`**, exporting `renderX()` and
+`wireX()`, added to `render()`'s dispatch and `wire()`'s call list in
+`shell.mjs`. Nothing else should have to change.
 
 `combo.mjs` is a progressive enhancement, not a component: a MutationObserver on
 `#page` finds every `<select>` with more than five real options and puts a filter
