@@ -9,6 +9,8 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-05
+
 ### Added
 
 - Packaging: `releases/build.ps1` stages a runtime-only copy of `webapp/`,
