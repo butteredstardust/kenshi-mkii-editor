@@ -31,6 +31,16 @@ const ARCHETYPES = [
       { id: 'blunt', label: 'Blunt', skills: ['blunt'] },
       { id: 'polearms', label: 'Polearms', skills: ['poles'] },
       { id: 'heavy-weapons', label: 'Heavy weapons', skills: ['heavy weapons'] },
+      // `hackers` is Kenshi's SEVENTH melee weapon class (cleavers), not a
+      // computing skill — confirmed from the game's own data, not the name:
+      // the type-2 weapon template's `ints['skill category']` sorts Combat
+      // Cleaver, Moon Cleaver, Paladin's Cross, Short-Cleaver, Long Cleaver and
+      // Flesh Cleaver into category 4, alongside 0 Katanas, 1 Sabres, 2 Blunt,
+      // 3 Heavy weapons, 5 Martial arts and 8 Polearms — each of which already
+      // has a sub here. This one was missing, and the key was instead being
+      // handed out by the `researcher` sub below, which trained a scientist in
+      // swinging a cleaver.
+      { id: 'hackers', label: 'Hackers (cleavers)', skills: ['hackers'] },
       { id: 'unarmed', label: 'Unarmed / martial arts', skills: ['unarmed'] },
     ],
   },
@@ -73,7 +83,11 @@ const ARCHETYPES = [
     subs: [
       { id: 'field-medic', label: 'Field medic', skills: ['medic', 'ff'] },
       { id: 'doctor', label: 'Doctor', skills: ['doctor', 'medic'] },
-      { id: 'researcher', label: 'Researcher', skills: ['hackers', 'science'] },
+      // Was `['hackers', 'science']`. `hackers` is the cleaver weapon skill
+      // (see the soldier sub of that name) — a researcher has no business
+      // being trained in it. `engineer` is the build/repair skill that
+      // actually accompanies research.
+      { id: 'researcher', label: 'Researcher', skills: ['engineer', 'science'] },
     ],
   },
   {

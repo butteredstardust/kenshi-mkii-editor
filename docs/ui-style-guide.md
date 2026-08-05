@@ -211,6 +211,28 @@ Picker selection state belongs in `state`, keyed by `"<file>::<sid>"` like
 `trainChoice` — otherwise the re-render after a successful write clears the
 search and the user starts over to add a second item.
 
+### Long dropdowns filter themselves — you do not have to do anything
+
+Any `<select>` with **more than five** real options gets a filter box above it
+automatically (`public/modules/combo.mjs`, wired once by a MutationObserver on
+`#page`). Write the plain `<select>` and it happens; nothing about the control
+changes, so `.value`, `onchange` and `data-initial` diffs all still work.
+
+What is still yours to do:
+
+- **Group it.** Filtering finds a row you can already name; `<optgroup>` is what
+  helps someone who is browsing. Every long list in the app has headings — grades
+  band by ladder rank, loadouts by role tag, recruits by role, factions by
+  whether you have met them, towns by faction, worn items by slot. A group label
+  is matched by the filter too, so "sabres" finds the whole Sabres group.
+- **Put the searchable words in the option text.** The filter reads the option's
+  own label, not the blurb underneath it. That is why a Meitou recruit's option
+  says "· Meitou" — it is exactly what someone types.
+- **Opt out with `data-nofilter`** when the list is short, ORDERED and repeated:
+  the six-rung armour tier ladder carries it, because you read a ladder top to
+  bottom and six search boxes down a table crowd out the table. A 38-row grade
+  list in the same cell keeps its filter.
+
 ### One row, one commit
 
 A repeated row that can edit several fields gets **one** write button, not one
@@ -230,6 +252,16 @@ every control in the row a pending edit and commit them together:
   pair for weapons, so the row shows the named tier or the named grade, and the
   raw numbers live behind a per-row "More" disclosure. Never make a field
   unreachable to tidy the default view — move it, don't drop it.
+- **Ask in the player's vocabulary, and derive the rest.** A weapon has two
+  independent save fields, the grade pair and `ints.level`, and the UI used to
+  ask for both. A player has one word for that — "Meitou" — so a second box
+  asking for a number with no name in the game is friction that gets guessed at.
+  The panels now offer only the Grade, and the server writes the level from that
+  grade's own ladder rank (AGENTS.md §3). Two things make this honest rather
+  than magic: the pre-flight names the level the grade implies before the write,
+  and the raw field is still there under "More", where an explicit value wins.
+  Do this only where the derived value comes from real data — the rank is the
+  game's own number, not a curve this app invented.
 
 ### Defaults are a decision, and warnings are not refusals
 

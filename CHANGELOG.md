@@ -9,6 +9,41 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ## [Unreleased]
 
+### Added
+
+- **29 Meitou-wielder loadouts.** One per named character the game hands a
+  Meitou-grade weapon — General Hat-12, Mad Cat-Lon, Esata, Emperor Tengu, the
+  Crab Queen, Bugmaster, Eyegore and the rest — grouped by weapon class. Their
+  gear is not invented: every piece was read off that character's own type-1
+  CHARACTER template in your installed data, resolved in load order.
+- The same 29 characters as ready-made recruits, each linked to their loadout,
+  with race and power tier taken from their template's `race` and
+  `combat stats`. The recruit catalogue is now 75 entries.
+- **Hackers**, the cleaver weapon class, as a trainable soldier sub-archetype.
+- **Search boxes on long dropdowns.** Any list of more than five options gets a
+  filter above it — grades, loadouts, recruits, factions, towns, races. Typing
+  narrows the list, multiple words all have to match, and Enter picks the answer
+  when only one is left. The dropdown itself is unchanged, so keyboard and
+  screen-reader behaviour is the browser's own.
+- Grouped headings on the weapon-grade, faction and unequip-item dropdowns
+  (grades band by their ladder rank, factions by whether you have met them,
+  worn items by slot).
+
+### Changed
+
+- **Weapons are chosen by grade, not by level.** The "Weapon Level" number
+  input is gone from the Gear pages: picking a grade ("Meitou", "Edge Type 5")
+  now sets the weapon's level to that grade's own ladder rank, server-side. The
+  raw field is still editable under a row's "More", where an explicit value
+  still wins. Armour is untouched — its tier ladder was always the named control.
+- Fixed: the researcher sub-archetype trained the `hackers` skill, which is
+  Kenshi's cleaver weapon class rather than anything to do with research. It now
+  trains `engineer`, and `hackers` is grouped with the combat skills.
+- Fixed: Savant was catalogued as a heavy-weapons user (he wields a nodachi —
+  katanas), and Valamon and Longen as blunt and crossbows respectively (both
+  wield what this install calls a Flat Topper — sabres). All three now follow
+  the weapon's own `skill category`.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added

@@ -1220,7 +1220,19 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
     before.displacedSection = displaced ? section : null;
     itemRec.strings.set('section', section);
   }
+  // A grade chosen without a level brings its own: the ladder row's `rank` is
+  // on the same 0-100 scale `ints.level` uses, and a player asking for Meitou is
+  // asking for the whole thing, not for the manufacturer pair with the old
+  // level left underneath it. Still two independent fields — an explicit
+  // `level` in the same call wins, and this only fires when the record already
+  // has a `level` int to write (it always does; see TODO.md 2.2(a)).
+  let impliedLevel;
+  if (grade && levelValue === undefined && itemRec.ints.has('level')) {
+    impliedLevel = itemFactory.defaultLevelForGrade(grade);
+  }
+
   if (levelValue !== undefined) itemRec.ints.set('level', levelValue);
+  else if (impliedLevel !== undefined) itemRec.ints.set('level', impliedLevel);
   if (qualityValue !== undefined) itemRec.floats.set('quality', qualityValue);
   if (quantityValue !== undefined) itemRec.ints.set('quantity', quantityValue);
   if (grade) {
@@ -1244,6 +1256,7 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
       materialSid: asText(itemRec.strings.get('material sid') || ''),
       companySid: asText(itemRec.strings.get('company sid') || ''),
       grade: grade ? { id: grade.id, modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank } : null,
+      levelFromGrade: impliedLevel !== undefined,
       displacedSid: displaced ? displaced.sid : null,
       displacedSection: displaced ? 'main' : null,
     },
@@ -2631,6 +2644,19 @@ function regradeMany(saveDir, opts = {}) {
     grade = itemFactory.resolveGrade({ gradeId: weaponGradeId });
   }
 
+  // A grade with no explicit `weaponLevel` carries its own — the ladder row's
+  // `rank`, on the same 0-100 scale `ints.level` uses. Same rule as
+  // updateItem() and itemFactory.buildItemRecord(), so "make everything Meitou"
+  // means the same thing in all three places rather than leaving a squad's
+  // weapons at Meitou-with-a-level-of-20.
+  //
+  // Deliberately scoped to WEAPON_GRADE_TYPES, not WEAPON_LEVEL_TYPES: a
+  // crossbow (107) takes a level but has no manufacturer ladder, so a grade
+  // says nothing about it and must not move its level. An explicit
+  // `weaponLevel` still applies to both, exactly as before.
+  const impliedWeaponLevel = (grade && wLevel === null)
+    ? itemFactory.defaultLevelForGrade(grade) : null;
+
   let changedCount = 0;
 
   const { results, characters } = bulkOverTargets(saveDir, targets, ({ file, sid, name, bag, bySid }) => {
@@ -2653,7 +2679,8 @@ function regradeMany(saveDir, opts = {}) {
 
       const wantLevel = (armour !== null && ARMOUR_LEVEL_TYPES.has(tmpl.type)) ? armour
         : (wLevel !== null && WEAPON_LEVEL_TYPES.has(tmpl.type)) ? wLevel
-          : null;
+          : (impliedWeaponLevel !== null && WEAPON_GRADE_TYPES.has(tmpl.type)) ? impliedWeaponLevel
+            : null;
       if (wantLevel !== null && rec.ints.has('level') && rec.ints.get('level') !== wantLevel) {
         rec.ints.set('level', wantLevel);
         touched = true;
@@ -2693,7 +2720,8 @@ function regradeMany(saveDir, opts = {}) {
     charactersTouched: characters.length,
     filesTouched: results.length,
     armourLevel: armour,
-    weaponLevel: wLevel,
+    weaponLevel: wLevel !== null ? wLevel : impliedWeaponLevel,
+    weaponLevelFromGrade: wLevel === null && impliedWeaponLevel !== null,
     grade: grade ? {
       id: grade.id, modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank,
     } : null,

@@ -145,6 +145,57 @@ test('backpack templates (typecode 46) are offered and mint a live-shaped record
   );
 });
 
+test('every Meitou wielder carries a Meitou weapon of the class their tag names', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
+  const wielders = loadouts.catalogue().filter((l) => l.tags.includes('meitou'));
+  // 29 named characters: 2 blunt, 4 hackers, 4 heavy, 8 katanas, 4 polearms, 7 sabres.
+  assert.strictEqual(wielders.length, 29, `expected 29 Meitou wielders, got ${wielders.length}`);
+
+  // The class tag is checked against the game's OWN weapon-class field —
+  // `ints['skill category']` on the type-2 template — so a wrong tag is a test
+  // failure rather than a heading nobody notices. These are the six values this
+  // set covers; 5 (martial arts) has no weapon and so no wielder.
+  const CLASS_OF_TAG = {
+    katanas: 0, sabres: 1, blunt: 2, 'heavy-weapons': 3, hackers: 4, polearms: 8,
+  };
+
+  const byClass = new Map();
+  for (const l of wielders) {
+    const weapons = l.items.filter((it) => it.section === 'back' || it.section === 'hip');
+    assert.ok(weapons.length, `"${l.label}" is a Meitou wielder with no weapon`);
+    for (const w of weapons) {
+      assert.strictEqual(w.gradeId, loadouts.GRADE.meitou, `"${l.label}"'s ${w.name} is not Meitou`);
+      // No explicit level: the grade supplies it (defaultLevelForGrade).
+      assert.strictEqual(w.level, null, `"${l.label}"'s ${w.name} should let the grade set its level`);
+    }
+    const tag = Object.keys(CLASS_OF_TAG).find((k) => l.tags.includes(k));
+    assert.ok(tag, `"${l.label}" carries no weapon-class tag`);
+    byClass.set(tag, (byClass.get(tag) || 0) + 1);
+  }
+
+  // Every one of the six classes is represented — the set is defined by covering
+  // them, so a class dropping to zero means an entry was lost, not rebalanced.
+  for (const tag of Object.keys(CLASS_OF_TAG)) {
+    assert.ok(byClass.get(tag) > 0, `no Meitou wielder is tagged "${tag}"`);
+  }
+});
+
+test('the Hackers weapon class is a soldier sub, not a research skill', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
+  const archetypes = require('../services/archetypes');
+  const { skills } = archetypes.resolveSkills('soldier', 'hackers');
+  assert.ok(skills.includes('hackers'), 'the hackers sub must train the hackers skill');
+  // The bug this replaced: `researcher` handed out the cleaver weapon skill.
+  const research = archetypes.resolveSkills('medic', 'researcher');
+  assert.ok(!research.skills.includes('hackers'), 'a researcher must not be trained in cleavers');
+
+  // Each of the game's melee `skill category` values has exactly one sub.
+  const subs = new Set(archetypes.findMain('soldier').subs.map((s) => s.id));
+  for (const id of ['katanas', 'sabres', 'blunt', 'polearms', 'heavy-weapons', 'hackers', 'unarmed']) {
+    assert.ok(subs.has(id), `soldier has no "${id}" sub`);
+  }
+});
+
 // -------------------------------------------------- weapon grade (company) --
 
 test('a grade is the (company, model) PAIR — gradeId resolves it exactly', (t) => {
@@ -172,6 +223,45 @@ test('a grade is the (company, model) PAIR — gradeId resolves it exactly', (t)
       /does not match any ladder entry/);
   }
   assert.throws(() => itemFactory.resolveGrade({ gradeId: 'nope|nope' }), /not a known weapon grade id/);
+});
+
+test('a minted weapon takes its level from the grade, unless the caller names one', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
+  const grades = gamedata.weaponGrades();
+  if (!grades.length) return t.skip('this install has no weapon grade ladder');
+  // The UI no longer asks for a weapon level at all (it has no name in the
+  // game's vocabulary — a player asks for "Meitou"), so the grade has to carry
+  // it. `rank` is the ladder's own 0-100 number and the scale `ints.level` uses.
+  const meitou = grades.find((g) => g.id === loadouts.GRADE.meitou)
+    || [...grades].sort((a, b) => b.rank - a.rank)[0];
+  const weapon = loadouts.find('meitou-champion').items.find((i) => i.section === 'hip');
+
+  const implied = itemFactory.buildItemRecord(weapon.templateSid, { section: 'hip', gradeId: meitou.id });
+  assert.strictEqual(implied.record.ints.get('level'), meitou.rank);
+  assert.strictEqual(implied.meta.levelFromGrade, true);
+  assert.strictEqual(implied.meta.grade.id, meitou.id);
+
+  // Still two independent fields: an explicit level is not overruled.
+  const explicit = itemFactory.buildItemRecord(weapon.templateSid,
+    { section: 'hip', gradeId: meitou.id, level: 12 });
+  assert.strictEqual(explicit.record.ints.get('level'), 12);
+  assert.strictEqual(explicit.meta.levelFromGrade, false);
+
+  // No grade asked for: itemFactory defaults to the LOWEST rung (it must never
+  // silently hand out a high-tier weapon), so the level follows that rung —
+  // not the old flat 0, which produced "Rusted junk at level 0" either way but
+  // would now be a lie about the pair actually written.
+  const defaulted = itemFactory.buildItemRecord(weapon.templateSid, { section: 'hip' });
+  assert.strictEqual(defaulted.record.ints.get('level'), defaulted.meta.grade.rank);
+
+  // A crossbow (107) has no manufacturer ladder — `gradeId` is refused there,
+  // so there is nothing for a level to follow and it stays 0.
+  const bows = gamedata.itemTemplates().filter((r) => r.type === 107);
+  if (bows.length) {
+    const bow = itemFactory.buildItemRecord(bows[0].sid, { section: 'back' });
+    assert.strictEqual(bow.record.ints.get('level'), 0);
+    assert.strictEqual(bow.meta.levelFromGrade, false);
+  }
 });
 
 // -------------------------------------------------------------- fitCheck --

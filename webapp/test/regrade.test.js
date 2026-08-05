@@ -154,7 +154,7 @@ test('regradeMany sets every worn armour to one tier, in ONE staged edit', async
   }
 });
 
-test('regradeMany writes a weapon grade as the (company, material) PAIR, and leaves level alone', async (t) => {
+test('regradeMany writes a weapon grade as the (company, material) PAIR, and brings its level with it', async (t) => {
   const squad = playerSquad();
   if (!squad) return t.skip('no player squad');
   const picked = wearersOf(squad, 2);
@@ -164,10 +164,15 @@ test('regradeMany writes a weapon grade as the (company, material) PAIR, and lea
   const scratch = scratchSave();
   if (!scratch) return t.skip(fixture.NO_FIXTURE);
 
-  // Edge Type 5 if this install has it (the loadout catalogue's own id), else
-  // the top of whatever ladder there is.
-  const target = grades.find((g) => g.id === loadouts.GRADE.edge5)
-    || [...grades].sort((a, b) => b.rank - a.rank)[0];
+  // The grade must be one whose rank differs from what the weapons are already
+  // on, or this asserts nothing: an earlier version of this test picked Edge
+  // Type 5 (rank 80) against a fixture whose weapons were already at level 80,
+  // so it passed identically whether the level moved with the grade or not.
+  const worn = picked.flatMap((c) => (c.inventory || [])
+    .filter((it) => it.kindType === 2 && !saveService.ITEM_BUCKET_SLOTS.has(it.section)));
+  const target = [...grades].sort((a, b) => b.rank - a.rank)
+    .find((g) => worn.some((it) => it.level !== g.rank));
+  if (!target) return t.skip('every worn weapon already sits on every rank this ladder has');
 
   try {
     const receipt = await mutation.mutate(scratch.dir, 'test: regrade weapons',
@@ -177,6 +182,10 @@ test('regradeMany writes a weapon grade as the (company, material) PAIR, and lea
       }));
 
     assert.strictEqual(receipt.receipts[0].grade.id, target.id);
+    // The receipt says the level came from the grade rather than the caller —
+    // the UI no longer offers a Weapon Level box, so this is what it reports.
+    assert.strictEqual(receipt.receipts[0].weaponLevelFromGrade, true);
+    assert.strictEqual(receipt.receipts[0].weaponLevel, target.rank);
 
     for (const c of picked) {
       const now = readCharacter(scratch.dir, squad.file, c.sid);
@@ -186,11 +195,58 @@ test('regradeMany writes a weapon grade as the (company, material) PAIR, and lea
           assert.strictEqual(it.gradeId, target.id, `${it.name} should carry the whole pair`);
           assert.strictEqual(it.materialSid, target.modelSid);
           assert.strictEqual(it.companySid, target.companySid);
-          // `level` is a separate field and this call never named it.
-          if (was) assert.strictEqual(it.level, was.level, 'grade must not move level');
+          // `level` and the pair are still two independent FIELDS; what changed
+          // is that a grade chosen without a level now supplies one, from the
+          // ladder row's own rank. See itemFactory.defaultLevelForGrade().
+          assert.strictEqual(it.level, target.rank,
+            `${it.name} should sit at the grade's own rank`);
         } else if (was) {
           assert.strictEqual(it.materialSid, was.materialSid, `${it.name} is not a weapon and must keep its material`);
+          // A crossbow (107) takes a level but has no manufacturer ladder, so a
+          // grade says nothing about it and must not move it.
+          if (it.kindType === 107) assert.strictEqual(it.level, was.level, `${it.name} has no grade ladder`);
         }
+      }
+    }
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('an explicit weaponLevel still wins over the one the grade implies', async (t) => {
+  const squad = playerSquad();
+  if (!squad) return t.skip('no player squad');
+  const picked = wearersOf(squad, 2, 1);
+  if (!picked.length) return t.skip('nobody in the fixture carries a weapon in a weapon slot');
+  const grades = gamedata.weaponGrades();
+  const target = grades.find((g) => g.id === loadouts.GRADE.meitou)
+    || [...grades].sort((a, b) => b.rank - a.rank)[0];
+  if (!target) return t.skip('this install has no weapon grade ladder');
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+
+  // Deliberately NOT the grade's rank: the two fields stay independent, and a
+  // caller that names a level is not overruled by the grade it chose alongside.
+  const explicit = target.rank === 7 ? 9 : 7;
+
+  try {
+    const receipt = await mutation.mutate(scratch.dir, 'test: grade plus explicit level',
+      (staging) => saveService.regradeMany(staging, {
+        targets: picked.map((c) => ({ file: squad.file, sid: c.sid })),
+        weaponGradeId: target.id,
+        weaponLevel: explicit,
+      }));
+
+    assert.strictEqual(receipt.receipts[0].weaponLevelFromGrade, false);
+    assert.strictEqual(receipt.receipts[0].weaponLevel, explicit);
+
+    for (const c of picked) {
+      const now = readCharacter(scratch.dir, squad.file, c.sid);
+      for (const it of now.inventory.filter((x) => x.kindType === 2
+        && !saveService.ITEM_BUCKET_SLOTS.has(x.section))) {
+        assert.strictEqual(it.level, explicit, `${it.name} should keep the level the caller named`);
+        assert.strictEqual(it.gradeId, target.id);
       }
     }
   } finally {

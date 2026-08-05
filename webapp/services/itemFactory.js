@@ -47,6 +47,29 @@ function isEquippableTemplateType(type) {
 }
 
 /**
+ * The `ints.level` a weapon of this grade should carry when the caller did not
+ * ask for one.
+ *
+ * WHY THIS EXISTS: `level` and the grade PAIR are two independent fields, and
+ * this file is emphatic about that elsewhere — writing one does not write the
+ * other, and nothing in the format links them. But a *player* has only one word
+ * for the concept: they ask for a Meitou katana, not for "a Meitou katana at
+ * level 100". Being prompted for a number on top of the name they already chose
+ * is the friction this removes. So the grade stays the only thing a caller
+ * picks, and `level` follows from it — while an explicitly supplied `level`
+ * still wins, because the two fields really are separate and this is a default,
+ * not a coupling.
+ *
+ * The ladder's own `rank` is that number: it is the type-51 company record's
+ * `v0` for that model, it already runs 0..100 across this install's 38 rows
+ * (Rusted junk 5, Catun No.1 30, Edge Type 5 80, Meitou 100), and it is the
+ * same scale `ints.level` uses on live weapons. Nothing here is invented.
+ */
+function defaultLevelForGrade(grade) {
+  return grade && Number.isInteger(grade.rank) ? grade.rank : 0;
+}
+
+/**
  * Resolve a caller's grade choice to exactly one ladder row.
  *
  * `gradeId` ("<companySid>|<modelSid>", from gamedataService.weaponGrades()) is
@@ -233,7 +256,13 @@ function buildItemRecord(templateSid, opts = {}) {
     // like a melee weapon's — this is NOT the user-facing "quality" tier
     // (that's `level`); do not confuse it with the template's own
     // floats.quality, which the live data disagrees with.
-    levelValue = Number.isInteger(level) ? level : 0;
+    //
+    // An unasked-for `level` on a graded weapon follows the grade's own rank
+    // (see defaultLevelForGrade) rather than falling to 0 — a Meitou katana at
+    // level 0 is the mismatch the old default produced every time the UI didn't
+    // ask for a number. An explicit `level` still wins; a crossbow (107) has no
+    // ladder, so `grade` is null there and this stays 0 as before.
+    levelValue = Number.isInteger(level) ? level : defaultLevelForGrade(grade);
     qualityValue = 100;
   }
 
@@ -296,6 +325,11 @@ function buildItemRecord(templateSid, opts = {}) {
       templateName: tmpl.name,
       templateType: tmpl.type,
       blueprint: blueprintMeta,
+      // What actually landed in `ints.level`, and whether the grade decided it.
+      // A receipt that says "Meitou" without this cannot show that the level
+      // moved too, which is the whole point of dropping the level input.
+      level: levelValue,
+      levelFromGrade: !Number.isInteger(level) && !!grade,
       grade: grade ? {
         id: grade.id,
         companySid: grade.companySid,
@@ -309,4 +343,6 @@ function buildItemRecord(templateSid, opts = {}) {
   };
 }
 
-module.exports = { buildItemRecord, resolveGrade, TEMPLATE_TYPES };
+module.exports = {
+  buildItemRecord, resolveGrade, defaultLevelForGrade, TEMPLATE_TYPES,
+};

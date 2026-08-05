@@ -281,8 +281,15 @@ test('recruits are grouped, and every group offers a real choice', () => {
     byGroup.set(r.group, (byGroup.get(r.group) || 0) + 1);
   }
   assert.ok(byGroup.size >= 8, `expected 8+ groups, got ${byGroup.size}`);
+  // Only a FLOOR, deliberately. This assertion used to cap a group at 6 as well,
+  // on the reasoning that a longer list is a wall to scroll. Two things retired
+  // the ceiling: the Meitou wielders were added as real characters filed under
+  // the role they actually play (13 of them land in "outcast" alone), and the
+  // picker they feed is now grouped AND searchable, so length costs nothing.
+  // The floor is the part that was ever load-bearing — a group of one is not a
+  // choice — and services/recruits.js `validate()` enforces the same number.
   for (const [g, n] of byGroup) {
-    assert.ok(n >= 4 && n <= 6, `group "${g}" has ${n} recruits; each should offer 4-5`);
+    assert.ok(n >= 4, `group "${g}" has only ${n} recruit(s); each should offer at least 4`);
   }
 
   // The groups the user asked for by name must exist.
@@ -293,7 +300,12 @@ test('recruits are grouped, and every group offers a real choice', () => {
 
   // Races are matched as substrings against the save's own race names, so a
   // typo would silently fall back to the default race rather than erroring.
-  const RACE_HINTS = ['human', 'shek', 'skeleton', 'sundemon', 'hive worker', 'hive soldier'];
+  // `hive` and `fishman` joined the list with the Meitou wielders: The Preacher
+  // and the Queen of the South are plain Hivers rather than a named caste, and
+  // King Gurgler is an Alpha Fishman. Both are real substrings of race names in
+  // this install; a save that has no donor of either still falls back to the
+  // default race, which is the documented behaviour of a hint.
+  const RACE_HINTS = ['human', 'shek', 'skeleton', 'sundemon', 'hive', 'hive worker', 'hive soldier', 'fishman'];
   for (const r of rows) {
     assert.ok(RACE_HINTS.includes(r.race), `${r.name} has unrecognised race hint "${r.race}"`);
   }

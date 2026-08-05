@@ -1,5 +1,6 @@
 import { API } from './modules/api-client.mjs';
 import { esc, num, inputNum, meter, plural, showReceipt, runMutation } from './modules/core.mjs';
+import { watchSelects } from './modules/combo.mjs';
 
 /*
  * Reference implementation for docs/ui-style-guide.md. New features compose the
@@ -87,7 +88,9 @@ const state = {
   // The bulk panel's two edits to gear the selection ALREADY owns, kept here for
   // the same reason as `bulk`: both re-render on success, and a form that snaps
   // back to its defaults contradicts the receipt that just said what was applied.
-  // { armourLevel, gradeId, weaponLevel, includeCarried, includePackContents }
+  // { armourLevel, gradeId, includeCarried, includePackContents } — no
+  // weaponLevel: the panel asks for a grade and the server takes the level from
+  // that grade's ladder rank. The route still accepts one; nothing sends it.
   bulkGear: null,
   bulkUnequip: null, // { slot, templateSid }
   pendingReceipt: null, // survives the re-render a mutation triggers (see wire())
@@ -201,12 +204,17 @@ function statField(statKey, label, value, min = 0) {
 // still renders, in the trailing "Other" group, so a modded save's extra
 // skills are never silently hidden.
 const SKILL_GROUPS = [
+  // `hackers` sits here, not under Science: it is the cleaver weapon class, the
+  // seventh of the game's own `skill category` values on a type-2 weapon
+  // template (4 = Combat Cleaver, Moon Cleaver, Paladin's Cross, Short-Cleaver).
+  // See services/archetypes.js, where the same mistake was training scientists
+  // in it.
   ['Combat', ['attack', 'defence', 'unarmed', 'katana', 'sabres', 'blunt', 'poles',
-    'heavy weapons', 'dodge', 'arrow defence', 'mass combat', 'warrior spirit', 'assassin']],
+    'heavy weapons', 'hackers', 'dodge', 'arrow defence', 'mass combat', 'warrior spirit', 'assassin']],
   ['Ranged', ['bow', 'turrets']],
   ['Crafting & labour', ['armour smith', 'weapon smith', 'bow smith', 'engineer',
     'robotics', 'cooking', 'farming', 'labouring']],
-  ['Science & medical', ['science', 'medic', 'doctor', 'hackers']],
+  ['Science & medical', ['science', 'medic', 'doctor']],
   ['Athletics & stealth', ['athletics', 'climbing', 'swimming', 'endurance', 'stealth',
     'lockpicking', 'thievery', 'tracking', 'survival', 'bluff']],
 ];
@@ -425,6 +433,62 @@ function defaultGradeId() {
   return (real || pool[0]).id;
 }
 
+/**
+ * Grade bands, for grouping the ladder in a `<select>`.
+ *
+ * 38 rows in one flat list is the same wall `loadoutGroups()` exists to break
+ * up, and worse here because the rows repeat: 14 of this install's 24 model
+ * sids appear under two manufacturers, so "Edge Type 5 — Homemade" sits right
+ * next to "Edge Type 5 — Edgewalkers" with nothing to say why.
+ *
+ * The banding is on the ladder's own `rank` — the type-51 company record's `v0`
+ * for that model — not on names, because names are what mods rewrite (this
+ * install's `rebirth.mod` renames the whole top band). Each entry is the
+ * INCLUSIVE lower bound of the band; they are checked from the top down.
+ */
+const GRADE_BANDS = [
+  [100, 'Meitou — the ladder’s top rung'],
+  [70, 'Superior (Edge Type)'],
+  [50, 'High (Mk III–VI)'],
+  [30, 'Standard (Catun / Industrial)'],
+  [15, 'Basic'],
+  [0, 'Junk'],
+];
+
+function gradeBandLabel(rank) {
+  const hit = GRADE_BANDS.find(([min]) => rank >= min);
+  return hit ? hit[1] : 'Other';
+}
+
+/**
+ * The `<optgroup>`/`<option>` markup for a weapon-grade select, worst band
+ * first (the ladder's own order). `selectedId` marks the current row, and a
+ * grade the ladder no longer knows — a save written against a mod set since
+ * removed — is kept as its own option rather than silently re-pointed at
+ * whatever sorts first.
+ */
+function gradeOptions(selectedId, currentLabel = null) {
+  const grades = state.weaponGrades || [];
+  const unknown = selectedId && !grades.some((g) => g.id === selectedId)
+    ? `<option value="${esc(selectedId)}" selected>${esc(currentLabel || 'current grade')}</option>`
+    : '';
+
+  const bands = new Map();
+  for (const g of grades) {
+    const label = gradeBandLabel(g.rank);
+    if (!bands.has(label)) bands.set(label, []);
+    bands.get(label).push(g);
+  }
+  // GRADE_BANDS is high-to-low; the select reads low-to-high like the ladder.
+  const ordered = [...GRADE_BANDS].reverse()
+    .map(([, label]) => [label, bands.get(label)])
+    .filter(([, rows]) => rows && rows.length);
+
+  return unknown + ordered.map(([label, rows]) => `<optgroup label="${esc(label)}">
+      ${rows.map((g) => `<option value="${esc(g.id)}" ${g.id === selectedId ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+    </optgroup>`).join('');
+}
+
 /** The default `level` for a newly created item of this template type. */
 const defaultLevelFor = (type) => (type === 3 ? DEFAULT_ARMOUR_LEVEL : undefined);
 
@@ -604,13 +668,16 @@ function itemRow(it) {
     // companies, so a modelSid-keyed <select> emits duplicate option values and
     // the server has to guess which manufacturer you meant.
     qualityCell = `<select class="item-field" data-field="gradeId" data-initial="${esc(it.gradeId || '')}" aria-label="Grade" ${dis()}>
-      ${it.gradeId && !grades.some((g) => g.id === it.gradeId)
-    ? `<option value="${esc(it.gradeId)}" selected>${esc(it.material || 'current')}</option>` : ''}
-      ${grades.map((g) => `<option value="${esc(g.id)}" ${g.id === it.gradeId ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+      ${gradeOptions(it.gradeId, it.material)}
     </select>`;
   } else if (hasQuality) {
     const named = LEVEL_PRESETS.some(([v]) => v === it.level);
-    qualityCell = `<select class="item-field" data-field="level" data-initial="${esc(it.level)}" aria-label="Quality tier" ${dis()}>
+    // `data-nofilter`: six rungs of an ORDERED ladder, Prototype to Masterwork,
+    // and this control is repeated once per equipped item. A search box over a
+    // list you read top to bottom is noise anywhere; six of them stacked down a
+    // table is noise that crowds out the table. The grade select next door has
+    // 38 unordered rows and keeps its filter.
+    qualityCell = `<select class="item-field" data-field="level" data-nofilter data-initial="${esc(it.level)}" aria-label="Quality tier" ${dis()}>
       ${named ? '' : `<option value="${esc(it.level)}" selected>Level ${esc(it.level)}</option>`}
       ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${v === it.level ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
     </select>`;
@@ -653,7 +720,7 @@ function itemRow(it) {
           <input type="number" class="item-field w-sm" data-field="quality" step="0.1" min="0"
             value="${esc(inputNum(it.quality))}" data-initial="${esc(inputNum(it.quality))}" ${dis()}></label>
         <span class="hint">Raw save fields. For armour, Level is the same value the tier above sets.
-          ${isWeapon ? 'For weapons, Level is separate from the grade and does not follow from it.' : ''}</span>
+          ${isWeapon ? 'For weapons, choosing a Grade already sets Level to that grade\'s rank — type a number here only to override it.' : ''}</span>
       </div>
     </td>
   </tr>`;
@@ -738,21 +805,24 @@ function addItemConfig(pick) {
   const isWeapon = t.type === 2;
   const isArmour = t.type === 3;
 
-  const levelControl = (isWeapon || isArmour) ? `
-    <label class="field">Level
-      <input type="number" class="add-item-level w-sm" step="1" min="0" max="100"
-        value="${esc(pick.level ?? '')}" placeholder="level"></label>
-    <label class="field">Preset
-      <select class="add-item-level-preset">
+  // Armour keeps its named tier ladder — that IS how a player names armour
+  // quality ("Masterwork"). A WEAPON does not: nobody asks for a level-80
+  // katana, they ask for an Edge Type 5, so the grade below is the only quality
+  // control offered and the server derives `ints.level` from the grade's own
+  // ladder rank (itemFactory.defaultLevelForGrade). The raw number is still
+  // reachable afterwards under a row's "More".
+  const levelControl = isArmour ? `
+    <label class="field">Armour tier
+      <select class="add-item-level-preset" data-nofilter>
         <option value="">choose…</option>
-        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}">${esc(label)} (${esc(v)})</option>`).join('')}
+        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${pick.level === v ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
       </select></label>` : '';
 
   const gradeControl = isWeapon ? `
     <label class="field">Grade
       <select class="add-item-grade">
         <option value="">lowest (default)</option>
-        ${(state.weaponGrades || []).map((g) => `<option value="${esc(g.id)}" ${pick.gradeId === g.id ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+        ${gradeOptions(pick.gradeId)}
       </select></label>` : '';
 
   const quantityControl = t.stackable ? `
@@ -779,7 +849,7 @@ function addItemConfig(pick) {
     <p class="hint add-item-collision"></p>
     <div class="add-item-fit"></div>
     ${t.slotsWidened ? '<p class="hint">Unrecognised kind — every slot is offered.</p>' : ''}
-    ${isWeapon ? '<p class="hint">Grade is the manufacturer/material pair; Level is separate.</p>' : ''}
+    ${isWeapon ? '<p class="hint">Grade is the manufacturer and material together — it sets the weapon\'s level too.</p>' : ''}
   </div>`;
 }
 
@@ -972,33 +1042,32 @@ function bulkPanel(picked) {
  * every weapon to Edge Type 5"). Doing it through the Gear row's Apply is one
  * staged edit — and one backup — per item, on a squad of ten that is a hundred.
  *
- * Two controls, not one, because the underlying field genuinely differs by kind
- * (the same split the per-row Quality cell makes): armour's tier is
- * `ints.level` on a named ladder, a weapon's grade is the company/material
- * pair. Weapon Level is a third, separate field and lives behind the same
- * "raw value" framing it has everywhere else.
+ * Two controls, and only two, because those are the two things a player names:
+ * armour's tier ("Masterwork") is `ints.level` on a named ladder, and a
+ * weapon's grade ("Meitou") is the company/material pair. There used to be a
+ * third — a raw Weapon Level box — and it was pure friction: the number has no
+ * name in the game's own vocabulary, and asking for it on top of the grade made
+ * people guess. The server now takes the level from the grade's own ladder rank
+ * (saveService.regradeMany -> itemFactory.defaultLevelForGrade), so choosing
+ * "Meitou" here really does mean the whole thing.
  */
 function bulkRegradeSection() {
   const g = state.bulkGear || {};
-  const grades = state.weaponGrades || [];
 
   return `<details class="section" id="bulk-regrade-section">
     ${sectionSummary('stats', 'Set the quality of what they already have')}
     <div class="section-body stack">
       <div class="field-row">
         <label class="field">Armour tier
-          <select id="bulk-regrade-armour" ${dis()}>
+          <select id="bulk-regrade-armour" data-nofilter ${dis()}>
             <option value="">leave alone</option>
             ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${g.armourLevel === v ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
           </select></label>
         <label class="field">Weapon grade
           <select id="bulk-regrade-grade" ${dis()}>
             <option value="">leave alone</option>
-            ${grades.map((x) => `<option value="${esc(x.id)}" ${g.gradeId === x.id ? 'selected' : ''}>${esc(x.modelName)} — ${esc(x.companyName)}</option>`).join('')}
+            ${gradeOptions(g.gradeId)}
           </select></label>
-        <label class="field">Weapon level
-          <input type="number" id="bulk-regrade-weapon-level" class="w-sm" step="1" min="0" max="100"
-            value="${esc(g.weaponLevel ?? '')}" placeholder="leave alone" ${dis()}></label>
       </div>
       <div class="field-row">
         <label class="field-check">
@@ -1012,7 +1081,7 @@ function bulkRegradeSection() {
         <button class="btn btn--primary" id="bulk-regrade-apply" ${dis()} disabled>Apply</button>
       </div>
       <p class="hint">Only what they are wearing, unless you widen it above. Nothing is added, removed or moved —
-        armour keeps its tier field, a weapon keeps its level; the grade is the manufacturer/material pair.</p>
+        a grade rewrites the weapon's manufacturer, material and level together; an armour tier rewrites its level.</p>
       <div id="bulk-regrade-preflight"></div>
     </div>
   </details>`;
@@ -1074,8 +1143,25 @@ function wornItemOptions(picked, slot, selected) {
   }
   worn.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
+  // Grouped by the slot the item is worn in. When the Slot filter above is set
+  // there is only ever one group, so the headings are dropped — a lone
+  // "Head" optgroup over a list already filtered to head slots is noise.
+  if (slot) {
+    return `<option value="">Any item</option>
+      ${worn.map((it) => `<option value="${esc(it.base)}" ${selected === it.base ? 'selected' : ''}>${esc(it.name)}</option>`).join('')}`;
+  }
+  const bySlot = new Map();
+  for (const it of worn) {
+    if (!bySlot.has(it.section)) bySlot.set(it.section, []);
+    bySlot.get(it.section).push(it);
+  }
+  // EQUIP_SLOTS order, not insertion order — head to boots, the way the Gear
+  // page already lists a character.
+  const ordered = [...EQUIP_SLOTS, 'backpack_attach'].filter((s) => bySlot.has(s));
   return `<option value="">Any item</option>
-    ${worn.map((it) => `<option value="${esc(it.base)}" ${selected === it.base ? 'selected' : ''}>${esc(it.name)} — ${esc(SLOT_LABELS[it.section] || it.section)}</option>`).join('')}`;
+    ${ordered.map((s) => `<optgroup label="${esc(SLOT_LABELS[s] || s)}">
+      ${bySlot.get(s).map((it) => `<option value="${esc(it.base)}" ${selected === it.base ? 'selected' : ''}>${esc(it.name)}</option>`).join('')}
+    </optgroup>`).join('')}`;
 }
 
 /** One `.preflight` row per character. Shared by the two panels below. */
@@ -1095,8 +1181,8 @@ function preflightRows(picked, describe) {
  * from the inventory already on the character; the server re-derives it.
  */
 function bulkRegradePreflight(picked, opts) {
-  const { armourLevel, gradeId, weaponLevel, includeCarried, includePackContents } = opts;
-  if (armourLevel === undefined && !gradeId && weaponLevel === undefined) return '';
+  const { armourLevel, gradeId, includeCarried, includePackContents } = opts;
+  if (armourLevel === undefined && !gradeId) return '';
 
   const inScope = (c) => {
     const own = (c.inventory || []).filter((it) => includeCarried || isWorn(it.section));
@@ -1110,17 +1196,15 @@ function bulkRegradePreflight(picked, opts) {
     const items = inScope(c);
     const armour = items.filter((it) => it.kindType === 3);
     const weapons = items.filter((it) => it.kindType === 2);
-    const bows = items.filter((it) => it.kindType === 107);
     const parts = [];
     if (armourLevel !== undefined && armour.length) {
       parts.push(`${esc(armour.length)} armour → ${esc(tierLabel(armourLevel))}`);
     }
     if (gradeId && weapons.length) {
       const g = (state.weaponGrades || []).find((x) => x.id === gradeId);
-      parts.push(`${esc(plural(weapons.length, 'weapon'))} → ${esc(g ? g.modelName : gradeId)}`);
-    }
-    if (weaponLevel !== undefined && (weapons.length || bows.length)) {
-      parts.push(`${esc(plural(weapons.length + bows.length, 'weapon level'))} → ${esc(weaponLevel)}`);
+      // Name the level the grade implies, so the preflight still says what is
+      // about to be written now that nobody typed the number.
+      parts.push(`${esc(plural(weapons.length, 'weapon'))} → ${esc(g ? `${g.modelName} (level ${g.rank})` : gradeId)}`);
     }
     return parts.map((p) => `<div>${p}</div>`).join('');
   });
@@ -1210,21 +1294,20 @@ function bulkItemConfig(pick, count) {
   const isWeapon = t.type === 2;
   const isArmour = t.type === 3;
 
-  const levelControl = (isWeapon || isArmour) ? `
-    <label class="field">Level
-      <input type="number" id="bulk-item-level" class="w-sm" step="1" min="0" max="100"
-        value="${esc(pick.level ?? '')}" placeholder="level"></label>
-    <label class="field">Preset
-      <select id="bulk-item-level-preset">
+  // Same split as addItemConfig(): armour has a named tier, a weapon has a
+  // grade and nothing else to ask for.
+  const levelControl = isArmour ? `
+    <label class="field">Armour tier
+      <select id="bulk-item-level-preset" data-nofilter>
         <option value="">choose…</option>
-        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}">${esc(label)} (${esc(v)})</option>`).join('')}
+        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${pick.level === v ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
       </select></label>` : '';
 
   const gradeControl = isWeapon ? `
     <label class="field">Grade
       <select id="bulk-item-grade">
         <option value="">lowest (default)</option>
-        ${(state.weaponGrades || []).map((g) => `<option value="${esc(g.id)}" ${pick.gradeId === g.id ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+        ${gradeOptions(pick.gradeId)}
       </select></label>` : '';
 
   const quantityControl = t.stackable ? `
@@ -1253,7 +1336,7 @@ function bulkItemConfig(pick, count) {
       </span>
     </div>
     ${t.slotsWidened ? '<p class="hint">Unrecognised kind — every slot is offered.</p>' : ''}
-    ${isWeapon ? '<p class="hint">Grade is the manufacturer/material pair; Level is separate.</p>' : ''}
+    ${isWeapon ? '<p class="hint">Grade is the manufacturer and material together — it sets the weapon\'s level too.</p>' : ''}
   </div>`;
 }
 
@@ -1755,15 +1838,18 @@ function addMemberSection(groups) {
   const raceSid = form.raceSid || (state.races.default && state.races.default.sid) || races[0].sid;
   const files = groups.map((g) => g.file);
 
-  // Grouped by role: 50 recruits in one flat list is unusable, and the groups
-  // are the point — each offers four or five real alternatives.
+  // Grouped by role: 75 recruits in one flat list is unusable, and the groups
+  // are the point — each offers at least four real alternatives. The list is
+  // filterable (public/modules/combo.mjs), and the filter matches an option's
+  // own text, which is why the Meitou marker is IN the label rather than only
+  // in the blurb below: "meitou" is exactly what someone types to find these.
   const byGroup = new Map();
   for (const r of state.recruits || []) {
     if (!byGroup.has(r.groupLabel)) byGroup.set(r.groupLabel, []);
     byGroup.get(r.groupLabel).push(r);
   }
   const recruitOptions = [...byGroup.entries()].map(([label, rows]) => `<optgroup label="${esc(label)}">
-      ${rows.map((r) => `<option value="${esc(r.id)}" ${form.recruitId === r.id ? 'selected' : ''}>${esc(r.name)} — ${esc(r.subLabel)}, ${esc(r.tierLabel)}</option>`).join('')}
+      ${rows.map((r) => `<option value="${esc(r.id)}" ${form.recruitId === r.id ? 'selected' : ''}>${esc(r.name)} — ${esc(r.subLabel)}, ${esc(r.tierLabel)}${r.meitou ? ' · Meitou' : ''}</option>`).join('')}
     </optgroup>`).join('');
 
   const cats = state.archetypes || [];
@@ -2392,12 +2478,33 @@ async function renderFactions() {
           <label class="field field--grow">Faction
             <select id="faction-focus">
               <option value="">choose…</option>
-              ${r.factions.map((f) => `<option value="${esc(f.sid)}" ${f.sid === state.factionFocus ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
+              ${factionFocusOptions(r.factions)}
             </select></label>
           <div id="faction-view">${factionViewTable()}</div>
         </div>
       </details>
     </section>`;
+}
+
+/**
+ * The 114 factions, grouped for the drill-down picker.
+ *
+ * Three headings, in the order they matter to the reader: the ones this save
+ * has actually met, the ones it has not, and the debug/placeholder records the
+ * catalogue marks `notReal` (which are real rows in the file and must stay
+ * reachable, but are never what someone is looking for). The same three
+ * distinctions the table above already filters on — this only makes them
+ * visible in the dropdown too.
+ */
+function factionFocusOptions(factions) {
+  const groups = [
+    ['Met', factions.filter((f) => !f.notReal && f.met)],
+    ['Not yet met', factions.filter((f) => !f.notReal && !f.met)],
+    ['Placeholder / debug', factions.filter((f) => f.notReal)],
+  ];
+  return groups.filter(([, rows]) => rows.length).map(([label, rows]) => `<optgroup label="${esc(label)}">
+    ${rows.map((f) => `<option value="${esc(f.sid)}" ${f.sid === state.factionFocus ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
+  </optgroup>`).join('');
 }
 
 /*
@@ -2786,7 +2893,6 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
   const armourSel = document.getElementById('bulk-regrade-armour');
   if (!armourSel) return () => {};
   const gradeSel = document.getElementById('bulk-regrade-grade');
-  const levelInput = document.getElementById('bulk-regrade-weapon-level');
   const carriedBox = document.getElementById('bulk-regrade-carried');
   const packBox = document.getElementById('bulk-regrade-pack');
   const applyBtn = document.getElementById('bulk-regrade-apply');
@@ -2799,19 +2905,20 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
     const out = {};
     if (armourSel.value !== '') out.armourLevel = Number(armourSel.value);
     if (gradeSel && gradeSel.value) out.gradeId = gradeSel.value;
-    if (levelInput && levelInput.value !== '') out.weaponLevel = Number(levelInput.value);
+    // No `weaponLevel`: the grade carries it. The route still accepts the field
+    // (a script or a future control may want it) — this panel simply no longer
+    // asks, so the server's derived value stands.
     out.includeCarried = !!(carriedBox && carriedBox.checked);
     out.includePackContents = !!(packBox && packBox.checked);
     return out;
   };
-  const isEmpty = (c) => c.armourLevel === undefined && !c.gradeId && c.weaponLevel === undefined;
+  const isEmpty = (c) => c.armourLevel === undefined && !c.gradeId;
 
   const sync = () => {
     const c = choice();
     state.bulkGear = {
       armourLevel: c.armourLevel,
       gradeId: c.gradeId,
-      weaponLevel: c.weaponLevel,
       includeCarried: c.includeCarried,
       includePackContents: c.includePackContents,
     };
@@ -2821,7 +2928,7 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
     if (preflightEl) preflightEl.innerHTML = bulkRegradePreflight(picked, c);
   };
 
-  for (const el of [armourSel, gradeSel, levelInput, carriedBox, packBox]) {
+  for (const el of [armourSel, gradeSel, carriedBox, packBox]) {
     if (!el) continue;
     el.onchange = sync;
     el.oninput = sync;
@@ -2832,7 +2939,7 @@ function wireBulkRegrade({ receipt, rosterEntries }) {
     const picked = rosterEntries();
     if (!picked.length) return showReceipt(receipt, new Error('Select at least one character first.'));
     const c = choice();
-    if (isEmpty(c)) return showReceipt(receipt, new Error('Choose an armour tier, a weapon grade or a weapon level first.'));
+    if (isEmpty(c)) return showReceipt(receipt, new Error('Choose an armour tier or a weapon grade first.'));
 
     const label = `re-graded gear on ${plural(picked.length, 'character')}`;
     return runMutation(applyBtn, receipt, label,
@@ -2999,22 +3106,18 @@ function wireBulkItem({ receipt, rosterEntries }) {
     if (!pick.template) { configEl.innerHTML = ''; refreshPreflight(); return; }
     configEl.innerHTML = bulkItemConfig(pick, rosterEntries().length);
 
-    const levelInput = document.getElementById('bulk-item-level');
+    // Armour only; a weapon is chosen by Grade alone now, so there is no level
+    // control to fill in and `presetSel` is simply absent for one.
     const presetSel = document.getElementById('bulk-item-level-preset');
     const gradeSel = document.getElementById('bulk-item-grade');
     const qtyInput = document.getElementById('bulk-item-quantity');
     const placeSel = document.getElementById('bulk-item-place');
     const skipBox = document.getElementById('bulk-item-skip');
 
-    // Preset quick-fills the Level box; it never submits on its own.
+    // The armour tier IS the choice now — it sets `level` directly rather than
+    // quick-filling a box that is no longer there.
     if (presetSel) presetSel.onchange = () => {
-      if (!presetSel.value) return;
-      levelInput.value = presetSel.value;
-      pick.level = Number(presetSel.value);
-      presetSel.value = '';
-    };
-    if (levelInput) levelInput.oninput = () => {
-      pick.level = levelInput.value === '' ? undefined : Number(levelInput.value);
+      pick.level = presetSel.value === '' ? undefined : Number(presetSel.value);
     };
     if (gradeSel) gradeSel.onchange = () => { pick.gradeId = gradeSel.value || undefined; };
     if (qtyInput) qtyInput.oninput = () => { pick.quantity = Number(qtyInput.value); };
@@ -3035,7 +3138,9 @@ function wireBulkItem({ receipt, rosterEntries }) {
       // Only the fields the server accepts (saveService EQUIP_ITEM_FIELDS) —
       // an unknown key is a 400, not a silently ignored option.
       const item = { templateSid: pick.template.sid, section: placeSel.value };
-      if (levelInput && levelInput.value !== '') item.level = Number(levelInput.value);
+      // `level` is sent only for armour. Omitting it for a weapon is what lets
+      // the server derive it from the grade (itemFactory.defaultLevelForGrade).
+      if (pick.level !== undefined) item.level = pick.level;
       if (gradeSel && gradeSel.value) item.gradeId = gradeSel.value;
       if (qtyInput && qtyInput.value !== '') item.quantity = Number(qtyInput.value);
 
@@ -3924,23 +4029,17 @@ function wire() {
         if (!pick || !pick.template) { configEl.innerHTML = ''; return; }
         configEl.innerHTML = addItemConfig(pick);
 
-        const levelInput = configEl.querySelector('.add-item-level');
+        // Armour only — see bulkItemConfig()/addItemConfig(): a weapon's quality
+        // is its Grade, and its level follows from that server-side.
         const presetSel = configEl.querySelector('.add-item-level-preset');
         const gradeSel = configEl.querySelector('.add-item-grade');
         const qtyInput = configEl.querySelector('.add-item-quantity');
         const sectionSel = configEl.querySelector('.add-item-section');
         const collision = configEl.querySelector('.add-item-collision');
 
-        // Preset is a quick-fill for the Level box, exactly like the per-row
-        // preset in the item table — it writes a number, it never submits.
+        // The armour tier is the value itself, not a quick-fill for a raw box.
         if (presetSel) presetSel.onchange = () => {
-          if (!presetSel.value) return;
-          levelInput.value = presetSel.value;
-          pick.level = Number(presetSel.value);
-          presetSel.value = '';
-        };
-        if (levelInput) levelInput.oninput = () => {
-          pick.level = levelInput.value === '' ? undefined : Number(levelInput.value);
+          pick.level = presetSel.value === '' ? undefined : Number(presetSel.value);
         };
         if (gradeSel) gradeSel.onchange = () => { pick.gradeId = gradeSel.value || undefined; };
         if (qtyInput) qtyInput.oninput = () => { pick.quantity = Number(qtyInput.value); };
@@ -3972,7 +4071,7 @@ function wire() {
         const addBtn = configEl.querySelector('.add-item-btn');
         addBtn.onclick = () => {
           const body = { templateSid: pick.template.sid, section: sectionSel.value };
-          if (levelInput && levelInput.value !== '') body.level = Number(levelInput.value);
+          if (pick.level !== undefined) body.level = pick.level;
           if (gradeSel && gradeSel.value) body.gradeId = gradeSel.value;
           if (qtyInput && qtyInput.value !== '') body.quantity = Number(qtyInput.value);
           return run(addBtn, `added ${pick.template.name}`,
@@ -4168,5 +4267,13 @@ document.querySelectorAll('.tabs button').forEach((b) => {
     render();
   };
 });
+
+// Long <select>s get a filter box. Started ONCE, before boot, as an observer
+// on the page root rather than a call at the end of wire(): render() replaces
+// #page wholesale and several panels write their own innerHTML afterwards, so
+// a single hook here covers every path that can produce a dropdown. See
+// public/modules/combo.mjs for why the native control is kept rather than
+// replaced.
+watchSelects(page);
 
 boot().catch((err) => { page.innerHTML = `<p class="critical">${esc(err.message)}</p>`; });

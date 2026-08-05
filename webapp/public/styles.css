@@ -731,3 +731,41 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * readable measure. */
 .shell-footer > p { margin: 0; max-width: 70ch; }
 .shell-footer code { color: var(--ink); }
+
+/* ---------------------------------------------------------------- combo --
+ * A long <select> with a filter box above it (public/modules/combo.mjs). The
+ * select is the real control and keeps every rule above; this only adds the
+ * search line, which is deliberately quieter than the thing it filters —
+ * smaller, shorter, and recessive until focused, so a card with several of
+ * these does not read as a wall of identical inputs. */
+.combo { display: flex; flex-direction: column; gap: var(--s1); }
+/* The select inside a combo must still fill the field it was sized to. */
+.combo > select { width: 100%; }
+
+.combo-bar { display: flex; align-items: center; gap: var(--s2); }
+
+.combo-filter {
+  flex: 1; min-width: 0;
+  min-height: var(--control-h-xs);
+  padding: 0 var(--s2);
+  font-size: var(--t-xs);
+  background: var(--surface);
+  border-color: var(--line-soft);
+  color: var(--ink-dim);
+}
+.combo-filter::placeholder { color: var(--muted); }
+.combo-filter:focus-visible { color: var(--ink); }
+/* Chrome/Safari draw their own clear affordance on type=search; it lands at a
+ * different height than this shortened box and looks bolted on. */
+.combo-filter::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+
+/* "12 of 38" / "no matches" — only rendered while a query is active. */
+.combo-count { font-size: var(--t-xs); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* In a table cell there is no .field to size against, and stretching the select
+ * to the column width clips its longest option ("Edge Type 5 — Homemad…").
+ * Let the select size to its own content there and the bar above it stretches
+ * to match, since .combo is a stretch-aligned column. */
+td .combo { min-width: 0; align-items: start; }
+td .combo > select { width: auto; max-width: 100%; }
+td .combo-bar { width: 100%; font-size: var(--t-xs); }

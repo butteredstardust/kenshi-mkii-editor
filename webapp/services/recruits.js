@@ -2,6 +2,7 @@
 
 const archetypes = require('./archetypes');
 const locations = require('./locationsService');
+const loadouts = require('./loadouts');
 
 /**
  * "Roll a recruit": ready-made squad members, grouped by the role they fill.
@@ -37,7 +38,37 @@ const locations = require('./locationsService');
  * doesn't resolve is reported as unresolved rather than dropped or guessed at.
  *
  * `group` is the archetype heading the UI files a recruit under. Every group
- * carries four or five options so each reads as a real choice.
+ * carries at least four options so each reads as a real choice.
+ *
+ * `loadoutId` (optional) names the entry in services/loadouts.js that IS this
+ * character's gear. It is a cross-reference, not a coupling: rolling a recruit
+ * still only writes stats, and validate() checks the id resolves so a renamed
+ * loadout surfaces as a test failure rather than a dead link in the UI.
+ *
+ * ===========================================================================
+ * THE MEITOU WIELDERS
+ * ===========================================================================
+ * The 29 entries tagged `meitou: true` below are the named characters the game
+ * hands a Meitou-grade weapon. Their `race`, `tier`, `archetype` and `sub` are
+ * all read off their own type-1 CHARACTER template in this install, not chosen:
+ *
+ *   ints['combat stats']            -> tier   (<40 green, 40-59 capable,
+ *                                              60-79 veteran, 80+ legend)
+ *   extra['race'][0].target         -> race
+ *   extra['weapons'][0].target      -> the weapon, whose type-2 template's
+ *                                      ints['skill category'] IS the sub:
+ *                                      0 katanas, 1 sabres, 2 blunt,
+ *                                      3 heavy-weapons, 4 hackers, 8 polearms
+ *
+ * That last step is why four of them are `sub: 'hackers'` — see the note on
+ * that sub in services/archetypes.js. It also corrected four entries that were
+ * already in this file and had the weapon class wrong by eye: Savant wields a
+ * Nodachi (katanas, not heavy weapons), Valamon and Longen both wield what this
+ * install calls a Flat Topper (sabres — Longen was filed as a crossbow
+ * marksman, and his template gives him combat 33, not 50).
+ *
+ * `group` is still editorial — it is a UI heading, and nothing in the data says
+ * whether the Crab Queen reads as a soldier or a duellist.
  */
 
 const TIERS = {
@@ -63,8 +94,11 @@ const GROUPS = [
 
 const RECRUITS = [
   // ------------------------------------------------------------- soldiers --
-  { id: 'valamon', name: 'Valamon', group: 'soldier', race: 'shek', archetype: 'soldier', sub: 'blunt', tier: 'legend',
-    blurb: 'Shek heavy. Game data gives him combat 80 and strength 40.',
+  // sub corrected from 'blunt': his template's weapon is a Flat Topper, whose
+  // `skill category` is 1 (Sabres).
+  { id: 'valamon', name: 'Valamon', group: 'soldier', race: 'shek', archetype: 'soldier', sub: 'sabres', tier: 'legend',
+    meitou: true, loadoutId: 'valamon',
+    blurb: 'Shek heavy. Game data gives him combat 80, strength 40 and a Meitou longsword.',
     where: ['Admag', 'Squin'] },
   { id: 'dust-king', name: 'Dust King', group: 'soldier', race: 'human', archetype: 'soldier', sub: 'katanas', tier: 'veteran',
     blurb: 'Bandit lord in a spiked helmet and a heart protector.',
@@ -81,9 +115,14 @@ const RECRUITS = [
 
   // ------------------------------------------------------------ duellists --
   { id: 'bugmaster', name: 'Bugmaster', group: 'duellist', race: 'human', archetype: 'soldier', sub: 'sabres', tier: 'legend',
-    blurb: 'Combat 95 and a Meitou-grade sabre, wearing a loincloth.',
+    meitou: true, loadoutId: 'bugmaster-meitou',
+    blurb: 'Combat 95 and a Meitou foreign sabre, wearing a loincloth.',
     where: ['Bad Teeth', 'The Hub'] },
-  { id: 'savant', name: 'Savant', group: 'duellist', race: 'sundemon', archetype: 'soldier', sub: 'heavy-weapons', tier: 'legend',
+  // sub corrected from 'heavy-weapons': a Nodachi's `skill category` is 0
+  // (Katanas). tier stays legend — his template's combat stats are 75, but the
+  // veteran band would understate a Meitou wielder the wiki calls a boss.
+  { id: 'savant', name: 'Savant', group: 'duellist', race: 'sundemon', archetype: 'soldier', sub: 'katanas', tier: 'legend',
+    meitou: true, loadoutId: 'savant-meitou',
     blurb: 'Combat 75 and a Meitou nodachi under police armour.',
     where: ['Black Desert City', 'Mongrel', "World's End"] },
   { id: 'seto', name: 'Seto', group: 'duellist', race: 'shek', archetype: 'soldier', sub: 'unarmed', tier: 'capable',
@@ -120,9 +159,6 @@ const RECRUITS = [
   { id: 'suki', name: 'Suki', group: 'ranger', race: 'hive worker', archetype: 'marksman', sub: 'crossbows', tier: 'capable',
     blurb: 'Drone who took to crossbows with alarming speed.',
     where: ['Flats Lagoon', 'Sho-Battai', 'Heft'] },
-  { id: 'longen', name: 'Longen', group: 'ranger', race: 'human', archetype: 'marksman', sub: 'crossbows', tier: 'veteran',
-    blurb: 'Robed marksman with a taste for bloodrum.',
-    where: ['Flats Lagoon', 'Black Scratch'] },
   { id: 'turret-hand', name: 'Nagi', group: 'ranger', race: 'human', archetype: 'marksman', sub: 'turrets', tier: 'capable',
     blurb: 'Would rather be behind a mounted crossbow than in front of one.',
     where: ['Heft', 'Bark'] },
@@ -231,6 +267,128 @@ const RECRUITS = [
   { id: 'cannibal', name: 'Skinner', group: 'outcast', race: 'human', archetype: 'soldier', sub: 'blunt', tier: 'capable',
     blurb: 'Best not to ask what he ate last week.',
     where: ['The Hub', 'Bad Teeth'] },
+
+  // =======================================================================
+  // MEITOU WIELDERS — see the block comment at the head of this file for how
+  // race / tier / sub were derived. Four more of them (Bugmaster, Savant,
+  // Valamon, Longen) are already above, corrected in place.
+  // =======================================================================
+
+  // --------------------------------------------------------- blunt (cat 2) --
+  { id: 'general-hat-12', name: 'General Hat-12', group: 'soldier', race: 'skeleton', archetype: 'soldier', sub: 'blunt', tier: 'legend',
+    meitou: true, loadoutId: 'general-hat-12',
+    blurb: 'Skeleton general of the Ashlands. Combat 80 and a Meitou heavy jitte.',
+    where: ['Black Desert City', "World's End"] },
+  { id: 'vault-warden', name: 'The Vault Warden', group: 'soldier', race: 'human', archetype: 'soldier', sub: 'blunt', tier: 'veteran',
+    meitou: true, loadoutId: 'vault-warden',
+    blurb: 'Full samurai plate and a Meitou jitte. Combat 70.',
+    where: ['Heft', 'Sho-Battai'] },
+
+  // ------------------------------------------------------- hackers (cat 4) --
+  { id: 'king-gurgler', name: 'King Gurgler', group: 'outcast', race: 'fishman', archetype: 'soldier', sub: 'hackers', tier: 'capable',
+    meitou: true, loadoutId: 'king-gurgler',
+    blurb: 'Fishman king. Strength 90, no clothes, and a Meitou combat cleaver.',
+    where: ['Port North', 'Black Scratch'] },
+  { id: 'the-preacher', name: 'The Preacher', group: 'outcast', race: 'hive', archetype: 'soldier', sub: 'hackers', tier: 'capable',
+    meitou: true, loadoutId: 'the-preacher',
+    blurb: 'Hiver zealot in a kusari zukin, with a Meitou moon cleaver.',
+    where: ['Mongrel', 'The Hub'] },
+  { id: 'holy-lord-phoenix', name: 'Holy Lord Phoenix', group: 'soldier', race: 'human', archetype: 'soldier', sub: 'hackers', tier: 'legend',
+    meitou: true, loadoutId: 'holy-lord-phoenix',
+    blurb: "Combat 85 in his own plate, with a Meitou Paladin's Cross.",
+    where: ['Blister Hill', 'Stack'] },
+  { id: 'head-of-agriculture', name: 'Head of Agriculture', group: 'artisan', race: 'skeleton', archetype: 'soldier', sub: 'hackers', tier: 'veteran',
+    meitou: true, loadoutId: 'head-of-agriculture',
+    blurb: 'Carries an ancient science book and a Meitou short-cleaver.',
+    where: ['Black Desert City', "World's End"] },
+
+  // ------------------------------------------------- heavy weapons (cat 3) --
+  { id: 'gorrillo', name: 'Gorrillo', group: 'outcast', race: 'human', archetype: 'soldier', sub: 'heavy-weapons', tier: 'capable',
+    meitou: true, loadoutId: 'gorrillo',
+    blurb: 'Strength 90 and a Meitou exile plank. Combat is only 45 — he swings it anyway.',
+    where: ['The Hub', 'Squin'] },
+  { id: 'mad-cat-lon', name: 'Mad Cat-Lon', group: 'soldier', race: 'skeleton', archetype: 'soldier', sub: 'heavy-weapons', tier: 'legend',
+    meitou: true, loadoutId: 'mad-cat-lon',
+    blurb: 'Combat 100, ranged 100, strength 85 — the highest numbers in the data, and a Meitou falling sun.',
+    where: ['Black Desert City'] },
+  { id: 'esata', name: 'Esata "The Stone Golem"', group: 'duellist', race: 'shek', archetype: 'soldier', sub: 'heavy-weapons', tier: 'legend',
+    meitou: true, loadoutId: 'esata-stone-golem',
+    blurb: 'The Shek queen. Combat 85, her own royal plate, and a Meitou fragment axe.',
+    where: ['Admag', 'Squin'] },
+  { id: 'mukai', name: 'Mukai The Mountain', group: 'soldier', race: 'shek', archetype: 'soldier', sub: 'heavy-weapons', tier: 'legend',
+    meitou: true, loadoutId: 'mukai-the-mountain',
+    blurb: 'Combat 80, a bandana, and a Meitou fragment axe.',
+    where: ['Admag', 'Squin', 'Shark'] },
+
+  // ------------------------------------------------------- katanas (cat 0) --
+  { id: 'general-jang', name: 'General Jang', group: 'soldier', race: 'skeleton', archetype: 'soldier', sub: 'katanas', tier: 'legend',
+    meitou: true, loadoutId: 'general-jang',
+    blurb: 'Combat 85 in ancient samurai plate, with a Meitou guardless katana.',
+    where: ['Black Desert City', "World's End"] },
+  { id: 'emperor-tengu', name: 'Emperor Tengu', group: 'duellist', race: 'sundemon', archetype: 'soldier', sub: 'katanas', tier: 'veteran',
+    meitou: true, loadoutId: 'emperor-tengu',
+    blurb: 'Combat 60, strength 40, and a Meitou katana under the imperial robe.',
+    where: ['Heft', 'Sho-Battai', 'Bark'] },
+  { id: 'dimak', name: 'Dimak', group: 'shadow', race: 'shek', archetype: 'soldier', sub: 'katanas', tier: 'capable',
+    meitou: true, loadoutId: 'dimak',
+    blurb: 'Shek in ninja rags with a Meitou ninja blade. Combat 40.',
+    where: ['Squin', 'The Hub'] },
+  { id: 'rhinobot', name: 'Rhinobot', group: 'outcast', race: 'skeleton', archetype: 'soldier', sub: 'katanas', tier: 'legend',
+    meitou: true, loadoutId: 'rhinobot',
+    blurb: 'A P4 unit at combat 80, strength 80, swinging a Meitou topper.',
+    where: ['Black Desert City', "World's End"] },
+  { id: 'lady-kana', name: 'Lady Kana', group: 'shadow', race: 'sundemon', archetype: 'soldier', sub: 'katanas', tier: 'capable',
+    meitou: true, loadoutId: 'lady-kana',
+    blurb: "Noble's robes, a mask, luxury goods and a Meitou wakizashi.",
+    where: ['Heft', 'Sho-Battai'] },
+  { id: 'slave-mistress-grace', name: 'Slave Mistress Grace', group: 'shadow', race: 'sundemon', archetype: 'soldier', sub: 'katanas', tier: 'capable',
+    meitou: true, loadoutId: 'slave-mistress-grace',
+    blurb: 'Martial-artist bindings under noble robes, and a Meitou wakizashi.',
+    where: ['Bark', 'Heft'] },
+  { id: 'slave-mistress-ren', name: 'Slave Mistress Ren', group: 'shadow', race: 'sundemon', archetype: 'soldier', sub: 'katanas', tier: 'capable',
+    meitou: true, loadoutId: 'slave-mistress-ren',
+    blurb: "Grace's counterpart, with the same robes and the same Meitou wakizashi.",
+    where: ['Bark', 'Heft'] },
+
+  // ------------------------------------------------------ polearms (cat 8) --
+  { id: 'screamer-the-false', name: 'Screamer the False', group: 'duellist', race: 'skeleton', archetype: 'soldier', sub: 'polearms', tier: 'capable',
+    meitou: true, loadoutId: 'screamer-the-false',
+    blurb: 'A Screamer MkI in armoured rags, with a Meitou heavy polearm.',
+    where: ['Black Desert City', 'Mongrel'] },
+  { id: 'crab-queen', name: 'Crab Queen', group: 'duellist', race: 'human', archetype: 'soldier', sub: 'polearms', tier: 'veteran',
+    meitou: true, loadoutId: 'crab-queen',
+    blurb: 'Combat 70 and strength 99, in the full crab shell, with a Meitou naginata.',
+    where: ['Port North', 'Black Scratch'] },
+  { id: 'queen-of-the-south', name: 'Queen of the South', group: 'outcast', race: 'hive', archetype: 'soldier', sub: 'polearms', tier: 'capable',
+    meitou: true, loadoutId: 'queen-of-the-south',
+    blurb: 'Southern Hive Queen. Strength 80, no armour at all, and a Meitou polearm.',
+    where: ['Bark', 'Heft'] },
+  { id: 'spider-foreman', name: 'Spider Foreman', group: 'outcast', race: 'skeleton', archetype: 'soldier', sub: 'polearms', tier: 'veteran',
+    meitou: true, loadoutId: 'spider-foreman',
+    blurb: 'Combat 75, nothing worn, and a Meitou staff.',
+    where: ['Black Desert City', 'Mongrel'] },
+
+  // -------------------------------------------------------- sabres (cat 1) --
+  { id: 'eyegore', name: 'Eyegore', group: 'soldier', race: 'hive soldier', archetype: 'soldier', sub: 'sabres', tier: 'legend',
+    meitou: true, loadoutId: 'eyegore',
+    blurb: 'Combat 90 and strength 99 in Azuchi blue plate, with a Meitou desert sabre.',
+    where: ['Heft', 'Bark'] },
+  { id: 'ponk', name: 'Ponk', group: 'outcast', race: 'skeleton', archetype: 'soldier', sub: 'sabres', tier: 'capable',
+    meitou: true, loadoutId: 'ponk',
+    blurb: 'Armoured rags on a skeleton frame, with a Meitou holed sabre.',
+    where: ['Black Desert City', 'Mongrel'] },
+  { id: 'red-sabre-boss', name: 'Red Sabre Boss', group: 'outcast', race: 'human', archetype: 'soldier', sub: 'sabres', tier: 'capable',
+    meitou: true, loadoutId: 'red-sabre-boss',
+    blurb: 'Strength 70, a bandana, a Meitou horse chopper and a great many stolen cats.',
+    where: ['Port North', 'Black Scratch'] },
+  { id: 'longen', name: 'Longen', group: 'trader', race: 'sundemon', archetype: 'soldier', sub: 'sabres', tier: 'green',
+    meitou: true, loadoutId: 'longen-meitou',
+    blurb: 'Robed, fond of bloodrum, combat 33 — and carrying a Meitou longsword.',
+    where: ['Flats Lagoon', 'Black Scratch'] },
+  { id: 'elder', name: 'Elder', group: 'duellist', race: 'skeleton', archetype: 'soldier', sub: 'sabres', tier: 'veteran',
+    meitou: true, loadoutId: 'elder',
+    blurb: 'A P4 unit at combat 75, wearing nothing, with a Meitou ringed sabre.',
+    where: ['Black Desert City', "World's End"] },
 ];
 
 function tier(id) {
@@ -284,6 +442,12 @@ function catalogue() {
       subLabel: sub.label,
       tier: r.tier,
       tierLabel: tier(r.tier).label,
+      meitou: !!r.meitou,
+      // The gear set that IS this character, when there is one. Resolved to a
+      // label here so the picker can offer "…and equip their kit" without a
+      // second round trip; null when the recruit has no matching loadout.
+      loadoutId: r.loadoutId || null,
+      loadoutLabel: r.loadoutId ? (loadouts.find(r.loadoutId) || {}).label || null : null,
       where: r.where || [],
       locations: found,
       unresolvedLocations: unresolved,
@@ -303,6 +467,11 @@ function validate() {
     tier(r.tier);
     if (!r.id || !r.name) throw new Error(`recruit entry missing id/name: ${JSON.stringify(r)}`);
     if (!known.has(r.group)) throw new Error(`recruit "${r.id}" is in unknown group "${r.group}"`);
+    // A dangling loadoutId would render as a recruit whose kit button does
+    // nothing. Caught here so renaming a loadout fails the test suite instead.
+    if (r.loadoutId && !loadouts.find(r.loadoutId)) {
+      throw new Error(`recruit "${r.id}" names unknown loadout "${r.loadoutId}"`);
+    }
     counts.set(r.group, (counts.get(r.group) || 0) + 1);
   }
   // Every group must offer a real choice, not one lonely option.

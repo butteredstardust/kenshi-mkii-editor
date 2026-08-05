@@ -1506,6 +1506,49 @@ test('updateItem re-grades a weapon, writing material and company sid together',
   }
 });
 
+test('updateItem takes a weapon\'s level from the grade, and an explicit level still wins', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemOfType(2);
+  const grades = gamedata.weaponGrades();
+  if (!found || !grades.length) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no weapon item or no grade ladder'); }
+
+  // The Gear row's Grade select is the only weapon-quality control the UI has
+  // now; there is no Weapon Level box to fill in beside it, so choosing a grade
+  // has to write the level too or every re-graded weapon keeps a stale one.
+  const { bySid: before } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+  const startLevel = before.get(found.itemSid).ints.get('level');
+  const target = [...grades].sort((a, b) => b.rank - a.rank).find((g) => g.rank !== startLevel);
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no grade whose rank differs from this weapon\'s level'); }
+
+  try {
+    const receipt = await mutation.mutate(scratch.dir, 'test: grade implies level',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid,
+        { gradeId: target.id }));
+
+    assert.strictEqual(receipt.receipts[0].after.levelFromGrade, true);
+    const { bySid } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+    const rec = bySid.get(found.itemSid);
+    assert.strictEqual(rec.ints.get('level'), target.rank, 'level should follow the grade\'s rank');
+    assert.strictEqual(rec.strings.get('material sid'), target.modelSid);
+    assert.strictEqual(rec.strings.get('company sid'), target.companySid);
+
+    // Naming a level in the same call keeps the two fields independent — the
+    // "More" panel's raw box, which is the one place a level is still typed.
+    const other = [...grades].sort((a, b) => a.rank - b.rank).find((g) => g.id !== target.id);
+    const receipt2 = await mutation.mutate(scratch.dir, 'test: grade plus explicit level',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid,
+        { gradeId: other.id, level: 3 }));
+    assert.strictEqual(receipt2.receipts[0].after.levelFromGrade, false);
+    const { bySid: after2 } = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid);
+    assert.strictEqual(after2.get(found.itemSid).ints.get('level'), 3);
+    assert.strictEqual(after2.get(found.itemSid).strings.get('company sid'), other.companySid);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
 test('updateItem rejects a grade on a non-weapon and an unknown grade sid, save byte-identical', async (t) => {
   const scratch = scratchSave();
   if (!scratch) return t.skip(fixture.NO_FIXTURE);
