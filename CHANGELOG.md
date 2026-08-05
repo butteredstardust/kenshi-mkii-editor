@@ -26,6 +26,36 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   library.
 - Documentation: `INSTALL_GUIDE.md`, `ACKNOWLEDGEMENTS.md`, `CHANGELOG.md` and
   `webapp/LICENSE` (MIT).
+- Attribution footer in the app itself: the unofficial notice and the CC BY-SA
+  credit for the item data were previously only in the installer.
+- GitHub Actions: CI on every push and pull request (syntax sweep, tests, a
+  server boot that asserts the loopback and CSRF guards, and an installer
+  build), and a manually dispatched release workflow that builds, checksums and
+  publishes the installer. CI runs without a Kenshi install, so it cannot
+  execute the round trip — the release workflow refuses to run unless the
+  round trip has been confirmed locally.
+
+### Fixed
+
+- **Restoring a backup was the one write path with no safety gate.** It could
+  run while Kenshi was open — the game rewrites its save directory from memory,
+  so the restore was silently discarded the next time the player saved — and it
+  could run in the middle of another edit. It is now held to the same two
+  preconditions as every other write.
+- **Restoring a backup deleted the save before copying the backup in.** Any
+  failure in that window — a full disk, an antivirus handle, the process dying
+  — destroyed the save with nothing left to fall back on. The backup is now
+  staged beside the save and swapped in, so the only moment the save does not
+  exist is between two renames, and a failed swap puts the original straight
+  back.
+- Taking a manual backup while Kenshi is running is refused, rather than
+  capturing whatever half-written state the game happens to be in.
+- The Backups page ignored two of the UI's hard rules: its controls stayed
+  enabled while Kenshi was running, and its failures died in the console instead
+  of a receipt — on the one page you visit when something has already gone
+  wrong. Deleting a backup now confirms first.
+- User-facing errors no longer cite `TODO.md`, an internal document that does
+  not ship. "`X` is not stackable" was the one a player would actually hit.
 
 ## [0.1.0] — 2026-08-05
 

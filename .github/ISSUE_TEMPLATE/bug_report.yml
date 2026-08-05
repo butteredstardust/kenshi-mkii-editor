@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in the editor misbehaved
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If the editor damaged a save, restore it from the Backups page first**,
+        then file this. Every change takes an automatic backup before it runs.
+
+        Do not attach a save file — they are large and contain your whole world.
+        If one is needed to reproduce the problem, we will ask.
+
+  - type: input
+    id: version
+    attributes:
+      label: Editor version
+      description: Shown in the installer, or run `node webapp/scripts/status.js` from a source checkout.
+      placeholder: '0.1.0'
+    validations:
+      required: true
+
+  - type: input
+    id: game-version
+    attributes:
+      label: Kenshi version
+      placeholder: '1.0.65'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer (.exe)
+        - From source
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: receipt
+    attributes:
+      label: The receipt or error text
+      description: >
+        Copy the receipt the editor showed, or the error from the console window.
+        Paste it as text, not a screenshot, so it can be searched.
+      render: text
+
+  - type: checkboxes
+    id: mods
+    attributes:
+      label: Confirmations
+      options:
+        - label: Kenshi was closed when I used the editor
+          required: true
+        - label: I have a backup of the save involved
+          required: false
+
+  - type: textarea
+    id: mods-list
+    attributes:
+      label: Workshop mods
+      description: >
+        Name resolution reads your installed mods and `mods.cfg` load order, so
+        a heavily modded setup is relevant. Roughly how many, and any large
+        overhaul mods.

@@ -161,6 +161,47 @@ async function mutate(saveDir, label, action) {
   }
 }
 
+/**
+ * A player-initiated restore, held to the same two preconditions as an edit.
+ *
+ * Restoring is the most destructive thing this app does — it replaces a whole
+ * save directory — and it used to be the one write path that ran ungated. Both
+ * gates matter here: Kenshi rewrites its save directory from memory on save, so
+ * restoring under a running game is overwritten the moment the player saves,
+ * and a restore racing an in-flight `mutate()` would swap the directory out
+ * from under an edit that has already hashed it.
+ *
+ * `backupService.restore()` stays ungated on purpose — mutate()'s rollback goes
+ * straight to it, and a rollback must never be refused.
+ */
+function restoreBackup(id) {
+  if (active) {
+    const err = new Error(`another edit is in progress: ${active}`);
+    err.status = 409;
+    throw err;
+  }
+  let manifest;
+  try {
+    manifest = backups.read(id);
+  } catch {
+    const err = new Error(`no such backup: ${id}`);
+    err.status = 404;
+    throw err;
+  }
+  if (isLiveSaveDir(manifest.sourceDir) && gameIsRunning()) {
+    const err = new Error('Kenshi is running — close the game before restoring a backup');
+    err.status = 409;
+    throw err;
+  }
+
+  active = `restore ${id}`;
+  try {
+    return backups.restore(id);
+  } finally {
+    active = null;
+  }
+}
+
 function state() { return { active }; }
 
-module.exports = { mutate, gameIsRunning, isLiveSaveDir, verifyParses, state };
+module.exports = { mutate, restoreBackup, gameIsRunning, isLiveSaveDir, verifyParses, state };

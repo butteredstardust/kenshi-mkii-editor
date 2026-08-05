@@ -686,3 +686,16 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .progress-figure strong { font-size: var(--t-xl); font-weight: 600; color: var(--ink); }
 /* A hint that closes a block rather than trailing a single control. */
 .hint--block { margin-bottom: var(--s4); }
+
+/* Attribution, not chrome: the CC BY-SA item data and the "unofficial" notice
+ * have to be visible somewhere in the app itself, not only in the installer.
+ * Recessive on purpose — it sits below the page and never competes with a
+ * receipt or a warning. */
+.shell-footer {
+  margin-top: var(--s6);
+  padding: var(--s4) var(--s5);
+  border-top: 1px solid var(--line);
+  color: var(--muted); font-size: var(--t-xs); line-height: 1.6;
+  max-width: 70ch;
+}
+.shell-footer code { color: var(--ink); }

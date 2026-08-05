@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Installing, running and troubleshooting
+    url: https://github.com/butteredstardust/kenshi-mkii-editor/blob/main/INSTALL_GUIDE.md
+    about: Paths, environment variables and the usual causes before you file a bug.
+  - name: The save format
+    url: https://github.com/butteredstardust/kenshi-mkii-editor/blob/main/docs/save-format.md
+    about: How the binary format works and what is still unknown.

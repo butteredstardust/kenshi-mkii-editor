@@ -2412,18 +2412,20 @@ async function renderBackups() {
   return `<section class="panel">
       <div class="panel-head">
         <h2>Backups</h2>
-        <button class="btn btn--primary" id="make-backup">Back up ${esc(state.save || '')}</button>
+        <button class="btn btn--primary" id="make-backup" ${dis()}>Back up ${esc(state.save || '')}</button>
       </div>
+      ${canWrite() ? '' : '<p class="hint">Close Kenshi to back up or restore. The game rewrites its save directory from memory, so a backup taken now could catch it mid-write, and a restore would be overwritten the next time you save.</p>'}
       <div class="table-wrap"><table class="data-table">
         <thead><tr><th>Backup</th><th>Label</th><th>Created</th><th class="shrink"></th></tr></thead>
         <tbody>${list.map((b) => `<tr>
           <td>${esc(b.id)}</td><td>${esc(b.label)}</td><td class="muted">${esc(b.createdAt)}</td>
           <td class="shrink"><span class="actions actions--end">
-            <button class="btn btn--xs btn--danger" data-restore="${esc(b.id)}">Restore</button>
+            <button class="btn btn--xs btn--danger" data-restore="${esc(b.id)}" ${dis()}>Restore</button>
             <button class="btn btn--xs btn--ghost" data-delete="${esc(b.id)}">Delete</button>
           </span></td>
         </tr>`).join('') || '<tr><td colspan="4" class="muted">No backups yet.</td></tr>'}</tbody>
       </table></div>
+      <pre class="receipt" id="backup-receipt" hidden></pre>
     </section>`;
 }
 
@@ -3952,18 +3954,49 @@ function wire() {
     };
   });
 
+  // Backups is the page you come to when something has already gone wrong, so
+  // it is the last place a failure may die in the console (style guide §2.5).
+  const backupReceipt = document.getElementById('backup-receipt');
+
+  // Every action on this page re-renders the table, which tears down the
+  // receipt element showReceipt() just wrote into. Stash it and let the next
+  // pass re-attach it, the same way the bulk panels do.
+  if (backupReceipt && state.panelReceipt) {
+    showReceipt(backupReceipt, state.panelReceipt.result,
+      { label: state.panelReceipt.label, details: state.panelReceipt.details });
+    state.panelReceipt = null;
+  }
+  const keepReceipt = (label, details) => async (result) => {
+    state.panelReceipt = { result, label, details: details ? details(result) : null };
+  };
+
   const mk = document.getElementById('make-backup');
-  if (mk) mk.onclick = async () => { await API.createBackup(state.save, 'manual'); render(); };
+  if (mk) {
+    mk.onclick = () => runMutation(mk, backupReceipt, 'backed up',
+      () => API.createBackup(state.save, 'manual'),
+      async (result) => { await keepReceipt('backed up', (r) => [r.id])(result); render(); });
+  }
 
   page.querySelectorAll('[data-restore]').forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm(`Restore ${b.dataset.restore}? This overwrites the live save directory.`)) return;
-      await API.restoreBackup(b.dataset.restore);
-      boot();
+    b.onclick = () => {
+      if (!confirm(`Restore ${b.dataset.restore}? This replaces the whole live save directory with this backup. Anything you have done in game since it was taken is lost.`)) return undefined;
+      return runMutation(b, backupReceipt, 'restored',
+        () => API.restoreBackup(b.dataset.restore),
+        async (result) => {
+          await keepReceipt('restored', (r) => [`${r.files} files into ${r.into}`])(result);
+          await boot();
+        });
     };
   });
   page.querySelectorAll('[data-delete]').forEach((b) => {
-    b.onclick = async () => { await API.deleteBackup(b.dataset.delete); render(); };
+    b.onclick = () => {
+      // A backup is the safety net. Deleting one is irreversible, and the
+      // button sits one row-width from Restore.
+      if (!confirm(`Delete backup ${b.dataset.delete}? This cannot be undone.`)) return undefined;
+      return runMutation(b, backupReceipt, 'deleted',
+        () => API.deleteBackup(b.dataset.delete),
+        async (result) => { await keepReceipt('deleted', (r) => [r.deleted])(result); render(); });
+    };
   });
 }
 

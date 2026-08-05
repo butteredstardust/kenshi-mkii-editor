@@ -85,6 +85,25 @@ Every write goes through `mutationService.mutate(saveDir, label, action)`:
 produce bytes and return them; installing bytes is `mutationService`'s job
 alone. `saveService.setPlayerMoney()` is the reference shape.
 
+### Restoring is the exception, and it is gated separately
+
+Restoring a backup replaces a whole directory rather than producing bytes, so it
+cannot go through `mutate()`. It gets its own gate,
+`mutationService.restoreBackup(id)`, which applies the same first two
+preconditions — no other mutation active, game closed if the target is a live
+save — and holds the same one-at-a-time lock while it runs.
+
+`backupService.restore(id)` underneath it stays deliberately **ungated**:
+`mutate()`'s step 11 calls it to roll back a failed edit, and a rollback must
+never be refused — that is precisely the moment a save is half-written. Call
+`mutationService.restoreBackup()` from anything user-facing; call
+`backupService.restore()` only from a rollback path.
+
+Restore stages the incoming copy beside the save and swaps it in, so the save is
+never deleted ahead of a copy that might fail. The staging directories are
+dot-prefixed, and `pathService.listSaves()` skips dot-prefixed directories so an
+orphan left by a crash can never be offered to the player as a save.
+
 ---
 
 ## 3. Format rules that will bite you
@@ -484,8 +503,8 @@ round-tripping the player's current save and refusing to write to it at all.
 | GET | `/api/saves/:name/factions/:sid/relations` | One faction's **full outgoing list** — how it sees everyone else, including the player (`isPlayer`) and itself (`isSelf`, always 100, never editable). `:sid` is a gamedata stringID, never a save record sid |
 | PUT | `/api/saves/:name/factions/relations` | **Set relations.** `{ changes: [{ from, to, relation }] }`, both ends named by gamedata stringID, however many in ONE staged edit — they all live in `quick.save`. Only updates a `relation<n>` float that already exists; a missing row is refused, never minted. The whole batch is validated before any of it is applied |
 | GET | `/api/backups` | List backups |
-| POST | `/api/backups` | Create a labelled backup |
-| POST | `/api/backups/:id/restore` | Restore a save directory from a backup |
+| POST | `/api/backups` | Create a labelled backup. Refused with 409 while Kenshi is running — a backup taken mid-write is what you would then restore |
+| POST | `/api/backups/:id/restore` | **Replace a save directory with a backup.** Gated by `mutationService.restoreBackup()`: 409 if another edit is active or the game is running, 404 if there is no such backup. Staged beside the save and swapped in, never deleted first |
 | DELETE | `/api/backups/:id` | Delete a backup |
 
 Mutating verbs require the `x-csrf-token` header from `GET /api/session`.

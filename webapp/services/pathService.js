@@ -66,7 +66,11 @@ function listSaves() {
   const root = saveRoot();
   if (!root) return [];
   return fs.readdirSync(root, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
+    // Kenshi never makes a dot-prefixed save directory. backupService's restore
+    // stages one beside the save for the moment it takes to swap them, and an
+    // orphan left by a crash must not then show up as a save the player can
+    // edit.
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
     .map((e) => {
       const dir = path.join(root, e.name);
       const quick = path.join(dir, 'quick.save');

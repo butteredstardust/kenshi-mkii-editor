@@ -58,7 +58,9 @@ node webapp/scripts/status.js save1    # a named save
 - Name resolution across ~62,000 stringIDs from base data plus every installed
   mod
 - Whole-directory backups with hash manifests, restore and delete
-- One reference mutation (player cats) exercising the full write pipeline
+- Edits: attributes and skills, wounds and vitals, inventory and equipment with
+  fit checks, weapon grades, faction relations, research, recruits and loadouts,
+  renaming, and teleporting a squad — all through the same write pipeline
 
 ## Safety
 

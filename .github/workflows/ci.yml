@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# CI runs on a machine with no Kenshi install, no save directory and no test
+# fixture, so most of the suite skips (see webapp/test/helpers/save-fixture.js).
+# What it does catch is syntax errors, broken requires, a server that will not
+# boot and a regression in the pure-logic tests. It is NOT the release gate —
+# that is `npm test` on a machine with a real save and a fixture, where the
+# byte-identical round trip actually executes. Run it locally before tagging;
+# a green tick here does not mean the codec still understands the format.
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: webapp
+
+      - name: Syntax-check every source file
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -Filter *.js -File |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' }
+          $failed = @()
+          foreach ($f in $files) {
+            & node --check $f.FullName
+            if ($LASTEXITCODE -ne 0) { $failed += $f.FullName }
+          }
+          if ($failed.Count) { throw "Syntax errors in:`n$($failed -join "`n")" }
+          Write-Host "$($files.Count) files parsed cleanly."
+
+      - name: Run tests
+        run: npm test
+        working-directory: webapp
+
+      # Boots the real server and asserts the loopback guard that protects a
+      # machine that can overwrite a save. Needs no game data, so it is one of
+      # the few things CI can genuinely verify.
+      - name: Smoke-test the server
+        shell: pwsh
+        working-directory: webapp
+        run: |
+          $server = Start-Process node -ArgumentList 'server.js' -PassThru -NoNewWindow
+          try {
+            $base = 'http://127.0.0.1:3080'
+            $up = $false
+            foreach ($i in 1..30) {
+              try {
+                $health = Invoke-RestMethod -Uri "$base/api/health" -TimeoutSec 2
+                $up = $true
+                break
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $up) { throw 'Server did not answer /api/health within 30s' }
+            Write-Host "health: $($health | ConvertTo-Json -Compress)"
+
+            $index = Invoke-WebRequest -Uri "$base/" -TimeoutSec 5
+            if ($index.StatusCode -ne 200) { throw "GET / returned $($index.StatusCode)" }
+
+            # A request addressed to anything but loopback must be refused.
+            try {
+              Invoke-WebRequest -Uri "$base/api/health" -Headers @{ Host = 'evil.example' } -TimeoutSec 5 | Out-Null
+              throw 'Host guard did not reject a non-loopback Host header'
+            } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+              if ($_.Exception.Response.StatusCode.value__ -ne 403) {
+                throw "Host guard returned $($_.Exception.Response.StatusCode.value__), expected 403"
+              }
+            }
+
+            # A mutating request without the session CSRF token must be refused.
+            try {
+              Invoke-WebRequest -Uri "$base/api/backups" -Method Post -TimeoutSec 5 | Out-Null
+              throw 'CSRF guard did not reject a token-less POST'
+            } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+              if ($_.Exception.Response.StatusCode.value__ -ne 403) {
+                throw "CSRF guard returned $($_.Exception.Response.StatusCode.value__), expected 403"
+              }
+            }
+
+            Write-Host 'Server smoke test passed.'
+          } finally {
+            if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
+          }
+
+  # Fails the build if the installer would not compile. Cheaper to find here
+  # than at release time.
+  installer:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          powershell -ExecutionPolicy Bypass -File releases/build.ps1 -IsccPath $iscc
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ github.sha }}
+          path: releases/kenshi-mkii-editor-*.exe
+          retention-days: 14

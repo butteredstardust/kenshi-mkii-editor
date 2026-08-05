@@ -74,9 +74,23 @@ function list() {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+/** A backup's manifest, or a thrown error if there is no such backup. */
+function read(id) {
+  return JSON.parse(fs.readFileSync(path.join(backupDir(id), 'manifest.json'), 'utf8'));
+}
+
+/**
+ * Put a backup back over the directory it came from.
+ *
+ * This is the low-level primitive, and it is deliberately ungated: it is also
+ * what `mutationService.mutate()` calls to roll back a failed edit, and a
+ * rollback must never be refused — that is the moment the save is half-written
+ * and needs putting right most. The game-running and concurrency gates for a
+ * player-initiated restore live in `mutationService.restoreBackup()`.
+ */
 function restore(id) {
   const dir = backupDir(id);
-  const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  const manifest = read(id);
   const src = path.join(dir, 'save');
 
   // Verify the backup itself before trusting it to overwrite a live save.
@@ -85,9 +99,38 @@ function restore(id) {
     if (current[rel] !== hash) throw new Error(`backup ${id} is corrupt: ${rel} hash mismatch`);
   }
 
-  fs.rmSync(manifest.sourceDir, { recursive: true, force: true });
-  copyDir(src, manifest.sourceDir);
-  return { restored: manifest.id, into: manifest.sourceDir, files: Object.keys(manifest.hashes).length };
+  // Copy first, swap second. Deleting the save and then copying into the hole
+  // it leaves means any failure mid-copy — a disk filling up, an antivirus
+  // holding a handle, the process dying — destroys the save with nothing left
+  // to fall back on. Here the only window in which the save directory does not
+  // exist is between two renames within one directory, and if the second one
+  // fails the original goes straight back.
+  const target = manifest.sourceDir;
+  const parent = path.dirname(target);
+  const name = path.basename(target);
+  const stamp = `${Date.now().toString(36)}-${process.pid}`;
+  const incoming = path.join(parent, `.restoring-${name}-${stamp}`);
+  const outgoing = path.join(parent, `.replaced-${name}-${stamp}`);
+
+  fs.rmSync(incoming, { recursive: true, force: true });
+  copyDir(src, incoming);
+
+  const hadTarget = fs.existsSync(target);
+  try {
+    if (hadTarget) fs.renameSync(target, outgoing);
+    try {
+      fs.renameSync(incoming, target);
+    } catch (err) {
+      if (hadTarget) fs.renameSync(outgoing, target);
+      throw err;
+    }
+  } catch (err) {
+    fs.rmSync(incoming, { recursive: true, force: true });
+    throw err;
+  }
+  fs.rmSync(outgoing, { recursive: true, force: true });
+
+  return { restored: manifest.id, into: target, files: Object.keys(manifest.hashes).length };
 }
 
 function remove(id) {
@@ -95,4 +138,4 @@ function remove(id) {
   return { deleted: id };
 }
 
-module.exports = { create, list, restore, remove, hashDir, sha256, copyDir, walk };
+module.exports = { create, list, read, restore, remove, hashDir, sha256, copyDir, walk };

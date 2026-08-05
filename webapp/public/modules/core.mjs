@@ -58,8 +58,11 @@ export function showReceipt(el, result, { label = 'done', details = null } = {})
     return;
   }
   el.className = 'receipt receipt--ok';
-  const files = (result.changedFiles || []).join(', ') || 'no files';
-  const parts = [`${label} — ${files}`];
+  // Backups, restores and deletes report through here too, and they change no
+  // files in the save — appending "no files" to those read as a failure.
+  const parts = [Array.isArray(result.changedFiles)
+    ? `${label} — ${result.changedFiles.join(', ') || 'no files'}`
+    : label];
   if (result.backupId) parts.push(`backup ${result.backupId}`);
   if (result.rollbackStatus && result.rollbackStatus !== 'not needed') {
     parts.push(`rollback: ${result.rollbackStatus}`);

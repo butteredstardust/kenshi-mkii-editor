@@ -1167,7 +1167,7 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
       // modded item this editor has never seen.
       const tmpl = gamedata.lookup(baseSid);
       if (tmpl && !tmpl.stackable) {
-        throw new Error(`"${itemName}" is not stackable (see TODO.md 2.2(d)) — quantity must be 1`);
+        throw new Error(`"${itemName}" is not stackable — quantity must be 1`);
       }
     }
   }
@@ -1351,11 +1351,11 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   // record — a second hardcoded copy here is how backpacks, crossbows and
   // robotic limbs each became addable everywhere EXCEPT this route.
   if (!itemFactory.TEMPLATE_TYPES.includes(tmpl.type)) {
-    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${itemFactory.TEMPLATE_TYPES.join('/')}) — see TODO.md 2.2(g)`);
+    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${itemFactory.TEMPLATE_TYPES.join('/')})`);
   }
 
   if (quantity > 1 && !tmpl.stackable) {
-    throw new Error(`"${tmpl.name}" is not stackable (see TODO.md 2.2(d)) — quantity must be 1`);
+    throw new Error(`"${tmpl.name}" is not stackable — quantity must be 1`);
   }
 
   const { sections: allowedForKind } = itemSlots.allowedSections(templateSid, null);

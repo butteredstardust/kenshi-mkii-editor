@@ -1,0 +1,147 @@
+name: Build and Release
+
+# Releasing is deliberately manual. This app writes to save files, and the
+# release gate — `npm test` round-tripping a real save byte-identically — cannot
+# run on a machine with no Kenshi install. Run it locally, then dispatch this.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (x.y.z). Leave blank to bump the patch of the newest tag.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release'
+        required: false
+        default: false
+        type: boolean
+      round_trip_verified:
+        description: 'I ran `npm test` locally against a real save and it passed'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Refuse to release without a local round-trip pass
+        if: ${{ inputs.round_trip_verified != true }}
+        run: |
+          echo "::error::The codec round trip has not been confirmed. Run 'npm test' in webapp/ on a machine with a Kenshi save, then re-run this workflow with round_trip_verified checked."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install webapp dependencies
+        run: npm ci
+        working-directory: webapp
+
+      # Passes on a runner with no game data (nearly everything skips), so this
+      # is a syntax/wiring check, not the format gate.
+      - name: Run tests
+        run: npm test
+        working-directory: webapp
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y
+
+      # Runs before the build so the installer is stamped with the version it
+      # will actually be released under, rather than whatever webapp/package.json
+      # happens to say.
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          git fetch --tags --force
+          if [ -n "$REQUESTED" ]; then
+            next_tag="v${REQUESTED#v}"
+            if ! printf '%s' "${next_tag#v}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version must be x.y.z, got '$REQUESTED'"
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$next_tag" >/dev/null 2>&1; then
+              echo "::error::tag $next_tag already exists; releases are never overwritten"
+              exit 1
+            fi
+          else
+            latest_tag=$(git tag --list 'v*.*.*' | sort -V | tail -n1)
+            [ -z "$latest_tag" ] && latest_tag="v0.0.0"
+            IFS='.' read -r major minor patch <<< "${latest_tag#v}"
+            next_patch=$((patch + 1))
+            next_tag="v$major.$minor.$next_patch"
+            # Guard against the tag already existing (a re-run, or a race with
+            # another dispatch) so we never try to reuse a release.
+            while git ls-remote --exit-code --tags origin "refs/tags/$next_tag" >/dev/null 2>&1; do
+              next_patch=$((next_patch + 1))
+              next_tag="v$major.$minor.$next_patch"
+            done
+          fi
+          echo "VERSION=${next_tag#v}" >> "$GITHUB_OUTPUT"
+          echo "TAG=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $next_tag"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          powershell -ExecutionPolicy Bypass -File releases/build.ps1 `
+            -IsccPath $iscc `
+            -Version '${{ steps.version.outputs.VERSION }}' `
+            -PublisherUrl 'https://github.com/${{ github.repository }}' `
+            -SupportUrl 'https://github.com/${{ github.repository }}/issues'
+
+      - name: Verify the installer exists
+        shell: pwsh
+        run: |
+          $exe = "releases/kenshi-mkii-editor-${{ steps.version.outputs.VERSION }}.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Installer not produced at $exe" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $size = [math]::Round((Get-Item -LiteralPath $exe).Length / 1MB, 1)
+          Write-Host "$exe — $size MB"
+          Write-Host "SHA-256: $hash"
+          "SHA256=$hash" >> $env:GITHUB_ENV
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ steps.version.outputs.TAG }}
+          path: releases/kenshi-mkii-editor-*.exe
+          retention-days: 90
+
+      # The Nexus page description doubles as the release body, so the two never
+      # drift apart. The checksum is appended so users can verify the download.
+      - name: Assemble release notes
+        shell: pwsh
+        run: |
+          $notes = Get-Content -Raw -LiteralPath 'releases/nexus-description.md'
+          $notes += "`n`n---`n`n"
+          $notes += "``kenshi-mkii-editor-${{ steps.version.outputs.VERSION }}.exe`` SHA-256: ``$env:SHA256``"
+          $notes += "`nFull changelog: [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.TAG }}/CHANGELOG.md)`n"
+          Set-Content -LiteralPath 'releases/release-notes.md' -Value $notes -Encoding utf8NoBOM
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: ${{ steps.version.outputs.TAG }}
+          body_path: releases/release-notes.md
+          files: releases/kenshi-mkii-editor-*.exe
+          draft: false
+          prerelease: ${{ inputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

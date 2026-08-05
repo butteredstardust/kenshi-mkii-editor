@@ -1531,3 +1531,116 @@ test('updateItem rejects a grade on a non-weapon and an unknown grade sid, save 
     paths.setOverrides({});
   }
 });
+
+// ------------------------------------------------------------- restoring --
+
+/**
+ * Restore replaces a whole save directory, which makes it the most destructive
+ * operation here — and it was the one write path with no gate on it at all. It
+ * also used to delete the save before copying the backup in, so a failure in
+ * between left the player with neither.
+ */
+test('restore puts a backup back over the save it came from', (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  try {
+    const before = backups.hashDir(scratch.dir);
+    const backup = backups.create(scratch.dir, 'test: restore');
+
+    fs.writeFileSync(path.join(scratch.dir, 'quick.save'), Buffer.from('clobbered', 'latin1'));
+    assert.notDeepStrictEqual(backups.hashDir(scratch.dir), before);
+
+    const receipt = backups.restore(backup.id);
+    assert.strictEqual(receipt.restored, backup.id);
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before, 'restore must reproduce the save exactly');
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('a corrupt backup is refused, and the save it would have overwritten is untouched', (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  try {
+    const before = backups.hashDir(scratch.dir);
+    const backup = backups.create(scratch.dir, 'test: corrupt');
+
+    // Tamper with the backup's copy, not its manifest: the manifest hashes are
+    // what prove the backup is still the save it claims to be.
+    const inBackup = path.join(paths.backupRoot(), backup.id, 'save', 'quick.save');
+    fs.writeFileSync(inBackup, Buffer.concat([fs.readFileSync(inBackup), Buffer.from([0])]));
+
+    assert.throws(() => backups.restore(backup.id), /is corrupt/);
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before, 'a refused restore must not touch the save');
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('restore leaves no staging directory beside the save', (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  try {
+    const backup = backups.create(scratch.dir, 'test: staging cleanup');
+    backups.restore(backup.id);
+
+    const siblings = fs.readdirSync(path.dirname(scratch.dir));
+    const strays = siblings.filter((n) => n.startsWith('.restoring-') || n.startsWith('.replaced-'));
+    assert.deepStrictEqual(strays, [], `restore left staging directories behind: ${strays.join(', ')}`);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+/** Captures the error a synchronous call throws, so its `status` can be checked. */
+function thrown(fn) {
+  try { fn(); } catch (err) { return err; }
+  return assert.fail('expected a throw, got none');
+}
+
+test('restoreBackup refuses an unknown backup id with 404', () => {
+  const err = thrown(() => mutation.restoreBackup('no-such-backup-id'));
+  assert.match(err.message, /no such backup/);
+  assert.strictEqual(err.status, 404);
+});
+
+/**
+ * A restore racing an in-flight edit would swap the directory out from under a
+ * mutate() that has already hashed it, so the same one-at-a-time lock that
+ * stops two edits overlapping has to cover restores too.
+ */
+test('restoreBackup refuses while an edit is in progress', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const backup = backups.create(scratch.dir, 'test: concurrency');
+  let seen = null;
+  try {
+    await mutation.mutate(scratch.dir, 'test: hold the lock', (staging) => {
+      seen = thrown(() => mutation.restoreBackup(backup.id));
+      return saveService.setPlayerMoney(staging, 424242);
+    });
+    assert.match(seen.message, /another edit is in progress/);
+    assert.strictEqual(seen.status, 409);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('a dot-prefixed directory in the save root is never offered as a save', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-saveroot-'));
+  try {
+    for (const name of ['realsave', '.restoring-realsave-abc']) {
+      fs.mkdirSync(path.join(root, name));
+      fs.writeFileSync(path.join(root, name, 'quick.save'), Buffer.alloc(8));
+    }
+    paths.setOverrides({ saveRoot: root });
+    assert.deepStrictEqual(paths.listSaves().map((s) => s.name), ['realsave']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});

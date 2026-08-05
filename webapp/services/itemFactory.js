@@ -116,7 +116,7 @@ function buildItemRecord(templateSid, opts = {}) {
   const tmpl = gamedata.lookup(templateSid);
   if (!tmpl) throw new Error(`unresolvable item template sid "${templateSid}"`);
   if (!TEMPLATE_TYPES.includes(tmpl.type)) {
-    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${TEMPLATE_TYPES.join('/')}) — see TODO.md 2.2(g)`);
+    throw new Error(`template "${templateSid}" (${tmpl.name}) is typecode ${tmpl.type}, not an item template (${TEMPLATE_TYPES.join('/')})`);
   }
 
   const {
