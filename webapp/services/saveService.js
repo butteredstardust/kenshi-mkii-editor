@@ -7,6 +7,7 @@ const { readFile, writeFile } = require('./kenshi/codec');
 const { asText, fromText, byteLength } = require('./kenshi/binary');
 const paths = require('./pathService');
 const gamedata = require('./gamedataService');
+const races = require('./racesService');
 const archetypes = require('./archetypes');
 const personalities = require('./personalities');
 const recruits = require('./recruits');
@@ -14,6 +15,8 @@ const itemCatalog = require('./itemCatalogService');
 const itemSlots = require('./itemSlots');
 const itemFactory = require('./itemFactory');
 const characterFactory = require('./characterFactory');
+const research = require('./researchService');
+const blueprints = require('./blueprints');
 const fitCheck = require('./fitCheck');
 const ids = require('./kenshi/ids');
 
@@ -170,6 +173,29 @@ function packContentsOf(rec, bySid) {
   return { containerSid: null, contents: [] };
 }
 
+/**
+ * What a blueprint item teaches, or null if it isn't one.
+ *
+ * Read-only: this editor writes a blueprint's subject when the item is minted
+ * and never afterwards. `updateItem()` refuses `materialSid`/`gradeId` on
+ * anything but a type-2 weapon, so the Gear row's grade control cannot reach
+ * these two fields — which is what keeps a blueprint from being silently
+ * repointed at something else by a UI meant for Meitou katanas.
+ */
+function blueprintOf(baseSid, strings) {
+  if (!baseSid || !blueprints.isBlueprintTemplate(asText(baseSid))) return null;
+  const teaches = asText(strings.get('material sid') || '');
+  if (!teaches) return { teaches: '', subjectName: null, kind: null, resolved: false };
+  try {
+    const d = blueprints.describeEntry(teaches);
+    return { teaches: d.teaches, subjectName: d.subjectName, kind: d.kind, resolved: d.resolved };
+  } catch {
+    // A blueprint the game wrote in a shape this editor does not recognise is
+    // reported as-is rather than hidden — the save is the authority.
+    return { teaches, subjectName: null, kind: null, resolved: false };
+  }
+}
+
 function itemOf(rec, bySid = null) {
   const s = rec.strings;
   const baseSid = s.get('base data sid');
@@ -196,6 +222,12 @@ function itemOf(rec, bySid = null) {
     // what it sends back; see gamedataService.weaponGrades().
     gradeId: `${asText(s.get('company sid') || '')}|${asText(s.get('material sid') || '')}`,
     companySid: asText(s.get('company sid') || ''),
+    // A BLUEPRINT carries the research-ledger entry it grants in those same two
+    // fields (services/blueprints.js). Reported separately so the Gear row can
+    // say what a stack of identical-looking "Blueprints" actually unlocks —
+    // without it, five blueprints read as five copies of one item. Null for
+    // everything that is not a blueprint, which is every other item.
+    blueprint: blueprintOf(baseSid, s),
     // Whether the template can stack at all — decides whether the Gear row
     // offers a quantity control (TODO.md 2.2(d)). Not derivable client-side.
     stackable: !!(gamedata.lookup(baseSid) || {}).stackable,
@@ -294,7 +326,27 @@ function raceOf(appearanceRec) {
   if (!appearanceRec) return null;
   const row = (appearanceRec.extra.get('race') || [])[0];
   if (!row || !row.target) return null;
-  return { sid: row.target, name: gamedata.nameOf(row.target, row.target) };
+  // The name comes from racesService, NOT gamedata.nameOf: race names are
+  // routinely overridden by a mod later in the load order, and this install's
+  // `17-gamedata.quack` is "Human" by first-definition-wins and "Greenlander" by
+  // the rule the running game uses. See racesService.js.
+  const resolved = races.raceBySid(row.target);
+  const name = races.nameOf(row.target, row.target);
+  // The wiki's per-race armour SLOT table, resolved once here so the UI never
+  // has to re-implement "which races have a boots slot" (services/fitCheck.js
+  // owns it, and labels it editorial — see that file for the measurement).
+  // `armourSlots: null` means "no known slot restriction", not "no slots".
+  const slotRule = fitCheck.raceSlotRule(name);
+  return {
+    sid: row.target,
+    name,
+    armourSlots: slotRule ? slotRule.slots : null,
+    slotRuleLabel: slotRule ? slotRule.label : null,
+    playable: resolved ? resolved.playable : null,
+    // Null for a race with no `combat anatomy` anywhere in gamedata — the UI
+    // shows those but cannot offer them as a switch target (see setRace()).
+    switchable: resolved ? resolved.anatomy.length > 0 : false,
+  };
 }
 
 /**
@@ -346,6 +398,30 @@ function readPlatoon(file) {
     const pick = (type) => states.find((r) => r.type === type) || null;
     const state = pick(T.CHAR_STATE);
     const bag = pick(T.INVENTORY);
+    const race = raceOf(pick(T.APPEARANCE));
+    const partSids = fitCheck.bodyPartSids(pick(T.MEDICAL), BODY_SLOTS);
+
+    /**
+     * Why an owned item's fit warnings are attached HERE and not in itemOf():
+     * itemOf() sees the item record and nothing else, and "can this race wear
+     * this" needs the owner. Resolving it once per (character, item) on the
+     * read keeps the whole question server-side — the Gear page would otherwise
+     * have to re-implement Kenshi's restriction rules in the browser to put a
+     * badge on a helmet a Shek is already wearing.
+     */
+    const withFit = (it) => ({
+      ...it,
+      fitWarnings: it.base
+        ? fitCheck.warningsFor({
+          templateSid: it.base,
+          itemName: it.name,
+          section: it.section,
+          partSids,
+          raceSid: race ? race.sid : null,
+          raceName: race ? race.name : null,
+        })
+        : [],
+    });
 
     characters.push({
       sid: inst.id,
@@ -363,12 +439,13 @@ function readPlatoon(file) {
       // Carried on every character read so nothing downstream has to re-scan
       // every platoon file just to learn a race (which is what the equip
       // scripts this feature replaced had to do).
-      race: raceOf(pick(T.APPEARANCE)),
+      race,
       position: inst.pos,
       medical: medicalOf(pick(T.MEDICAL)),
       stats: statsOf(pick(T.STATS)),
       inventory: bag
-        ? bag.instances.map((ii) => bySid.get(ii.target)).filter(Boolean).map((r) => itemOf(r, bySid))
+        ? bag.instances.map((ii) => bySid.get(ii.target)).filter(Boolean)
+          .map((r) => withFit(itemOf(r, bySid)))
         : [],
     });
   }
@@ -423,6 +500,9 @@ function resolveCharacter(saveDir, platoonFile, characterSid) {
       medical: pick(T.MEDICAL),
       state: pick(T.CHAR_STATE),
       inventory: pick(T.INVENTORY),
+      // The record that carries `extra['race']` — the save's only statement of
+      // what species a character is. See setRace().
+      appearance: pick(T.APPEARANCE),
     },
   };
 }
@@ -1041,7 +1121,10 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
     throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid, gradeId');
   }
 
-  const { relFile, parsed, bag, bySid, itemRec } = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
+  const ctx = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
+  const {
+    relFile, parsed, bag, bySid, itemRec,
+  } = ctx;
 
   const currentSection = asText(itemRec.strings.get('section') || '');
   const baseSid = itemRec.strings.get('base data sid');
@@ -1164,6 +1247,20 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
       displacedSid: displaced ? displaced.sid : null,
       displacedSection: displaced ? 'main' : null,
     },
+    // Moving an item INTO a slot is equipping it, so it gets the same advisory
+    // race check the add and bulk paths do. Only on a section change: re-grading
+    // a helmet the character was already wearing tells them nothing new.
+    fitWarnings: section === undefined ? [] : (() => {
+      const race = raceOf(ctx.records.appearance);
+      return fitCheck.warningsFor({
+        templateSid: asText(baseSid || ''),
+        itemName,
+        section,
+        partSids: fitCheck.bodyPartSids(ctx.records.medical, BODY_SLOTS),
+        raceSid: race ? race.sid : null,
+        raceName: race ? race.name : null,
+      });
+    })(),
   };
 }
 
@@ -1230,7 +1327,11 @@ function setItemQuality(saveDir, platoonFile, characterSid, itemSid, { level, qu
 // silently dropped and quietly mint a "Totally rusted junk" weapon rather than
 // the Meitou the caller asked for). A wrong item written into a save is not the
 // kind of mistake that should fail silently.
-const ADD_ITEM_OPTIONS = new Set(['quantity', 'section', 'level', 'materialSid', 'companySid', 'gradeId']);
+// `teaches` is the blueprint case: a blueprint item's subject rides in the same
+// two string fields a weapon's grade uses, so it is listed here for the same
+// reason — a misnamed option must fail loudly rather than mint a blank
+// blueprint that teaches nothing (see services/blueprints.js).
+const ADD_ITEM_OPTIONS = new Set(['quantity', 'section', 'level', 'materialSid', 'companySid', 'gradeId', 'teaches']);
 
 function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   const unknown = Object.keys(opts).filter((k) => !ADD_ITEM_OPTIONS.has(k));
@@ -1266,6 +1367,20 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   const bag = records.inventory;
   if (!bag) throw new Error(`${platoonFile}: character "${characterSid}" has no INVENTORY record (type 41)`);
 
+  // Race fit, on the single-item path too. It never refuses (AGENTS.md §3), but
+  // bulk equip reporting "a Shek cannot wear this helmet" while the per-character
+  // Add item said nothing was the kind of asymmetry that makes a user trust
+  // neither. Computed BEFORE the mint so the receipt describes the write.
+  const race = raceOf(records.appearance);
+  const fitWarnings = fitCheck.warningsFor({
+    templateSid,
+    itemName: tmpl.name,
+    section,
+    partSids: fitCheck.bodyPartSids(records.medical, BODY_SLOTS),
+    raceSid: race ? race.sid : null,
+    raceName: race ? race.name : null,
+  });
+
   const { record, meta } = itemFactory.buildItemRecord(templateSid, {
     section,
     level: opts.level,
@@ -1273,6 +1388,7 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
     gradeId: opts.gradeId,
     materialSid: opts.materialSid,
     companySid: opts.companySid,
+    ...(opts.teaches === undefined ? {} : { teaches: opts.teaches }),
   });
 
   // Same collision rule as setItemSection() — adding into an occupied
@@ -1300,9 +1416,42 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
       companySid: record.strings.get('company sid'),
       companyName: gamedata.nameOf(record.strings.get('company sid'), ''),
       grade: meta.grade,
+      blueprint: meta.blueprint,
     },
     displaced: displaced ? { sid: displaced.sid, section: 'main' } : null,
+    warnings: [
+      ...(meta.blueprint ? blueprintWarnings(saveDir, meta.blueprint) : []),
+      ...fitWarnings.map((w) => w.text),
+    ],
+    fitWarnings,
   };
+}
+
+/**
+ * Advisory notes for a blueprint that is about to be added. Never blocks —
+ * handing someone a duplicate blueprint is a wasted item, not a corrupt save,
+ * and the ledger is the only thing that knows, so the user has no other way to
+ * find out.
+ *
+ * Reads quick.save out of the SAME directory the item is being written into,
+ * which under the mutation gate is the staging copy — so the check sees exactly
+ * the state this write lands on.
+ */
+function blueprintWarnings(saveDir, blueprint) {
+  const out = [];
+  if (!blueprint.resolved) {
+    out.push(`No installed mod defines "${blueprint.subjectSid}" — the blueprint will be added, `
+      + 'but nothing in this install says what it unlocks.');
+  }
+  try {
+    const world = readSaveFile(saveDir, 'quick.save');
+    const entries = new Set(research.entriesOf(research.ledgerRecord(world)));
+    if (entries.has(blueprint.teaches)) {
+      out.push(`This save has already finished "${blueprint.subjectName || blueprint.subjectSid}" — `
+        + 'the blueprint will still appear in the inventory, but using it grants nothing.');
+    }
+  } catch { /* the ledger is a courtesy check; a save without one is not an error here */ }
+  return out;
 }
 
 // ---------------------------------------------------------------- naming --
@@ -1409,6 +1558,236 @@ function setPersonality(saveDir, platoonFile, characterSid, value, { allowUnknow
     bytes: writeFile(parsed),
     before: { personality: before, label: personalities.label(before) },
     after: { personality: v, label: personalities.label(v) },
+  };
+}
+
+// ------------------------------------------------------------------ race --
+
+/**
+ * Work out how a character's MEDICAL body plan maps onto another race's, slot
+ * by slot, without ever reordering it.
+ *
+ * The character's existing plan defines the slots (`sid0..sidN`, a fixed order
+ * every race in every save on this machine agrees on — see racesService.js).
+ * Each slot is filled from the target race's anatomy:
+ *
+ *   1. by matching stringID, which is what happens for all seven slots on any
+ *      humanoid-to-humanoid switch (Greenlander -> Scorchlander, Skeleton P4 ->
+ *      Soldierbot: same seven parts, different `hit`/`max` numbers);
+ *   2. failing that, by `racesService.partsInterchangeable()` — same `body part
+ *      type` and `collapse part` — which is how a Left Foreleg lands in a Left
+ *      Arm's slot on a human -> animal switch.
+ *
+ * Matching by stringID FIRST is what keeps Chest and Stomach apart: those two
+ * type-16 records are interchangeable by rule 2 (both `body part type` 0,
+ * both `collapse part` 1), but every race names them identically, so rule 2
+ * never has to choose between them. If some race ever did, the leftover pass
+ * below walks slots in order and takes the first unclaimed candidate, and the
+ * caller is told via `refusals` when nothing fits at all.
+ *
+ * Throws nothing: an unmappable plan comes back with `ok: false` and reasons,
+ * so both the preview and the write can report the same thing.
+ */
+function mapBodyPlan(medicalRec, targetRace) {
+  const slots = [];
+  for (let i = 0; medicalRec.strings.has(`sid${i}`); i++) {
+    slots.push({
+      index: i,
+      sid: asText(medicalRec.strings.get(`sid${i}`)),
+      hit: medicalRec.floats.get(`hit${i}`) ?? null,
+      flesh: medicalRec.floats.get(`flesh${i}`) ?? null,
+    });
+  }
+
+  const pool = targetRace.anatomy.map((p) => ({ ...p, taken: false }));
+  const refusals = [];
+
+  for (const slot of slots) {
+    let hit = pool.find((p) => !p.taken && p.sid === slot.sid);
+    if (!hit) hit = pool.find((p) => !p.taken && races.partsInterchangeable(slot.sid, p.sid));
+    if (hit) { hit.taken = true; slot.to = hit; } else {
+      refusals.push(`slot ${slot.index} (${races.partBySid(slot.sid)?.name || slot.sid}) has no counterpart in ${targetRace.name}`);
+    }
+  }
+
+  const unused = pool.filter((p) => !p.taken);
+  if (unused.length) {
+    refusals.push(`${targetRace.name} has ${unused.length} body part(s) this character has no slot for `
+      + `(${unused.map((p) => p.name).join(', ')})`);
+  }
+
+  return { ok: refusals.length === 0, slots, refusals };
+}
+
+/**
+ * Describe what switching `characterSid` to `raceSid` would do — the same
+ * computation `setRace()` performs, minus the write.
+ *
+ * Every difficulty this feature has is ADVISORY, in the house style
+ * (`services/fitCheck.js`, AGENTS.md §3 "race compatibility is advisory"). The
+ * only hard refusals are the two that would produce a save this editor cannot
+ * describe: a target race with no `combat anatomy` at all, and a body plan that
+ * does not map (see mapBodyPlan).
+ */
+function previewRaceChange(medicalRec, appearanceRec, fromRaceSid, raceSid) {
+  const target = races.raceBySid(raceSid);
+  if (!target) throw new Error(`no race with stringID "${raceSid}" in this install's data`);
+  if (!target.anatomy.length) {
+    throw new Error(
+      `"${target.name}" carries no combat anatomy in any of its ${target.definitions} definition(s), `
+      + 'so this editor cannot work out the body plan to write. Switching to it would leave the '
+      + "character's MEDICAL record describing a different species.",
+    );
+  }
+  if (fromRaceSid === raceSid) throw new Error(`this character is already a ${target.name}`);
+
+  const from = races.raceBySid(fromRaceSid);
+  const plan = mapBodyPlan(medicalRec, target);
+  if (!plan.ok) {
+    throw new Error(
+      `cannot map a ${from ? from.name : fromRaceSid} body onto a ${target.name}: ${plan.refusals.join('; ')}`,
+    );
+  }
+
+  // Advisory only — none of these block the write.
+  const warnings = [];
+  const fromFamily = from ? from.appearanceFamily : null;
+  if (!fromFamily || !target.appearanceFamily || fromFamily !== target.appearanceFamily) {
+    warnings.push(
+      `${from ? from.name : 'this character'} and ${target.name} use different appearance slider sets `
+      + `(${fromFamily || 'none'} vs ${target.appearanceFamily || 'none'}). The face and body sliders are `
+      + 'kept as they are — the game applies the ones the new race understands and ignores the rest, so '
+      + 'expect the character to look different.',
+    );
+  }
+  if (!target.playable) {
+    warnings.push(`${target.name} is not flagged playable in gamedata. The game still renders it, but it is `
+      + 'not a race the character creator offers.');
+  }
+  const changedParts = plan.slots.filter((s) => s.to.sid !== s.sid);
+  if (changedParts.length) {
+    warnings.push(`${changedParts.length} body part(s) are replaced outright: `
+      + changedParts.map((s) => `${races.partBySid(s.sid)?.name || s.sid} -> ${s.to.name}`).join(', '));
+  }
+  const appearanceRows = appearanceRec ? (appearanceRec.extra.get('race') || []).length : 0;
+  if (appearanceRows > 1) {
+    warnings.push(`this character's APPEARANCE record carries ${appearanceRows} race rows; only the first is `
+      + 'rewritten, which is the one every read path uses.');
+  }
+
+  return {
+    from: from ? { sid: from.sid, name: from.name } : { sid: fromRaceSid, name: fromRaceSid },
+    to: { sid: target.sid, name: target.name },
+    plan,
+    warnings,
+    parts: plan.slots.map((s) => ({
+      index: s.index,
+      from: { sid: s.sid, name: races.partBySid(s.sid)?.name || s.sid, hit: s.hit, flesh: s.flesh },
+      to: { sid: s.to.sid, name: s.to.name, hit: s.to.hit, max: s.to.max },
+    })),
+  };
+}
+
+/**
+ * Change a character's race.
+ *
+ * TWO records are rewritten, and they are the only two a race is written into:
+ *
+ *   APPEARANCE (66)  `extra['race']` row 0 `target` -> the new race's stringID.
+ *                    This is the save's entire statement of species.
+ *   MEDICAL (57)     `sid<n>` and `hit<n>` -> the new race's `combat anatomy`,
+ *                    slot for slot (mapBodyPlan), and `flesh<n>` SCALED by the
+ *                    ratio of the two parts' maxima.
+ *
+ * Why scale `flesh<n>` rather than clamp or refill it: `v1` is a race's natural
+ * maximum, not a hard ceiling — 39 live Hive Worker Drones read up to 125
+ * against a v1 of 75 because they are wearing robotic limbs, and those are the
+ * same characters whose `hitmult<n>` stops being 1. Clamping would silently
+ * confiscate a prosthetic; refilling would turn a race switch into a free heal.
+ * Scaling by `newMax / oldMax` keeps a half-severed arm half-severed and a
+ * prosthetic proportionally over-strength, which is the only choice that
+ * preserves what the player actually has.
+ *
+ * Deliberately NOT touched:
+ *   - `hitmult<n>`/`rig<n>`/`wear<n>`/`bandage<n>`/`stun<n>` — measured
+ *     per-character, not per-race (1/0/0 on everyone without prosthetics).
+ *   - The APPEARANCE sliders. They are the character's face. A cross-family
+ *     switch is warned about, not sanitised: deleting slider keys the new race
+ *     might not read would destroy a face this editor cannot rebuild, and
+ *     nothing in the data says the game minds extra keys.
+ *   - The squad instance's `target` (the type-1 origin template). It names where
+ *     the character CAME from — race template, stats, gear rules and dialogue —
+ *     and repointing it is a different, untestable edit (see dialogueOf()).
+ *   - STATS. A race's `stats good`/`stats bad` rows are hiring-time hints, not a
+ *     running modifier; nothing in a save records them per character.
+ */
+function setRace(saveDir, platoonFile, characterSid, raceSid) {
+  if (typeof raceSid !== 'string' || !raceSid.trim()) throw new Error('raceSid is required');
+
+  const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
+  const appearance = records.appearance;
+  const medical = records.medical;
+  if (!appearance) {
+    throw new Error(`${platoonFile}: character "${characterSid}" has no APPEARANCE record (type 66), `
+      + 'which is the only place a race is stored');
+  }
+  if (!medical) {
+    throw new Error(`${platoonFile}: character "${characterSid}" has no MEDICAL record (type 57)`);
+  }
+  const raceRows = appearance.extra.get('race') || [];
+  if (!raceRows.length || !raceRows[0].target) {
+    throw new Error(`${platoonFile}: character "${characterSid}" has no race row in its APPEARANCE record`);
+  }
+
+  const fromSid = raceRows[0].target;
+  const preview = previewRaceChange(medical, appearance, fromSid, raceSid);
+
+  // 1. The race itself. Only `target` moves — `v0`/`v1`/`v2` are left exactly as
+  //    the game wrote them, since nothing here has decoded what they mean.
+  raceRows[0].target = raceSid;
+
+  // 2. The body plan, in place, slot by slot.
+  const partsChanged = [];
+  for (const slot of preview.plan.slots) {
+    const before = {
+      sid: slot.sid,
+      hit: medical.floats.get(`hit${slot.index}`) ?? null,
+      flesh: medical.floats.get(`flesh${slot.index}`) ?? null,
+    };
+    medical.strings.set(`sid${slot.index}`, fromText(slot.to.sid));
+    if (medical.floats.has(`hit${slot.index}`)) medical.floats.set(`hit${slot.index}`, slot.to.hit);
+
+    // Scale flesh by the ratio of the two maxima. A zero or missing old maximum
+    // gives no ratio to scale by, so the value is left alone rather than
+    // divided by zero into a NaN — and a NaN written into a save is exactly the
+    // thing docs/save-format.md §2 warns costs a byte-identical round trip.
+    const oldRace = races.raceBySid(fromSid);
+    const oldPart = oldRace ? oldRace.anatomy.find((p) => p.sid === slot.sid) : null;
+    const oldMax = oldPart ? oldPart.max : null;
+    if (medical.floats.has(`flesh${slot.index}`) && oldMax && slot.to.max) {
+      const scaled = (medical.floats.get(`flesh${slot.index}`) * slot.to.max) / oldMax;
+      if (Number.isFinite(scaled)) medical.floats.set(`flesh${slot.index}`, scaled);
+    }
+    partsChanged.push({
+      index: slot.index,
+      before,
+      after: {
+        sid: slot.to.sid,
+        name: slot.to.name,
+        hit: medical.floats.get(`hit${slot.index}`) ?? null,
+        flesh: medical.floats.get(`flesh${slot.index}`) ?? null,
+        max: slot.to.max,
+      },
+    });
+  }
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    before: { race: preview.from },
+    after: { race: preview.to },
+    parts: partsChanged,
+    warnings: preview.warnings,
   };
 }
 
@@ -1551,7 +1930,7 @@ function availableRaces(saveDir) {
   for (const c of scanCharacters(saveDir)) {
     let entry = byRace.get(c.raceSid);
     if (!entry) {
-      entry = { sid: c.raceSid, name: gamedata.nameOf(c.raceSid), count: 0, donors: 0 };
+      entry = { sid: c.raceSid, name: races.nameOf(c.raceSid, c.raceSid), count: 0, donors: 0 };
       byRace.set(c.raceSid, entry);
     }
     entry.count += 1;
@@ -2044,7 +2423,11 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
         entry.warnings.push(...fitCheck.warningsFor({
           templateSid: item.templateSid,
           itemName: item.name,
+          section: item.section,
           partSids,
+          // The race's stringID, not just its name: the game's own restriction
+          // rows name races by sid, and two races in this install share a name.
+          raceSid: race ? race.sid : null,
           raceName: entry.race,
           raceNotes,
         }));
@@ -2077,12 +2460,344 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
   return results;
 }
 
+// ------------------------------------------------- bulk edits to gear owned --
+
+/**
+ * The sections that mean "worn", i.e. everything that is not one of the two
+ * storage buckets. Derived from ITEM_SLOTS/ITEM_BUCKET_SLOTS rather than
+ * restated, so a new slot can never be added to one list and forgotten in the
+ * other.
+ */
+const EQUIP_SECTIONS = ITEM_SLOTS.filter((s) => !ITEM_BUCKET_SLOTS.has(s));
+
+/**
+ * Walk every target character once, grouped by platoon file so each file is
+ * parsed and serialised exactly once.
+ *
+ * This is the shared skeleton of the two bulk edits below, and the reason both
+ * are ONE staged edit: `mutationService.mutate()` treats each call as one edit
+ * against one snapshot and takes one backup, so "set 12 characters' armour to
+ * masterwork" through the per-item route would be a backup per item.
+ * `equipMany()` predates this helper and keeps its own copy of the loop because
+ * it also needs the SQUAD instance's other state records (race, body plan) for
+ * fit checking; nothing here needs those.
+ *
+ * @param {function} perCharacter  called with `{ file, sid, name, bag, bySid }`,
+ *   mutates records in place and returns the receipt entry for that character.
+ */
+function bulkOverTargets(saveDir, targets, perCharacter) {
+  if (!Array.isArray(targets) || !targets.length) throw new Error('targets must be a non-empty array');
+
+  const byFile = new Map();
+  for (const t of targets) {
+    if (!t || typeof t.file !== 'string' || typeof t.sid !== 'string') {
+      throw new Error('every target needs a "file" and a "sid"');
+    }
+    if (!byFile.has(t.file)) byFile.set(t.file, []);
+    if (!byFile.get(t.file).includes(t.sid)) byFile.get(t.file).push(t.sid);
+  }
+
+  const results = [];
+  const characters = [];
+  for (const [platoonFile, sids] of byFile) {
+    const { relFile, parsed, squad } = resolveSquad(saveDir, platoonFile);
+    const bySid = new Map(parsed.records.map((r) => [r.sid, r]));
+
+    for (const sid of sids) {
+      const inst = squad.instances.find((i) => i.id === sid);
+      if (!inst) throw new Error(`${platoonFile}: no character with sid "${sid}"`);
+      const states = inst.states.map((s) => bySid.get(s)).filter(Boolean);
+      const bag = states.find((r) => r.type === T.INVENTORY);
+      if (!bag) throw new Error(`${platoonFile}: character "${sid}" has no INVENTORY record (type 41)`);
+      const stateRec = states.find((r) => r.type === T.CHAR_STATE);
+      characters.push(perCharacter({
+        file: platoonFile,
+        sid,
+        name: asText(stateRec ? (stateRec.strings.get('name') || '') : ''),
+        bag,
+        bySid,
+      }));
+    }
+
+    results.push({ file: relFile, bytes: writeFile(parsed) });
+  }
+
+  return { results, characters };
+}
+
+/**
+ * Every type-42 ITEM record a character actually holds.
+ *
+ * `includePackContents` follows the one extra hop a worn backpack adds — a pack
+ * keeps its contents in its OWN inventory record, not the character's (see
+ * packContentsOf()). One level only, same depth guard and same reason.
+ */
+function inventoryItemsOf(bag, bySid, { includePackContents = false } = {}) {
+  const out = [];
+  for (const inst of bag.instances) {
+    const rec = bySid.get(inst.target);
+    if (!rec || rec.type !== T.ITEM) continue;
+    out.push(rec);
+    if (!includePackContents) continue;
+    for (const pi of rec.instances) {
+      const container = bySid.get(pi.target);
+      if (!container || container.type !== T.INVENTORY) continue;
+      for (const ci of container.instances) {
+        const inner = bySid.get(ci.target);
+        if (inner && inner.type === T.ITEM) out.push(inner);
+      }
+    }
+  }
+  return out;
+}
+
+const REGRADE_FIELDS = new Set([
+  'targets', 'armourLevel', 'weaponGradeId', 'weaponLevel', 'includeCarried', 'includePackContents',
+]);
+
+// Which template typecodes each of the two quality controls applies to.
+// Armour's quality IS `ints.level` on the named tier ladder (5/20/40/60/80/95 =
+// Prototype..Masterwork — see itemOf()'s comment). A weapon's recognisable
+// grade is the (company sid, material sid) PAIR and `level` is a separate
+// field, so the two are set independently and never inferred from each other.
+// Type 107 (crossbow) has a `level` that varies exactly like a melee weapon's
+// but no manufacturer ladder at all, so it follows `weaponLevel` and is left
+// out of the grade pass — `itemFactory.resolveGrade` would refuse it anyway.
+const ARMOUR_LEVEL_TYPES = new Set([3]);
+const WEAPON_LEVEL_TYPES = new Set([2, 107]);
+const WEAPON_GRADE_TYPES = new Set([2]);
+
+/**
+ * Re-grade the gear a set of characters ALREADY OWN, in one staged edit:
+ * "select these eight, set every piece of armour to Masterwork and every weapon
+ * to Edge Type 5".
+ *
+ * This is the bulk sibling of `updateItem()`, and the counterpart to
+ * `equipMany()`: equipMany mints new items, this one edits what is already
+ * there. Nothing is added, removed or moved — only `ints.level` and the
+ * `material sid`/`company sid` grade pair are touched, and only on records that
+ * already carry those keys (the same "never mint a key" discipline setStats()
+ * follows).
+ *
+ * SCOPE. By default only WORN items are touched, because "set all my armour to
+ * masterwork" means the armour they are wearing, not the three spare shirts in
+ * the pack. `includeCarried` widens it to the character's `main`/
+ * `backpack_content` items and `includePackContents` follows the extra hop into
+ * a worn backpack's own record.
+ *
+ * An item whose template cannot be resolved is left alone rather than guessed
+ * at — the same rule itemSlots.js follows in reverse: it never LOCKS an
+ * unknown kind, and this never EDITS one.
+ *
+ * @param {string} saveDir
+ * @param {object} opts
+ * @param {{file: string, sid: string}[]} opts.targets
+ * @param {number} [opts.armourLevel]     tier for type-3 items, e.g. 95 (Masterwork)
+ * @param {string} [opts.weaponGradeId]   "<companySid>|<modelSid>" from gamedataService.weaponGrades()
+ * @param {number} [opts.weaponLevel]     `ints.level` for type-2/107 items (separate from the grade)
+ * @param {boolean} [opts.includeCarried=false]
+ * @param {boolean} [opts.includePackContents=false]
+ */
+function regradeMany(saveDir, opts = {}) {
+  const unknown = Object.keys(opts).filter((k) => !REGRADE_FIELDS.has(k));
+  if (unknown.length) {
+    throw new Error(`regradeMany: unknown field(s) ${unknown.join(', ')} — supported: ${[...REGRADE_FIELDS].join(', ')}`);
+  }
+  const {
+    targets, armourLevel, weaponGradeId, weaponLevel,
+    includeCarried = false, includePackContents = false,
+  } = opts;
+
+  if (armourLevel === undefined && weaponGradeId === undefined && weaponLevel === undefined) {
+    throw new Error('regradeMany: provide at least one of armourLevel, weaponGradeId, weaponLevel');
+  }
+
+  // ---- validate everything before touching a file (AGENTS.md §4) ----
+  const asLevel = (value, label) => {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`${label} must be a non-negative integer`);
+    return n;
+  };
+  const armour = armourLevel === undefined ? null : asLevel(armourLevel, 'armourLevel');
+  const wLevel = weaponLevel === undefined ? null : asLevel(weaponLevel, 'weaponLevel');
+
+  let grade = null;
+  if (weaponGradeId !== undefined) {
+    if (typeof weaponGradeId !== 'string' || !weaponGradeId) {
+      throw new Error('weaponGradeId must be a non-empty string');
+    }
+    // Throws on an unknown id rather than defaulting to the lowest rung — a
+    // typo must not silently hand a whole squad "Totally rusted junk".
+    grade = itemFactory.resolveGrade({ gradeId: weaponGradeId });
+  }
+
+  let changedCount = 0;
+
+  const { results, characters } = bulkOverTargets(saveDir, targets, ({ file, sid, name, bag, bySid }) => {
+    const entry = { file, sid, name, changed: [], skipped: 0 };
+
+    for (const rec of inventoryItemsOf(bag, bySid, { includePackContents })) {
+      const section = asText(rec.strings.get('section') || '');
+      if (!includeCarried && ITEM_BUCKET_SLOTS.has(section)) continue;
+
+      const baseSid = rec.strings.get('base data sid');
+      const tmpl = gamedata.lookup(baseSid);
+      if (!tmpl) { entry.skipped += 1; continue; }
+
+      const before = {
+        level: rec.ints.get('level') ?? null,
+        materialSid: asText(rec.strings.get('material sid') || ''),
+        companySid: asText(rec.strings.get('company sid') || ''),
+      };
+      let touched = false;
+
+      const wantLevel = (armour !== null && ARMOUR_LEVEL_TYPES.has(tmpl.type)) ? armour
+        : (wLevel !== null && WEAPON_LEVEL_TYPES.has(tmpl.type)) ? wLevel
+          : null;
+      if (wantLevel !== null && rec.ints.has('level') && rec.ints.get('level') !== wantLevel) {
+        rec.ints.set('level', wantLevel);
+        touched = true;
+      }
+
+      if (grade && WEAPON_GRADE_TYPES.has(tmpl.type)
+        && (before.materialSid !== grade.modelSid || before.companySid !== grade.companySid)) {
+        // Written together, never one without the other — the PAIR is the grade.
+        rec.strings.set('material sid', grade.modelSid);
+        rec.strings.set('company sid', grade.companySid);
+        touched = true;
+      }
+
+      if (!touched) continue;
+      changedCount += 1;
+      entry.changed.push({
+        sid: rec.sid,
+        name: gamedata.nameOf(baseSid, asText(baseSid || rec.sid)),
+        kindType: tmpl.type,
+        section,
+        before,
+        after: {
+          level: rec.ints.get('level') ?? null,
+          materialSid: asText(rec.strings.get('material sid') || ''),
+          companySid: asText(rec.strings.get('company sid') || ''),
+        },
+      });
+    }
+
+    return entry;
+  });
+
+  results[0] = {
+    ...results[0],
+    characters,
+    itemsChanged: changedCount,
+    charactersTouched: characters.length,
+    filesTouched: results.length,
+    armourLevel: armour,
+    weaponLevel: wLevel,
+    grade: grade ? {
+      id: grade.id, modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank,
+    } : null,
+    scope: { includeCarried: !!includeCarried, includePackContents: !!includePackContents },
+  };
+
+  return results;
+}
+
+const UNEQUIP_FIELDS = new Set(['targets', 'sections', 'templateSids', 'itemSids']);
+
+/**
+ * Unequip: move worn items back to `main` (Carried), for one character or for
+ * a whole selection, in ONE staged edit.
+ *
+ * Three filters, all optional and ANDed together, which between them cover the
+ * three things a player actually asks for:
+ *   - nothing given         -> "strip them", every worn item
+ *   - `sections`            -> "take everyone's helmet off"  (one slot, many characters)
+ *   - `templateSids`        -> "take that specific item off whoever is wearing one"
+ *   - `itemSids`            -> one exact item record (the per-row Unequip button's case,
+ *                              though a single row can equally use updateItem())
+ *
+ * The destination is always `main` and is deliberately not configurable.
+ * `backpack_content` is the other bucket, but a `backpack_content` item lives in
+ * the PACK's own inventory record — writing that section onto an item sitting in
+ * the character's own record would describe a location the save does not have.
+ *
+ * Only the character's OWN inventory is walked: something already inside a pack
+ * is not equipped, so there is nothing there to take off.
+ */
+function unequipMany(saveDir, opts = {}) {
+  const unknown = Object.keys(opts).filter((k) => !UNEQUIP_FIELDS.has(k));
+  if (unknown.length) {
+    throw new Error(`unequipMany: unknown field(s) ${unknown.join(', ')} — supported: ${[...UNEQUIP_FIELDS].join(', ')}`);
+  }
+  const { targets, sections, templateSids, itemSids } = opts;
+
+  const asStringSet = (value, label) => {
+    if (value === undefined) return null;
+    if (!Array.isArray(value) || !value.length) throw new Error(`${label}, if given, must be a non-empty array`);
+    if (value.some((s) => typeof s !== 'string' || !s)) {
+      throw new Error(`every entry in ${label} must be a non-empty string`);
+    }
+    return new Set(value);
+  };
+
+  let wanted = new Set(EQUIP_SECTIONS);
+  if (sections !== undefined) {
+    const given = asStringSet(sections, 'sections');
+    for (const s of given) {
+      if (!EQUIP_SECTIONS.includes(s)) {
+        throw new Error(`"${s}" is not an equip slot — one of: ${EQUIP_SECTIONS.join(', ')}`);
+      }
+    }
+    wanted = given;
+  }
+  const wantedTemplates = asStringSet(templateSids, 'templateSids');
+  const wantedItems = asStringSet(itemSids, 'itemSids');
+
+  let movedCount = 0;
+
+  const { results, characters } = bulkOverTargets(saveDir, targets, ({ file, sid, name, bag, bySid }) => {
+    const entry = { file, sid, name, moved: [] };
+
+    for (const rec of inventoryItemsOf(bag, bySid)) {
+      const section = asText(rec.strings.get('section') || '');
+      if (!wanted.has(section)) continue;
+      const baseSid = asText(rec.strings.get('base data sid') || '');
+      if (wantedTemplates && !wantedTemplates.has(baseSid)) continue;
+      if (wantedItems && !wantedItems.has(rec.sid)) continue;
+
+      rec.strings.set('section', 'main');
+      movedCount += 1;
+      entry.moved.push({
+        sid: rec.sid,
+        name: gamedata.nameOf(baseSid, baseSid || rec.sid),
+        from: section,
+        to: 'main',
+      });
+    }
+
+    return entry;
+  });
+
+  results[0] = {
+    ...results[0],
+    characters,
+    itemsMoved: movedCount,
+    charactersTouched: characters.length,
+    filesTouched: results.length,
+    sections: [...wanted],
+  };
+
+  return results;
+}
+
 module.exports = {
-  T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
-  raceOf, equipMany, teleportSquad,
+  T, BODY_SLOTS, ITEM_SLOTS, ITEM_BUCKET_SLOTS, EQUIP_SECTIONS, status, worldSummary, readPlatoon, setPlayerMoney, gameStateOf,
+  raceOf, equipMany, regradeMany, unequipMany, teleportSquad,
   playerPlatoonFiles, playerSquadRecords, scanCharacters, availableRaces, defaultRace,
   resolveSquad, squadMetaFor, encodeName, MAX_NAME_BYTES,
   renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread, setPersonality, dialogueOf,
+  setRace, previewRaceChange, mapBodyPlan,
   resolveCharacter, setStats, setStat, trainCharacter,
   healPart, damagePart, setHunger, revive, restoreLimbs,
   setItemSection, setItemQuality, updateItem, addItem,

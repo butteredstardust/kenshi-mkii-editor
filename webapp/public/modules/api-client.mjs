@@ -41,6 +41,16 @@ export const API = {
   // member is cloned from an existing character of the chosen race, so the list
   // is what the save contains, not every race in the game's data.
   races: (name) => request('GET', `/api/saves/${encodeURIComponent(name)}/races`),
+  // The FULL race catalogue from gamedata, resolved in the game's own mod load
+  // order — a different list from `races()` above, which is only the races this
+  // save can clone a donor from. Switching a race needs no donor, so it can
+  // offer every race whose body plan the editor can resolve.
+  raceCatalogue: () => request('GET', '/api/races'),
+  // Change one character's race: the APPEARANCE race row and the MEDICAL body
+  // plan, in one staged edit.
+  setRace: (name, file, sid, raceSid) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/race`,
+    { raceSid }),
   // Editorial "roll a recruit" catalogue (services/recruits.js), in the spirit
   // of the wiki's Unique Recruits page.
   recruits: () => request('GET', '/api/recruits'),
@@ -100,6 +110,17 @@ export const API = {
   // intermediate on-disk states.
   equipMany: (name, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/equip`, body),
+  // Bulk re-grade of gear the targets ALREADY own:
+  // `{ targets, armourLevel?, weaponGradeId?, weaponLevel?, includeCarried?, includePackContents? }`.
+  // Armour quality is `ints.level` on the named tier ladder; a weapon's grade is
+  // the (company sid, material sid) pair — two different fields, set
+  // independently, never inferred from each other.
+  regradeMany: (name, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/regrade`, body),
+  // Bulk unequip: move worn items back to Carried. `{ targets, sections?,
+  // templateSids?, itemSids? }` — no filter means every worn item.
+  unequipMany: (name, body) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/unequip`, body),
   // Town positions, derived from the install's own world placement data (not
   // from the save) — see services/locationsService.js.
   locations: () => request('GET', '/api/locations'),
@@ -121,6 +142,18 @@ export const API = {
   // edit however many techs are named, since they all live in that one record.
   unlockResearch: (name, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/research/unlock`, body),
+  // How every faction feels about the player, in this save. Directional and
+  // save-scoped: the value lives on the OTHER faction's type-37 record, because
+  // the player's own record carries no relation rows at all.
+  factions: (name) => request('GET', `/api/saves/${encodeURIComponent(name)}/factions`),
+  // One faction's full outgoing list — how IT sees everyone else.
+  factionRelations: (name, sid) => request('GET',
+    `/api/saves/${encodeURIComponent(name)}/factions/${encodeURIComponent(sid)}/relations`),
+  // Set relations: `{ changes: [{ from, to, relation }] }`, both ends named by
+  // gamedata stringID, however many in ONE staged edit — they all live in the
+  // same quick.save record set.
+  setFactionRelations: (name, changes) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/factions/relations`, { changes }),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

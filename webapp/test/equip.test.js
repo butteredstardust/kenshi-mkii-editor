@@ -27,14 +27,10 @@ const { asText } = require('../services/kenshi/binary');
  */
 const scratchSave = fixture.scratchSave;
 
-/** The player squad's file plus its characters, from the live save. */
-function playerSquad() {
-  const src = fixture.fixtureSave();
-  if (!src) return null;
-  const st = saveService.status(src.name);
-  const squad = st.squads.find((q) => q.characters.length);
-  return squad || null;
-}
+// The player squad's file plus its characters, from the FIXTURE — never
+// `status(name)`, which resolves the name against the player's live save folder
+// while the write goes to a copy of the fixture (see fixture.fixtureStatus()).
+const playerSquad = fixture.fixtureSquad;
 
 const ITEM = saveService.T.ITEM;
 const countItems = (parsed) => parsed.records.filter((r) => r.type === ITEM).length;

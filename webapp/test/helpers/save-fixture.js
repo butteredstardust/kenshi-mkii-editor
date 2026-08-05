@@ -92,4 +92,41 @@ function scratchSave() {
   return { root, dir, name: src.name };
 }
 
-module.exports = { fixtureRoot, fixtureInfo, fixtureSave, scratchSave, NO_FIXTURE };
+/**
+ * The fixture's world summary and player squads — the same shape
+ * `saveService.status()` returns, read out of the FIXTURE DIRECTORY.
+ *
+ * Use this, never `saveService.status(fixtureSave().name)`. That call resolves
+ * the NAME against the player's live save folder, so a test would pick a
+ * character out of the live `autosave0` and then write to a copy of the
+ * fixture — and the moment the player keeps playing, the two are different
+ * worlds with different record sids. Every such test failed with
+ * "no character with sid …" until the fixture was refreshed, which looks like a
+ * code regression and is not one.
+ */
+function fixtureStatus() {
+  const src = fixtureSave();
+  if (!src) return null;
+  // Required lazily: saveService pulls in the gamedata index, and the helper is
+  // also imported by suites that only need a directory.
+  const saveService = require('../../services/saveService');
+  const { readFile } = require('../../services/kenshi/codec');
+
+  const world = readFile(fs.readFileSync(path.join(src.dir, 'quick.save')));
+  const summary = saveService.worldSummary(world);
+  const squads = saveService.playerPlatoonFiles(src.dir, summary.faction, world).map((f) => {
+    const { characters } = saveService.readPlatoon(f);
+    return { file: path.basename(f), characters };
+  });
+  return { save: { name: src.name, dir: src.dir, savedAt: src.savedAt }, world: summary, squads };
+}
+
+/** The first player squad in the fixture that actually has members, or null. */
+function fixtureSquad() {
+  const st = fixtureStatus();
+  return st ? st.squads.find((q) => q.characters.length) || null : null;
+}
+
+module.exports = {
+  fixtureRoot, fixtureInfo, fixtureSave, fixtureStatus, fixtureSquad, scratchSave, NO_FIXTURE,
+};

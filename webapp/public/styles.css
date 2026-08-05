@@ -50,6 +50,15 @@
   --radius: 6px;
   --radius-lg: 9px;
 
+  /* One height for every interactive control that can sit in a row with
+   * another one — buttons, inputs, selects. Without it each control is as tall
+   * as its own font and padding happen to make it (a .btn ran ~2.4rem against
+   * an input's ~2.1rem), so a row like "Cats [47800] [Apply]" bottom-aligned
+   * three boxes of three different heights and read as a mistake. Set it here,
+   * not per control, so the row is consistent by construction. */
+  --control-h: 2.25rem;
+  --control-h-xs: 1.75rem;
+
   /* Motion — style guide §1a. One duration, one curve, everywhere. */
   --motion: 120ms;
   --ease: cubic-bezier(.2, .6, .3, 1);
@@ -163,6 +172,9 @@ select, input, button, textarea {
   padding: var(--s1) var(--s2);
   transition: border-color var(--motion) var(--ease), background var(--motion) var(--ease);
 }
+/* Shared control height — see --control-h. A textarea is multi-line by
+ * definition and a checkbox is reset below, so neither takes it. */
+select, input:not([type=checkbox]), button { min-height: var(--control-h); }
 select:hover:not(:disabled), input:hover:not(:disabled), textarea:hover:not(:disabled) {
   border-color: var(--muted);
 }
@@ -188,6 +200,12 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * a checkbox where the control is small and the label is the important part. */
 .field-check { display: inline-flex; align-items: center; gap: var(--s1); font-size: var(--t-xs); color: var(--muted); }
 
+/* A checkbox label is barely a line tall, so bottom-aligning it in a row puts
+ * its text level with the neighbouring input's bottom BORDER rather than with
+ * that input's text. Give it the control height and its own centring does the
+ * rest — the two labels then sit on the same line. */
+.field-row > .field-check { min-height: var(--control-h); }
+
 /* Heading for a subgroup of fields inside a section (e.g. skill categories).
  * A real heading rather than a styled <p>, so the card keeps a valid h3 -> h4
  * outline for screen readers. */
@@ -208,7 +226,11 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .btn {
   cursor: pointer; background: var(--raised); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--radius);
-  padding: var(--s2) var(--s3); font-size: var(--t-sm); white-space: nowrap;
+  /* Vertical padding is deliberately smaller than the old --s2: --control-h
+   * now sets the height and centres the label, so keeping .5rem on top of it
+   * would only make buttons taller than every input beside them again. */
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: var(--s1) var(--s3); font-size: var(--t-sm); white-space: nowrap;
   box-shadow: var(--elev-1);
   transition: background var(--motion) var(--ease), border-color var(--motion) var(--ease),
               color var(--motion) var(--ease), transform var(--motion) var(--ease);
@@ -226,7 +248,10 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .btn--danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
 .btn--ghost { background: none; border-color: transparent; color: var(--muted); box-shadow: none; }
 .btn--ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--line); background: var(--surface-2); }
-.btn--xs { padding: var(--s1) var(--s2); font-size: var(--t-xs); }
+/* Compact variant for table action cells, where the full control height would
+ * fatten every row. It keeps its own smaller height — but see .action-bar,
+ * which puts it back to --control-h so a strip of buttons is one size. */
+.btn--xs { padding: var(--s1) var(--s2); font-size: var(--t-xs); min-height: var(--control-h-xs); }
 
 /* Horizontal action group. Table action cells use this so buttons never stack. */
 .actions { display: flex; gap: var(--s1); align-items: center; flex-wrap: nowrap; }
@@ -286,6 +311,10 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .badge--accent { color: var(--accent); }
 .badge--danger { color: var(--danger); }
 .badge--muted { color: var(--muted); }
+/* Degraded-but-not-broken, the middle tier the other three badges left out.
+ * Added for faction standings, where "will not trade" sits between neutral and
+ * "attacks on sight" and colouring it danger would say the wrong thing. */
+.badge--warn { color: var(--warn); }
 
 /* ---------------------------------------------------------------- cards -- */
 
@@ -340,6 +369,9 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .pill-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 var(--s1); }
 
 .card > .pills { margin-top: var(--s2); }
+/* A pill row used as a panel's summary line needs to clear the controls under
+ * it, or the next field's label reads as a caption for the pills. */
+.panel > .pills { margin: var(--s2) 0 var(--s4); }
 .world-id { display: flex; align-items: baseline; gap: var(--s2); }
 .world-id b { font-size: var(--t-lg); }
 .summary-bar { justify-content: space-between; align-items: center; }
@@ -386,8 +418,33 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .side .roster-list { max-height: 26rem; overflow-y: auto; }
 .roster-filter { width: 100%; border: none; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--sunken); padding: var(--s2) var(--s3); }
 .roster-filter:focus-visible { outline-offset: -2px; }
-.roster-group { padding: var(--s3) var(--s3) var(--s1); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-top: 1px solid var(--line-soft); }
-.roster-group:first-of-type { border-top: none; }
+/* One platoon file is one collapsible group. A save with several squads is
+ * otherwise a single undivided list with the squad you are working on buried in
+ * it, so the group is a real disclosure — the one holding the selected
+ * character is open and the rest are shut (see rosterGroupsOpen in app.mjs).
+ * Styled from the same parts as `.section > summary` rather than a second
+ * disclosure component, but at roster density and full-bleed. */
+.roster-squad + .roster-squad > .roster-group { border-top: 1px solid var(--line-soft); }
+.roster-group {
+  display: flex; align-items: center; gap: var(--s2); cursor: pointer; list-style: none;
+  padding: var(--s3) var(--s3) var(--s2); font-size: var(--t-xs); text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted);
+  transition: color var(--motion) var(--ease), background var(--motion) var(--ease);
+}
+.roster-group::-webkit-details-marker { display: none; }
+/* Same rotating caret as `.section`, so disclosure looks like disclosure
+ * everywhere in the app. */
+.roster-group::before {
+  content: ''; width: .4em; height: .4em; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--motion) var(--ease);
+}
+.roster-squad[open] > .roster-group::before { transform: rotate(45deg); }
+.roster-group:hover { color: var(--ink); background: var(--surface-2); }
+.roster-group > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* How many characters are in a collapsed squad — the one thing worth knowing
+ * about a group you cannot see into. */
+.roster-group-count { margin-left: auto; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 .roster-list { list-style: none; margin: 0; padding: 0; }
 
 /* Two lines: name + badges on the first, race and condition on the second.
@@ -431,6 +488,19 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
   padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line);
   background: var(--sunken); font-size: var(--t-xs); color: var(--muted);
 }
+
+/* The roster's race filter. Same full-width sunken band as .roster-filter above
+   it, so the two read as one control strip rather than a stray form field; the
+   caption is inline because the roster column is too narrow to stack one. */
+.roster-race {
+  flex-direction: row; align-items: center; gap: var(--s2);
+  padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line);
+  background: var(--sunken); width: 100%;
+}
+.roster-race select { flex: 1; min-width: 0; }
+/* Set filters are easy to forget you set — an empty roster then reads as a bug.
+   The accent border says "this list is narrowed" without adding a word. */
+.roster-race select.is-set { border-color: var(--accent-dim); color: var(--accent); }
 
 /* Small round state marker — cheaper to scan than a word at list density. */
 .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
@@ -576,8 +646,12 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * needs the distinction: three pickers browse shops, and this row says which
  * character an Add writes to — visually separating them stops the two reading
  * as one six-field form. */
+/* Centred, not bottom-aligned: this strip mixes things with a stacked caption
+ * (a .field) and things without (a label, a count, buttons, a checkbox), and
+ * bottom-aligning them scattered their text across three different lines.
+ * Centring lines the text up whatever each child is made of. */
 .action-bar {
-  display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--s3);
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3);
   margin-top: var(--s3); padding: var(--s2) var(--s3);
   background: var(--sunken); border: 1px solid var(--line-soft);
   border-radius: var(--radius);
@@ -585,8 +659,18 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .action-bar-label {
   display: inline-flex; align-items: center; gap: var(--s1);
   font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em;
-  color: var(--muted); padding-bottom: var(--s1);
+  color: var(--muted);
 }
+/* One height for every button in the strip. The ghost buttons are still
+ * secondary — that is what ghost styling says — but a 1.75rem button beside a
+ * 2.25rem one reads as two unrelated widgets rather than a hierarchy. */
+.action-bar .btn { min-height: var(--control-h); }
+/* The count reads as part of the label ("Unlock — 0 selected"), not as the
+ * first of the buttons, so it sits closer than the row gap. */
+.action-bar-label + .muted { margin-left: calc(var(--s2) - var(--s3)); }
+/* The one control that writes goes to the far end, away from the selection
+ * helpers, so "Clear" and "Apply changes" are never adjacent by accident. */
+.action-bar > .btn--primary:last-child { margin-left: auto; }
 
 /* A row that is shown for completeness but cannot be acted on — a vendor's
  * research/manufacturer entries. Dimmed rather than hidden: not listing them

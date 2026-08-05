@@ -32,13 +32,17 @@ modules. It binds `127.0.0.1:3080` only, because it can overwrite a live save.
 | `services/kenshi/codec.js` | Record container: `readFile` / `writeFile`, header probe |
 | `services/kenshi/ids.js` | Minting: `nextRecordId`, `mintSid`, `addRecord`, `addInstance` |
 | `services/pathService.js` | Locates saves, install dir, workshop dir, backup root |
-| `services/gamedataService.js` | `stringID → name` index across all data files, disk-cached |
+| `services/gamedataService.js` | `stringID → name` index across all data files, disk-cached. Also the material union, the weapon-grade ladder, and `raceRules()` — the racial armour restrictions (§3) |
 | `services/saveService.js` | Domain model: world summary, squads, characters, items |
 | `services/itemSlots.js` | Item/slot compatibility rules for `setItemSection()` and the Gear UI's `allowedSections` |
 | `services/itemFactory.js` | Shape of a minted type-42 ITEM record; weapon-grade resolution |
 | `services/loadouts.js` | Named gear sets for bulk equip — editorial, like `archetypes.js` |
-| `services/fitCheck.js` | Advisory "does this item suit this character" warnings. Never blocks a write |
+| `services/fitCheck.js` | Advisory "does this item suit this character" warnings — the game's own `races`/`races exclude` rules, uncovered body parts, and the wiki's per-race slot table. **Never blocks a write** |
 | `services/personalities.js` | The `ints.personality` decode — **derived from gamedata**, not editorial |
+| `services/loadOrder.js` | `filesInLoadOrder()` — base, then `data/mods.cfg`, then unlisted. Shared by `researchService`, `racesService` and `factionsService`; the answer wherever a mod's re-definition is the one the game obeys |
+| `services/blueprints.js` | A blueprint IS an item: which type-4 template to mint and what ledger entry it grants. See §3 |
+| `services/factionsService.js` | Faction relations: the type-10 catalogue in load order, and the save's type-37 relation grid. Disk-cached catalogue |
+| `services/racesService.js` | The type-7 race catalogue, resolved in load order: names, `playable`, appearance family, and the `combat anatomy` that IS the MEDICAL body plan. Disk-cached |
 | `services/vendorsService.js` | Who sells what, and where: gamedata's town -> squad -> vendor list -> item chain. Disk-cached |
 | `services/locationsService.js` | Town world positions, read from the **install's** `.level` placement data (never the save). Disk-cached |
 | `services/characterFactory.js` | Shape of a minted character: clone/sanitise/heal the six state records |
@@ -192,6 +196,48 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   set lives in `itemFactory.TEMPLATE_TYPES` alone — a second hardcoded copy is
   exactly how backpacks, crossbows and limbs stayed unreachable through
   `addItem()` after bulk equip could already place them.
+- **A BLUEPRINT is an item, and it is not the thing it unlocks.** The editor got
+  this wrong in both directions at once: a vendor's `blueprints` shelf points at
+  a type-21 research tech, which was dimmed as "not a carryable item"; and its
+  `armour blueprints` shelf points at a type-3 armour, for which the page
+  offered to add *the armour*. Neither is what the shop sells. The blueprint is
+  a **separate type-4 template** — `BLUEPRINT_ITEM`, `BLUEPRINT_ITEM_ARMOUR`,
+  `BLUEPRINT_ITEM_GEAR`, `2223-gamedata.base` — identified by
+  `ints['item function'] === 11` (FCS "_Research"), and **both** its
+  `material sid` and `company sid` carry the research-ledger entry it grants.
+  Measured over 46119 type-42 records across 1662 files (install `data/`, its
+  `.level`/`.zone` files, and every save): 876 have item function 11, all 876
+  have `material sid === company sid`, and the entry is one of exactly the three
+  shapes the research ledger uses — 608 `"<type-3 sid>.TECH.1"`, 238 a bare
+  type-21 tech sid, 19 `"<type-107 sid>.TECH.1"`. That closes the loop this file
+  left open under "Research is one record": a `.TECH.N` ledger row is an
+  unlocked item blueprint, and this is the object that writes one.
+  **A save-only sweep finds zero** — no save this player owns contains one, the
+  same trap maps fell into. Adding a blueprint writes the object and **must not
+  touch the research ledger**; clicking it in game is what finishes the tech.
+  `services/blueprints.js` owns the template choice and entry shape; a shop can
+  sell a thing AND its blueprint, so a vendor row is keyed `blueprint|<sid>`,
+  never by template sid alone.
+- **A faction's identity is `strings['gamedata stringID']`, and relations live on
+  the OTHER faction's record.** A save's type-37 FACTION records are all in
+  `quick.save` — 114 of them, one per type-10 gamedata template, in every save
+  checked. Their own sids are runtime handles (`19921-quick.save-INGAME`) and are
+  worthless across saves; `gamedata stringID` is the key. Matching by header
+  `name` looks fine and is not: the player's record carries whatever they renamed
+  their squad to, and 7 of the 114 have a name gamedata never uses.
+  Each record holds `strings["relationSID<n>"]` (the counterpart's gamedata sid)
+  plus `floats["relation<n>"]` / `trust<n>` / `trustNeg<n>`. The grid is exact:
+  113 factions carry 114 rows each (everyone including themselves, self always
+  100), and **the player carries none** — it is the only record with no relation
+  rows, the only one with `floats['global trust']`, and the only one with
+  `extra['known']` (which factions have been met). So "my standing with the Holy
+  Nation" is a float on the *Holy Nation's* record. Relations are **not
+  symmetric** (10991 of 11449 reciprocal pairs agree; 458 do not), so a change is
+  directional and touches exactly one float. Every slot already exists, which is
+  why `factionsService.setRelations()` **never mints a key** — a missing row is
+  refused, not invented. Standing labels are derived from the faction's own
+  `enemy classification` (-10 on 109 of 114) and `business relations` (-5 on
+  103), never from bands this editor made up.
 - **A weapon's grade is the (company sid, material sid) PAIR, and a model sid is
   not a key.** 14 of this install's 24 grade model sids appear under two
   different companies — `1069-gamedata.base` is both "Homemade" and
@@ -200,13 +246,70 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   picks whichever row sorts first and writes a different manufacturer than the
   user chose. `itemFactory.resolveGrade()` is the one place that resolution
   happens.
-- **Race compatibility is advisory, never enforced.** Kenshi's real race/mesh
-  restrictions are not in any field this editor has identified (TODO.md 1.5), so
-  refusing an item on suspicion would be inventing a rule. `services/fitCheck.js`
-  produces warnings — one derived (an armour template's `extra['part coverage']`
-  names body parts the target's MEDICAL record may not have) and one editorial
-  (a loadout's own race notes). Kind-vs-slot incompatibility is a different
-  question, IS enforced, and lives in `services/itemSlots.js`.
+- **Racial armour restrictions ARE in the data — `extra['races']` and
+  `extra['races exclude']` on the type-3 template — and they still never block a
+  write.** This overturns what this file previously said ("not in any field this
+  editor has identified"). `races` is a WHITELIST and `races exclude` a
+  BLACKLIST, both naming race stringIDs, and together they reproduce the wiki's
+  restriction lists exactly: 63 of this install's 2344 type-3 records carry one.
+  Every ordinary shirt excludes all nine Hive races and every Hiver shirt
+  whitelists them (which is the wiki's "restricted to Hiver shirts" rule, from
+  both ends); Wool Hat, Cap, Hachigane and Side-Angle Hachigane whitelist the
+  two human races; Masked/Visored/Spiked/Flared Helmet, Karuta/Kusari Zukin and
+  Crab Helmet exclude Shek and the Hive Workers. Union both sides across every
+  definition, exactly like the material index — "Paladin's Heavy Hachigane"
+  carries the whitelist in one definition and the blacklist in another. Cached
+  on the gamedata index (`gamedataService.raceRules()`, CACHE_VERSION 8).
+  **Resolve the race names through `racesService`, never `gamedata.nameOf`** —
+  a restriction listing "Human" and "Sundemon" names nothing the player can find.
+  What is NOT in the data is the wiki's per-race **slot** table (a Skeleton
+  having no shirt/head/boots slot at all): nothing in a type-7 race record
+  expresses it, so `fitCheck.RACE_SLOT_RULES` carries it as **editorial**, and
+  a warning says which of the two it came from. Measuring it against this
+  machine's saves is inconclusive by construction — all 3923 characters found
+  live in player `.platoon` files, i.e. gear a player (quite possibly using this
+  editor) put there — though the Hive rows do match exactly: 0 head and 0 boots
+  on Soldier Drones, 0 boots on Workers and Princes.
+  **None of this refuses a write, including the derived half.** Kenshi enforces
+  these rules in its own UI; a save file will hold a Wool Hat on a Skeleton, and
+  writing what the game's UI will not offer is the entire point of this editor.
+  `services/fitCheck.js` reports; `saveService` writes anyway. Kind-vs-slot
+  incompatibility is a different question, IS enforced, and lives in
+  `services/itemSlots.js`. The third signal is still an armour template's
+  `extra['part coverage']` naming body parts the target's MEDICAL record lacks.
+- **A race's NAME needs load order; `gamedataService.nameOf()` is wrong for it.**
+  `17-gamedata.quack` is "Human" in `gamedata.base` and **"Greenlander"** in
+  `rebirth.mod`; `18019-gamedata.base` is "Sundemon" and **"Scorchlander"**. Both
+  are ~20-definition sids, and the name the player sees is the last one. Race
+  names therefore resolve through `services/racesService.js` (which shares
+  `services/loadOrder.js` with `researchService`), never the flat index — the
+  flat index is still correct for everything whose name no mod re-states.
+- **A race's `extra['combat anatomy']` IS the MEDICAL body plan.** Each row's
+  `target` is a body part (type 16), `v0` is that part's `hit<n>` and `v1` is its
+  undamaged maximum. Measured over every character in every save on this machine
+  (3717 of them, 15 races): the part sets match 3717/3717 and `hit<n> == v0`
+  3717/3717. Two resolution rules are load-bearing and both were forced by data:
+  - **Union the rows across definitions, last-wins per part.** `rebirth.mod`
+    re-defines Scorchlander carrying ONE row — Right Arm, the limb that makes a
+    Scorchlander not a Greenlander. Letting the last definition replace the list
+    gives that race a one-limbed body and mismatches all 862 of them.
+  - **A value of `2147483647` (INT32_MAX) REMOVES the part.** "Unofficial Patches
+    for Kenshi.mod" gives Goat two forelegs and sentinels its two arms; live
+    goats have exactly the resulting seven parts.
+- **`flesh<n>` is scaled on a race switch, never clamped.** `v1` is a natural
+  maximum, not a ceiling: 39 live Hive Worker Drones read up to 125 against a
+  `v1` of 75, and they are the same characters whose otherwise-uniform
+  `hitmult<n>` stops being 1 — robotic limbs. Clamping confiscates a prosthetic;
+  refilling turns a race switch into a free heal. `hitmult<n>`/`rig<n>`/`wear<n>`
+  are per-character and a race switch does not touch them.
+- **The MEDICAL slot order is fixed, and slots substitute across races.** Every
+  race observed uses `sid0` Head, `sid1` Chest, `sid2` Stomach, `sid3`/`sid4`
+  left/right upper limb, `sid5`/`sid6` left/right leg. `Left Arm` and
+  `Left Foreleg` are the same slot under two names — identical `body part type`,
+  identical `collapse part` bitmask, identical bone names — which is what lets
+  `saveService.setRace()` map one plan onto another positionally rather than
+  inventing an ordering. Matching is by stringID first, then by that
+  (type, collapse) pair.
 - **A squad has no name; the player faction does.** A full sweep of a live save
   found the player's chosen name in exactly three places, all in `quick.save`:
   GAME_STATE (56) `strings['pfaction name']`, each SQUAD_META (34)
@@ -314,6 +417,13 @@ round-tripping the player's current save and refusing to write to it at all.
   one, and the codec is deliberately dependency-free.
 - **Tests:** `node --test "test/*.test.js"` from `webapp/`. Any new file format
   or new write path needs a round-trip test before it ships.
+- **A test reads the fixture through `test/helpers/save-fixture.js`, never
+  `saveService.status(name)`.** That call resolves the *name* against the
+  player's live save folder, while `scratchSave()` writes to a copy of the
+  **fixture** — so the moment the player keeps playing, a test picks characters
+  out of one world and edits another, and fails with "no character with sid …"
+  that looks exactly like a code regression. Use `fixture.fixtureStatus()` /
+  `fixture.fixtureSquad()`, which read the fixture directory itself.
 
 ---
 
@@ -325,10 +435,10 @@ round-tripping the player's current save and refusing to write to it at all.
 | GET | `/api/status` | Save root, install dir, save list, game-running, writability |
 | GET | `/api/gamedata` | Name-index stats |
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
-| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46/107** — type 42 is the save-side item *instance*, not a template. |
+| GET | `/api/gamedata/items` | Item-template picker feed: `?q=` name substring, `?limit=` (default 50, cap 500). Rows carry `sid`, `name`, `type`, `kind`, `stackable`, `allowedSections`/`slotsWidened` (from `services/itemSlots.js`), `raceRule` (the game's own racial restriction — `{ only, exclude }` of `{sid, name}` pairs, or null; **match it on the character's `race.sid`, never the name**) and catalog `category`/`description` (null on a miss). Filtered to template typecodes **2/3/4/46/107** — type 42 is the save-side item *instance*, not a template. |
 | GET | `/api/gamedata/weapon-grades` | The weapon grade ladder (`{ id, companySid, companyName, modelSid, modelName, rank }[]`, rank-ascending). A weapon's grade is the **(company sid, material sid) pair**, not `ints.level` — and **`modelSid` alone is not a key**: 14 of this install's 24 model sids appear under two companies. Pass the row's `id` (`"<companySid>\|<modelSid>"`) as `gradeId`. |
 | GET | `/api/vendors` | Faction -> town -> shop tree (contents excluded — ~900 shops) plus build stats |
-| GET | `/api/vendors/:id` | One shop's full stock. `:id` is `"<townSid>\|<squadSid>"` |
+| GET | `/api/vendors/:id` | One shop's full stock. `:id` is `"<townSid>\|<squadSid>"`. Every row carries a `key` — `"blueprint\|<sid>"` on a blueprint shelf, the template sid otherwise — because a shop can sell **both** an armour and the blueprint for it, and keying by template sid alone silently dropped one. A blueprint row carries `blueprint: { templateSid, templateName, teaches, subjectName, kind }`: `templateSid` is the type-4 BLUEPRINT item to mint, `teaches` is the research-ledger entry it grants. Only weapon-manufacturer (51) rows are non-addable now |
 | GET | `/api/vendors-carrying/:sid` | Reverse lookup: every shop that stocks this template |
 | POST | `/api/vendors/rebuild` | Re-scan gamedata for vendor stock (after a mod change) |
 | GET | `/api/locations` | Town positions for the teleport picker: `{ id, name, label, faction, x, y, z, source }[]` plus build stats. From the install's world data, **not** the save — see `services/locationsService.js` for why the two obvious sources are both wrong |
@@ -338,17 +448,20 @@ round-tripping the player's current save and refusing to write to it at all.
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/personality` | Set `ints.personality` on CHAR_STATE. `{ personality, allowUnknown? }`; refuses anything outside the seven unless overridden |
 | GET | `/api/loadouts` | **29 named gear sets** for bulk equip (`services/loadouts.js`) — editorial, read off the game's own NPCs. Items already resolved to names/kinds, plus `tags` (heavy/light/ranged/support/trade/travel/starter) for grouping, advisory `raceNotes`, and a `missing[]` of any template this install cannot resolve |
 | GET | `/api/saves` | List save directories, newest first |
-| GET | `/api/saves/:name/status` | World summary + squads + characters + inventories |
+| GET | `/api/saves/:name/status` | World summary + squads + characters + inventories. Every inventory row carries `fitWarnings[]` (`{source: 'derived'\|'editorial', text}`) resolved against **that** character — which is how gear already worn by the wrong race is visible without re-equipping it — and each character's `race` carries `armourSlots`/`slotRuleLabel` from the wiki's per-race slot table (null = no known restriction) |
 | PUT | `/api/saves/:name/money` | Set player cats (goes through the mutation gate) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/stats` | Set one or more attributes/skills on a character's STATS record (bulk, one staged edit; `{ stats: { statKey: value } }`) |
 | GET | `/api/archetypes` | "Train as archetype" catalogue (id/label tree of mains and subs), for the UI dropdowns |
 | GET | `/api/recruits` | "Roll a recruit" catalogue (`services/recruits.js`): 50 entries in 10 archetype groups (soldier, duellist, shadow, ranger, medic, artisan, trader, explorer, labourer, outcast), each with 4-5 options. Carries `group`/`groupLabel`, race hint, archetype/sub, tier, blurb, and `where` resolved against this install's towns |
 | GET | `/api/names` | A pool of plausible names from Kenshi's own `namesM/F/MF.txt` (`?count=`, capped at 200). Used to pre-fill the new-member name field |
+| GET | `/api/races` | The full type-7 race catalogue (`services/racesService.js`), resolved in the game's own `data/mods.cfg` load order — which is why this says **Greenlander**/**Scorchlander** where the flat name index says "Human"/"Sundemon". `?q=` name substring, `?playable=1` for the character-creator races. Each row carries `label` (name, suffixed with the originating file where two races collide), `appearanceFamily`, `switchable` and the resolved `anatomy`. Save-independent |
+| POST | `/api/races/rebuild` | Re-resolve the race catalogue (after a mod change) |
+| PUT | `/api/saves/:name/platoons/:file/characters/:sid/race` | **Change a character's race.** `{ raceSid }`. One platoon-file write covering the APPEARANCE (66) `extra['race']` row and the MEDICAL (57) body plan — `sid<n>`/`hit<n>` from the target race's `combat anatomy`, `flesh<n>` **scaled** by the ratio of the two parts' maxima (see AGENTS.md §3 for why scaled, not clamped). Refuses only a race with no anatomy and a body plan that cannot be mapped; everything else (appearance-family mismatch, non-playable race, replaced body parts) is a `warnings[]` on the receipt, never a block |
 | GET | `/api/saves/:name/races` | `{ races, default }` — the races this save can supply a **living donor** for (`{ sid, name, count, donors }`, most donors first) plus the one the UI should preselect. A new member is cloned from an existing character, so this is what the save contains, never all of gamedata |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/name` | Rename a character: `strings.name` on CHAR_STATE (36) **and** the STATS (25) record's header `name`, which is where the game keeps a named character's name. `{ name }`, ≤ 63 UTF-8 bytes, control characters rejected, encoded through `binary.fromText()` |
 | PUT | `/api/saves/:name/faction/name` | Rename the squad — i.e. the **player faction**, the only squad-level name a save stores. One write to `quick.save` covering GAME_STATE `pfaction name`, every player SQUAD_META (34) `faction name`, and the player FACTION (37) record's header name. Platoon **filenames are deliberately not renamed** (see below) |
 | POST | `/api/saves/:name/platoons/:file/characters` | Add a squad member. `{ name, raceSid, archetype, sub, tier? }`. Writes two files — the `.platoon` and `quick.save` — in one staged edit. See `services/characterFactory.js` |
-| POST | `/api/saves/:name/equip` | **Bulk equip.** `{ targets: [{file, sid}], loadoutId?, items?, skipIfSlotFilled? }` — every target gets every item in ONE staged edit, across however many platoon files the targets span (`loadoutId` and `items` concatenate). Kind-vs-slot incompatibility is a hard refusal; **race fit never blocks**, it is reported per character via `services/fitCheck.js`. See `saveService.equipMany()` |
+| POST | `/api/saves/:name/equip` | **Bulk equip.** `{ targets: [{file, sid}], loadoutId?, items?, skipIfSlotFilled? }` — every target gets every item in ONE staged edit, across however many platoon files the targets span (`loadoutId` and `items` concatenate). Kind-vs-slot incompatibility is a hard refusal; **race fit never blocks**, it is reported per character via `services/fitCheck.js` — including the game's own racial armour restrictions (§3), which the UI also shows in the pre-flight before the write. See `saveService.equipMany()` |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/train` | "Train as archetype": one staged edit setting all 4 attributes to 45, archetype skills to random 45–95, everything else to random 15–40; `{ archetype, sub, mode? }` (`mode: 'raise'` default never lowers an existing stat, `'set'` overwrites) |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n` | Heal a body part: set `flesh<n>` (or `"full"`), zero `bandage<n>`/`stun<n>` by default; `{ flesh, bandage?, stun? }` |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n/damage` | Limb loss (destructive, no lower clamp on `flesh`); same body shape as heal, UI must confirm before calling |
@@ -358,11 +471,18 @@ round-tripping the player's current save and refusing to write to it at all.
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/section` | Move an item into a slot (`strings.section` on type 42); `{ section }`. If the target slot is already occupied by another of this character's items, that item's `section` is flipped back to `main` in the same write. Rejects a slot not in the documented list, an item that isn't in this character's own inventory, or a slot incompatible with the item's kind (see `services/itemSlots.js`) — the latter check is skipped (permissive) when the item's kind can't be resolved via `gamedataService`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quality` | Set `ints.level` and/or `floats.quality` on an item, independently; `{ level?, quality? }`. Both keys must already exist on the record. Thin wrapper over `updateItem()`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid` | **Unified per-item edit** — `{ section?, level?, quality?, quantity?, materialSid? }`, any combination, in ONE staged edit (one gate pass, one backup). This is what the Gear row's single "Apply" calls; the two narrower routes above are wrappers over the same `saveService.updateItem()`. `quantity > 1` is rejected unless the template is stackable. Weapon grade is chosen with `gradeId` and writes `material sid`/`company sid` in lockstep — the **pair** is the grade, `level` is a separate field. Bare `materialSid` still works but is ambiguous (see `/api/gamedata/weapon-grades`) and resolves to the lowest-ranked matching row. |
-| POST | `/api/saves/:name/platoons/:file/characters/:sid/inventory` | Add a new item to a character's inventory; mints a type-42 ITEM record and an INVENTORY (41) instance via `services/kenshi/ids.js`. `{ templateSid, section, quantity?, level?, materialSid?, companySid? }`. `templateSid` must resolve to a gamedata item template (typecode 2/3/4); `section` is validated via `itemSlots.allowedSections()`; `quantity > 1` is rejected unless the template is stackable. Displaces a prior occupant of an already-occupied single-occupancy `section` back to `main`, same rule as the `/section` route above. See `services/itemFactory.js` for the minted record's exact shape. |
+| POST | `/api/saves/:name/platoons/:file/characters/:sid/inventory` | Add a new item to a character's inventory; mints a type-42 ITEM record and an INVENTORY (41) instance via `services/kenshi/ids.js`. `{ templateSid, section, quantity?, level?, materialSid?, companySid?, teaches? }`. **`teaches`** is the blueprint case: on a blueprint template only (item function 11), it is the research-ledger entry the blueprint grants and is written into **both** `material sid` and `company sid` — see §3 and `services/blueprints.js`. Refused on any other template, and refused if the string is not one of the two ledger shapes. The receipt carries `warnings[]` when the save has already finished what the blueprint teaches, or when no installed mod defines its subject. It never writes the ledger itself. `templateSid` must resolve to a gamedata item template (typecode 2/3/4); `section` is validated via `itemSlots.allowedSections()`; `quantity > 1` is rejected unless the template is stackable. Displaces a prior occupant of an already-occupied single-occupancy `section` back to `main`, same rule as the `/section` route above. See `services/itemFactory.js` for the minted record's exact shape. |
+| POST | `/api/saves/:name/regrade` | **Bulk re-grade of gear the targets already OWN.** `{ targets: [{file, sid}], armourLevel?, weaponGradeId?, weaponLevel?, includeCarried?, includePackContents? }` — one staged edit across however many platoon files the targets span. Nothing is added, removed or moved: only `ints.level` and the `material sid`/`company sid` grade **pair** are written, and only onto records that already carry those keys. Armour's tier IS `ints.level` (5/20/40/60/80/95 = Prototype..Masterwork); a weapon's grade is the (company, material) pair and its `level` is a **separate** field, so `armourLevel`/`weaponGradeId`/`weaponLevel` are three independent controls and none is inferred from another. Type 107 (crossbow) follows `weaponLevel` and is refused a grade — it has no manufacturer ladder. Scope is WORN items unless widened; an item whose template can't be resolved is left alone, never guessed at. See `saveService.regradeMany()` |
+| POST | `/api/saves/:name/unequip` | **Bulk unequip.** `{ targets: [{file, sid}], sections?, templateSids?, itemSids? }` — moves worn items back to `main` (Carried), one staged edit. The three filters AND together: no filter strips everything worn, `sections` is "take everyone's helmet off", `templateSids` is "take that item off whoever has it on", `itemSids` names exact records. The destination is always `main` and deliberately not configurable — a `backpack_content` item lives in the PACK's own inventory record, so writing that section onto an item in the character's own record would name a place the save doesn't have. Only the character's own inventory is walked; something already inside a pack is not equipped. See `saveService.unequipMany()` |
 | GET | `/api/research` | The research tech tree (`services/researchService.js`): 198 techs resolved from gamedata **in the game's own `data/mods.cfg` load order**, each with category, tier, cost in research artifacts, requirements and what it unlocks. Save-independent |
 | POST | `/api/research/rebuild` | Re-resolve the tech tree (after a mod change) |
 | GET | `/api/saves/:name/research` | What this save has finished, joined onto the tree: per tech `done`/`atLevel`/`maxLevel`/`maxed`/`blockedBy`, plus counts including `blueprints` (the other ledger dimension) and `unknown` (must be 0) |
 | POST | `/api/saves/:name/research/unlock` | **Mark research finished.** `{ sids, levels?, withRequirements? }` — one staged edit however many techs are named, because a save's entire research state is ONE type-21 record. `levels` caps a repeating tech (default: its maximum); `withRequirements` (default true) also finishes unfinished prerequisites |
+| GET | `/api/factions` | The type-10 faction catalogue (`services/factionsService.js`), resolved in `data/mods.cfg` load order: `{ sid, name, notReal, enemyAt, tradeAt, definitions }[]`. `enemyAt`/`tradeAt` are the faction's own `enemy classification`/`business relations` ints — the thresholds every standing label is derived from. Save-independent |
+| POST | `/api/factions/rebuild` | Re-resolve the faction catalogue (after a mod change) |
+| GET | `/api/saves/:name/factions` | **How every faction feels about the player**, in this save. Per faction: `relation` (-100..100), `standing`, `met` (from the player record's `extra['known']`), `enemyAt`/`tradeAt`, `notReal`, and `editable`. Directional — the value lives on the other faction's type-37 record, because the player's own carries no relation rows at all (§3) |
+| GET | `/api/saves/:name/factions/:sid/relations` | One faction's **full outgoing list** — how it sees everyone else, including the player (`isPlayer`) and itself (`isSelf`, always 100, never editable). `:sid` is a gamedata stringID, never a save record sid |
+| PUT | `/api/saves/:name/factions/relations` | **Set relations.** `{ changes: [{ from, to, relation }] }`, both ends named by gamedata stringID, however many in ONE staged edit — they all live in `quick.save`. Only updates a `relation<n>` float that already exists; a missing row is refused, never minted. The whole batch is validated before any of it is applied |
 | GET | `/api/backups` | List backups |
 | POST | `/api/backups` | Create a labelled backup |
 | POST | `/api/backups/:id/restore` | Restore a save directory from a backup |

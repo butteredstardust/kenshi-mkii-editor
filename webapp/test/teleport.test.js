@@ -17,12 +17,9 @@ const { readFile } = require('../services/kenshi/codec');
 
 const scratchSave = fixture.scratchSave;
 
-function playerSquad() {
-  const src = fixture.fixtureSave();
-  if (!src) return null;
-  const st = saveService.status(src.name);
-  return st.squads.find((q) => q.characters.length) || null;
-}
+// From the FIXTURE, never `status(name)` — that resolves the name against the
+// player's live save folder (see fixture.fixtureStatus()).
+const playerSquad = fixture.fixtureSquad;
 
 // ------------------------------------------------------------- catalogue --
 

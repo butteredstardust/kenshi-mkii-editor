@@ -2,6 +2,9 @@
 
 const gamedata = require('./gamedataService');
 const itemSlots = require('./itemSlots');
+// Race NAMES need load order — "Human"/"Sundemon" by first-definition-wins are
+// "Greenlander"/"Scorchlander" to the running game and the player.
+const races = require('./racesService');
 
 /**
  * Named gear sets for "equip several characters at once".
@@ -711,6 +714,7 @@ function catalogue() {
   return LOADOUTS.map((l) => {
     const items = l.items.map((it) => {
       const tmpl = gamedata.lookup(it.templateSid);
+      const rules = gamedata.raceRules(it.templateSid);
       return {
         templateSid: it.templateSid,
         section: it.section,
@@ -719,6 +723,14 @@ function catalogue() {
         quantity: it.quantity ?? 1,
         name: tmpl ? tmpl.name : null,
         type: tmpl ? tmpl.type : null,
+        // Kenshi's own racial restriction for this piece, so the bulk panel can
+        // say "three of these eight cannot wear the helmet" BEFORE the write
+        // rather than only in the receipt afterwards. Race names resolve through
+        // racesService (load order), never gamedata.nameOf — see raceRules().
+        raceRule: rules ? {
+          only: rules.only.map((s) => ({ sid: s, name: races.nameOf(s, s) })),
+          exclude: rules.exclude.map((s) => ({ sid: s, name: races.nameOf(s, s) })),
+        } : null,
       };
     });
     return {

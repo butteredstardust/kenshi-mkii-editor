@@ -31,6 +31,9 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
 //
+// 8: `raceRuleIndex` — the `races` / `races exclude` rows that ARE Kenshi's
+// racial armour restrictions (see raceRules() below).
+//
 // 7: typecode 102 (maps) is an item template, and `stackable` is now read
 // wherever the field exists rather than only on type 4.
 //
@@ -39,7 +42,7 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 //
 // 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
 // every weapon-grade row.
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 8;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
 // 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
@@ -73,6 +76,9 @@ let stats = null;
 let materialIndex = null;
 // Ordered, de-duplicated weapon grade ladder (TODO.md 2.2(i)) — see build().
 let weaponGradeList = null;
+// sid -> { only: string[], exclude: string[] } — Kenshi's own racial armour
+// restrictions, unioned across every definition. See raceRules().
+let raceRuleIndex = null;
 
 function dataFiles() {
   const out = [];
@@ -119,6 +125,14 @@ function build() {
   // material candidate entirely. Collected in the same pass as `map` so the
   // whole index only ever needs one read of every data file.
   const materials = new Map(); // sid -> Set<string>
+  // Racial armour restrictions. `extra['races']` is a WHITELIST (only these
+  // races may wear it — the Hiver shirts) and `extra['races exclude']` is a
+  // BLACKLIST (the helmet lists). Unioned across every definition for the same
+  // reason as the material index: a mod that re-defines a vanilla helmet to add
+  // one exclusion must not blank the exclusions the base file already stated.
+  // See raceRules() for what these are and how far they can be trusted.
+  const raceOnly = new Map(); // sid -> Set<raceSid>
+  const raceExclude = new Map(); // sid -> Set<raceSid>
   // Weapon grade ladder rows (TODO.md 2.2(i)): every type-51 (company) record's
   // extra['weapon models'] category, one row per type-50 (grade) sid it offers,
   // with v0 as that grade's rank. Resolved to names after the full sweep, since
@@ -203,6 +217,15 @@ function build() {
         for (const row of materialRows) if (row.target) set.add(row.target);
       }
 
+      // Racial armour restrictions, unioned across definitions (see above).
+      for (const [category, into] of [['races', raceOnly], ['races exclude', raceExclude]]) {
+        const rows = rec.extra.get(category);
+        if (!rows || !rows.length) continue;
+        let set = into.get(rec.sid);
+        if (!set) { set = new Set(); into.set(rec.sid, set); }
+        for (const row of rows) if (row.target) set.add(row.target);
+      }
+
       // Weapon grade ladder: type-51 (company/manufacturer) records carry an
       // extra['weapon models'] category whose rows point at type-50 (grade)
       // sids, with v0 as the grade's rank.
@@ -220,6 +243,16 @@ function build() {
 
   const materialIdx = new Map();
   for (const [sid, set] of materials) materialIdx.set(sid, [...set]);
+
+  // One entry per template that restricts anything, so the index stays small:
+  // 63 of this install's 2344 type-3 records carry a rule.
+  const raceRuleIdx = new Map();
+  for (const sid of new Set([...raceOnly.keys(), ...raceExclude.keys()])) {
+    raceRuleIdx.set(sid, {
+      only: [...(raceOnly.get(sid) || [])],
+      exclude: [...(raceExclude.get(sid) || [])],
+    });
+  }
 
   // Resolve the dialogue-package sids collected above to display names, now
   // that every file has been read.
@@ -264,7 +297,7 @@ function build() {
   grades.sort((a, b) => a.rank - b.rank);
 
   stats = { files, skipped: skipped.length, stringIds: map.size, builtAt: new Date().toISOString() };
-  return { map, materialIdx, grades };
+  return { map, materialIdx, grades, raceRuleIdx };
 }
 
 function load() {
@@ -275,6 +308,7 @@ function load() {
     index = new Map(Object.entries(cached.index));
     materialIndex = new Map(Object.entries(cached.materialIndex || {}));
     weaponGradeList = cached.weaponGrades || [];
+    raceRuleIndex = new Map(Object.entries(cached.raceRules || {}));
     stats = cached.stats;
     return index;
   } catch { /* no cache yet, or a stale/incompatible one — rebuild it */ }
@@ -283,6 +317,7 @@ function load() {
   index = built.map;
   materialIndex = built.materialIdx;
   weaponGradeList = built.grades;
+  raceRuleIndex = built.raceRuleIdx;
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     fs.writeFileSync(CACHE_FILE, JSON.stringify({
@@ -291,6 +326,7 @@ function load() {
       index: Object.fromEntries(index),
       materialIndex: Object.fromEntries(materialIndex),
       weaponGrades: weaponGradeList,
+      raceRules: Object.fromEntries(raceRuleIndex),
     }));
   } catch { /* cache is an optimisation, not a requirement */ }
   return index;
@@ -300,6 +336,7 @@ function rebuild() {
   index = null;
   materialIndex = null;
   weaponGradeList = null;
+  raceRuleIndex = null;
   try { fs.unlinkSync(CACHE_FILE); } catch { /* nothing cached */ }
   return load();
 }
@@ -356,7 +393,42 @@ function itemTemplates() {
   return out;
 }
 
+/**
+ * Kenshi's OWN racial armour restrictions for one template, or null when it
+ * restricts nothing (the overwhelming majority — 63 of this install's 2344
+ * type-3 armour records carry a rule).
+ *
+ *   `only`    — `extra['races']`, a WHITELIST: no other race may wear it. This
+ *               is the Hiver shirts ("Hiver Chain Shirt", "Leather Hive Vest",
+ *               "Rusted Hive Shirt") and the four hats the wiki lists as
+ *               human-only (Wool Hat, Cap, Hachigane, Side-Angle Hachigane).
+ *   `exclude` — `extra['races exclude']`, a BLACKLIST: every ordinary shirt
+ *               excludes all nine Hive races, and the helmets Shek and Hive
+ *               Workers cannot wear name them here (Masked/Visored/Spiked/
+ *               Flared Helmet, Karuta/Kusari Zukin, Crab Helmet, Tin Can...).
+ *
+ * Both sides are unioned across every definition of the sid, exactly like the
+ * material index and for the same reason: a mod re-defining a vanilla helmet to
+ * attach one exclusion must not blank the ones the base file already stated.
+ * "Paladin's Heavy Hachigane" is the case that shows it — one definition
+ * carries the whitelist and another the blacklist.
+ *
+ * This is DERIVED data, and it closes a question AGENTS.md previously recorded
+ * as open ("Kenshi's real race/mesh restrictions are not in any field this
+ * editor has identified"). It reproduces the wiki's per-item restriction lists
+ * exactly. What it does NOT carry is the wiki's per-race "slot disabled" rows
+ * (a Skeleton having no shirt slot at all) — nothing in a type-7 race record
+ * expresses that, so that half stays editorial, in services/fitCheck.js.
+ *
+ * @returns {{ only: string[], exclude: string[] } | null} race stringIDs
+ */
+function raceRules(sid) {
+  if (!sid) return null;
+  load();
+  return raceRuleIndex.get(sid) || null;
+}
+
 module.exports = {
   nameOf, lookup, rebuild, indexStats, dataFiles, itemTemplates, ITEM_TEMPLATE_TYPES,
-  materialCandidates, weaponGrades,
+  materialCandidates, weaponGrades, raceRules,
 };

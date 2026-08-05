@@ -7,6 +7,7 @@ const { readFile } = require('./kenshi/codec');
 const { asText } = require('./kenshi/binary');
 const gamedata = require('./gamedataService');
 const locations = require('./locationsService');
+const blueprints = require('./blueprints');
 
 /**
  * Who sells what, and where.
@@ -53,7 +54,10 @@ const locations = require('./locationsService');
  */
 
 const CACHE_FILE = path.join(__dirname, '..', '.cache', 'vendors.json');
-const CACHE_VERSION = 1;
+// 1: initial — every row listed, addable or not.
+// 2: blueprint shelves resolve to the BLUEPRINT ITEM rather than to their
+//    subject, so rows carry `key`/`blueprint` and a research tech is addable.
+const CACHE_VERSION = 2;
 
 const TOWN = 13;
 const SQUAD = 52;
@@ -69,25 +73,41 @@ const TOWN_SQUAD_CATS = ['residents', 'default resident', 'bar squads', 'roaming
 const VENDOR_ITEM_CATS = ['items', 'weapons', 'clothing', 'armour blueprints', 'robotics', 'containers', 'crossbows', 'crossbow blueprints', 'trade goods', 'building materials', 'maps', 'blueprints', 'weapon manufacturers'];
 
 /**
+ * The shelves that sell a BLUEPRINT of the thing they name, rather than the
+ * thing itself.
+ *
+ * This distinction was missing and it made the page wrong in both directions.
+ * `blueprints` points at type-21 research techs, which were dimmed as "not a
+ * carryable item" — but a blueprint is very much carryable, and 238 live
+ * blueprint items name a bare tech sid exactly like these rows do.
+ * `armour blueprints` and `crossbow blueprints` point at ordinary type-3/107
+ * item templates, and the page cheerfully offered to add the armour — when what
+ * the shop sells is the blueprint for it. See services/blueprints.js.
+ *
+ * A shop can list the same template on two shelves (a Sleeveless Longcoat under
+ * both `clothing` and `armour blueprints`), so the row key carries the shelf
+ * kind — keying on the template sid alone silently dropped one of the two.
+ */
+const BLUEPRINT_CATS = new Set(['blueprints', 'armour blueprints', 'crossbow blueprints']);
+
+/**
  * Why a given vendor row can't be turned into an item, or null if it can.
  *
- * Both cases were checked rather than assumed — see the type-102 (map) entry in
- * gamedataService for the one that turned out to be a genuine gap:
+ * Only ONE case survives now, and it was checked rather than assumed:
  *
- *  - **21, research tech.** "Heavy Building Foundations" carries `level`,
- *    `time`, `production mult`, `category`, `description` — and no weight,
- *    value, mesh, icon or inventory footprint. Zero of the ~25,000 live ITEM
- *    records across four saves and 713 install files are backed by one. It is
- *    a research node: in game you buy an Ancient Science Book (a type-4 item)
- *    and the book unlocks the node. The node itself is never carried.
  *  - **51, weapon manufacturer.** "Truth Two" carries `blunt damage mod`,
  *    `price mod` and `extra['weapon models']`. It is the grade company — this
  *    editor already models it as the weapon grade ladder. A vendor listing one
  *    means "stocks weapons of that make", not "sells this object".
+ *
+ * Type 21 (research tech) used to be listed here with "not a carryable item —
+ * buy the book that unlocks it". That reasoning was right about the tech and
+ * wrong about the row: the shelf sells a blueprint FOR the tech, which is an
+ * object, and it is now minted as one (see BLUEPRINT_CATS).
  */
 function whyNotAddable(type) {
-  if (type === 21) return 'research tech, not a carryable item — buy the book that unlocks it';
   if (type === 51) return 'a weapon manufacturer, not an object — it sets the grade of weapons sold here';
+  if (type === 21) return 'research tech listed outside a blueprint shelf — nothing here sells it as an object';
   return 'not an item template this editor can mint';
 }
 
@@ -150,14 +170,29 @@ function build() {
             const tmpl = gamedata.lookup(templateSid);
             if (!tmpl) continue; // a row pointing at a record no installed mod defines
             count++;
-            const addable = gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type);
-            if (!items.has(templateSid)) {
-              items.set(templateSid, {
+            // A blueprint shelf sells the blueprint, not its subject — so the
+            // row is keyed and minted as a different object even when the
+            // subject also sits on an ordinary shelf in the same shop.
+            const bp = BLUEPRINT_CATS.has(cat) ? blueprints.forSubject(templateSid) : null;
+            const key = bp ? `blueprint|${templateSid}` : templateSid;
+            const addable = bp ? true : gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type);
+            if (!items.has(key)) {
+              items.set(key, {
+                key,
                 sid: templateSid,
-                name: tmpl.name,
+                name: bp ? `${bp.templateName}: ${tmpl.name}` : tmpl.name,
                 type: tmpl.type,
                 category: cat,
                 addable,
+                ...(bp ? {
+                  blueprint: {
+                    templateSid: bp.templateSid,
+                    templateName: bp.templateName,
+                    teaches: bp.teaches,
+                    subjectName: bp.subjectName,
+                    kind: bp.kind,
+                  },
+                } : {}),
                 ...(addable ? {} : { reason: whyNotAddable(tmpl.type) }),
               });
             }
@@ -186,8 +221,11 @@ function build() {
 
   const stats = {
     shops: shops.length,
-    addableItems: new Set(shops.flatMap((s) => s.items.filter((i) => i.addable).map((i) => i.sid))).size,
-    nonAddableItems: new Set(shops.flatMap((s) => s.items.filter((i) => !i.addable).map((i) => i.sid))).size,
+    // Keyed by `key`, not `sid`: a blueprint and its subject are two distinct
+    // things a shop can sell and they share a template sid.
+    addableItems: new Set(shops.flatMap((s) => s.items.filter((i) => i.addable).map((i) => i.key))).size,
+    nonAddableItems: new Set(shops.flatMap((s) => s.items.filter((i) => !i.addable).map((i) => i.key))).size,
+    blueprints: new Set(shops.flatMap((s) => s.items.filter((i) => i.blueprint).map((i) => i.key))).size,
     towns: new Set(shops.map((s) => s.town)).size,
     factions: new Set(shops.map((s) => s.faction).filter(Boolean)).size,
     placedTowns: new Set(shops.filter((s) => s.locationId).map((s) => s.town)).size,
@@ -244,10 +282,14 @@ function tree() {
     }));
 }
 
-/** Every shop that stocks a given item template — the reverse lookup. */
+/**
+ * Every shop that stocks a given item template — the reverse lookup. Matches on
+ * `sid`, so it finds a shop selling the thing AND a shop selling its blueprint;
+ * both are places you can go and come back with something.
+ */
 function shopsCarrying(templateSid) {
   return all().filter((s) => s.items.some((i) => i.sid === templateSid))
     .map((s) => ({ id: s.id, faction: s.faction, town: s.town, shop: s.shop }));
 }
 
-module.exports = { all, find, tree, stats, rebuild, shopsCarrying, VENDOR_ITEM_CATS };
+module.exports = { all, find, tree, stats, rebuild, shopsCarrying, VENDOR_ITEM_CATS, BLUEPRINT_CATS };

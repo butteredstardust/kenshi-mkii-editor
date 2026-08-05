@@ -47,7 +47,13 @@ test('every row is listed, and `addable` agrees with what addItem would accept',
       const tmpl = gamedata.lookup(it.sid);
       assert.ok(tmpl, `${shop.shop} offers unresolvable ${it.sid}`);
       assert.strictEqual(it.type, tmpl.type);
-      assert.strictEqual(it.addable, gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type),
+      // A blueprint row is addable regardless of its SUBJECT's typecode — what
+      // gets minted is the blueprint item template, not the subject. Everything
+      // else still has to be a template addItem() would accept.
+      const expected = it.blueprint
+        ? gamedata.ITEM_TEMPLATE_TYPES.has(gamedata.lookup(it.blueprint.templateSid).type)
+        : gamedata.ITEM_TEMPLATE_TYPES.has(tmpl.type);
+      assert.strictEqual(it.addable, expected,
         `"${it.name}" (typecode ${tmpl.type}) is marked addable=${it.addable}`);
       if (it.addable) { addable++; } else { blocked++; assert.ok(it.reason, `${it.name} is blocked with no reason given`); }
     }

@@ -1,6 +1,7 @@
 'use strict';
 
 const gamedata = require('./gamedataService');
+const blueprints = require('./blueprints');
 
 /**
  * Builds a fully-formed type-42 ITEM record for a given item TEMPLATE sid
@@ -106,6 +107,10 @@ function resolveGrade({ gradeId, materialSid, companySid }) {
  * @param {string} [opts.companySid]  type 2 only: disambiguates an ambiguous
  *   `materialSid`, and must agree with `gradeId` if both are given; ignored for
  *   type 3/4/46, which always mint an empty `company sid` (2.2(b)).
+ * @param {string} [opts.teaches]   BLUEPRINT templates only: the research-ledger
+ *   entry this blueprint grants. Written into BOTH `material sid` and
+ *   `company sid`, which is what all 876 live blueprint items do — see
+ *   services/blueprints.js for the sweep. Refused on any other template.
  */
 function buildItemRecord(templateSid, opts = {}) {
   const tmpl = gamedata.lookup(templateSid);
@@ -116,9 +121,22 @@ function buildItemRecord(templateSid, opts = {}) {
 
   const {
     section, level, quantity = 1,
-    gradeId, materialSid: materialOverride, companySid: companyOverride,
+    gradeId, materialSid: materialOverride, companySid: companyOverride, teaches,
   } = opts;
   if (!section) throw new Error('buildItemRecord: section is required');
+
+  // A blueprint's subject is carried in the two fields a weapon uses for its
+  // grade, so the two options are mutually exclusive by construction as well as
+  // by kind. Refuse rather than pick one: silently dropping `teaches` mints a
+  // blank blueprint that teaches nothing, and a blank one is indistinguishable
+  // in game from a real one until the player clicks it.
+  const blueprintMeta = teaches === undefined ? null : blueprints.describeEntry(teaches);
+  if (blueprintMeta && !blueprints.isBlueprintTemplate(templateSid)) {
+    throw new Error(
+      `"${tmpl.name}" is not a blueprint item template — "teaches" only applies to one of `
+      + `${blueprints.templates().map((t) => t.sid).join(', ') || '(none in this install)'}`,
+    );
+  }
 
   // --- item function (2.2(b)) ---
   let itemFunction;
@@ -178,10 +196,20 @@ function buildItemRecord(templateSid, opts = {}) {
     // Type 102 (map) is the exception: its template DOES carry an
     // extra['material'] row ("Item_Map"), but all 39 live map items have an
     // EMPTY `material sid`. Follow the items, not the template.
-    materialSid = tmpl.type === 102
-      ? (materialOverride || '')
-      : (materialOverride || gamedata.materialCandidates(templateSid)[0] || '');
-    companySid = '';
+    //
+    // A BLUEPRINT is the other exception, and the only kind that fills
+    // `company sid` without being a weapon: both fields carry the ledger entry
+    // it grants, identically, on all 876 live examples. It is not a
+    // manufacturer — the game just reuses the pair as the blueprint's subject.
+    if (blueprintMeta) {
+      materialSid = blueprintMeta.teaches;
+      companySid = blueprintMeta.teaches;
+    } else {
+      materialSid = tmpl.type === 102
+        ? (materialOverride || '')
+        : (materialOverride || gamedata.materialCandidates(templateSid)[0] || '');
+      companySid = '';
+    }
   }
 
   // --- level / quality (2.2(b)/(e)) ---
@@ -267,6 +295,7 @@ function buildItemRecord(templateSid, opts = {}) {
     meta: {
       templateName: tmpl.name,
       templateType: tmpl.type,
+      blueprint: blueprintMeta,
       grade: grade ? {
         id: grade.id,
         companySid: grade.companySid,

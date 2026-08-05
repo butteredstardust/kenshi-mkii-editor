@@ -8,6 +8,7 @@ const mutation = require('../../services/mutationService');
 const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
 const research = require('../../services/researchService');
+const racesService = require('../../services/racesService');
 
 const router = express.Router();
 
@@ -85,6 +86,20 @@ router.get('/saves/:name/races', handle(async (req) => {
   return { races, default: saveService.defaultRace(races) };
 }));
 
+// Change a character's race. One platoon-file write covering the APPEARANCE
+// (66) race row and the MEDICAL (57) body plan — see saveService.setRace() for
+// why those two and nothing else, and racesService.js for how a race's
+// `combat anatomy` was shown to BE the body plan.
+router.put('/saves/:name/platoons/:file/characters/:sid/race', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const raceSid = req.body?.raceSid;
+  if (typeof raceSid !== 'string' || !raceSid) {
+    const e = new Error('body must include "raceSid" (non-empty string)'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `set race of ${req.params.sid} to ${racesService.nameOf(raceSid, raceSid)}`,
+    (staging) => saveService.setRace(staging, req.params.file, req.params.sid, raceSid));
+}));
+
 // Add a new member to a squad (two-file write: the .platoon and quick.save).
 router.post('/saves/:name/platoons/:file/characters', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
@@ -115,14 +130,7 @@ router.post('/saves/:name/equip', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
   const { targets, items, loadoutId, skipIfSlotFilled } = req.body || {};
 
-  if (!Array.isArray(targets) || !targets.length) {
-    const e = new Error('body must include a non-empty "targets" array of { file, sid }'); e.status = 400; throw e;
-  }
-  for (const t of targets) {
-    if (!t || typeof t.file !== 'string' || !t.file || typeof t.sid !== 'string' || !t.sid) {
-      const e = new Error('every target must be { file: string, sid: string }'); e.status = 400; throw e;
-    }
-  }
+  requireTargets(targets);
   if (items !== undefined && !Array.isArray(items)) {
     const e = new Error('"items", if given, must be an array'); e.status = 400; throw e;
   }
@@ -156,6 +164,77 @@ router.post('/saves/:name/equip', handle(async (req) => {
     raceNotes: loadout ? loadout.raceNotes || [] : [],
     skipIfSlotFilled: !!skipIfSlotFilled,
   }));
+}));
+
+// Bulk re-grade: set the quality of gear the selected characters ALREADY own —
+// "every piece of armour to Masterwork, every weapon to Edge Type 5" — in ONE
+// staged edit. Nothing is added or moved; see saveService.regradeMany() for
+// which typecode each control applies to and why armour's tier and a weapon's
+// grade are different fields.
+router.post('/saves/:name/regrade', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const {
+    targets, armourLevel, weaponGradeId, weaponLevel, includeCarried, includePackContents,
+  } = req.body || {};
+
+  requireTargets(targets);
+  for (const [key, value] of Object.entries({ armourLevel, weaponLevel })) {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value))) {
+      const e = new Error(`"${key}", if given, must be a number`); e.status = 400; throw e;
+    }
+  }
+  if (weaponGradeId !== undefined && (typeof weaponGradeId !== 'string' || !weaponGradeId)) {
+    const e = new Error('"weaponGradeId", if given, must be a non-empty string'); e.status = 400; throw e;
+  }
+  for (const [key, value] of Object.entries({ includeCarried, includePackContents })) {
+    if (value !== undefined && typeof value !== 'boolean') {
+      const e = new Error(`"${key}", if given, must be a boolean`); e.status = 400; throw e;
+    }
+  }
+  if (armourLevel === undefined && weaponGradeId === undefined && weaponLevel === undefined) {
+    const e = new Error('body must include at least one of armourLevel, weaponGradeId, weaponLevel');
+    e.status = 400;
+    throw e;
+  }
+
+  // Only forward what was actually supplied — regradeMany() distinguishes
+  // "leave this kind alone" from "set it", and an explicit `undefined` would
+  // still be an own key on the object it validates.
+  const patch = { targets };
+  if (armourLevel !== undefined) patch.armourLevel = armourLevel;
+  if (weaponGradeId !== undefined) patch.weaponGradeId = weaponGradeId;
+  if (weaponLevel !== undefined) patch.weaponLevel = weaponLevel;
+  if (includeCarried !== undefined) patch.includeCarried = includeCarried;
+  if (includePackContents !== undefined) patch.includePackContents = includePackContents;
+
+  return mutation.mutate(save.dir, `re-grade gear on ${targets.length} character(s)`,
+    (staging) => saveService.regradeMany(staging, patch));
+}));
+
+// Bulk unequip: move worn items back to Carried. With no filter it strips every
+// worn item; `sections` limits it to slots ("take everyone's helmet off"),
+// `templateSids` to a particular item, `itemSids` to exact item records.
+router.post('/saves/:name/unequip', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { targets, sections, templateSids, itemSids } = req.body || {};
+
+  requireTargets(targets);
+  for (const [key, value] of Object.entries({ sections, templateSids, itemSids })) {
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.length || value.some((s) => typeof s !== 'string' || !s)) {
+      const e = new Error(`"${key}", if given, must be a non-empty array of strings`); e.status = 400; throw e;
+    }
+  }
+
+  const patch = { targets };
+  if (sections !== undefined) patch.sections = sections;
+  if (templateSids !== undefined) patch.templateSids = templateSids;
+  if (itemSids !== undefined) patch.itemSids = itemSids;
+
+  const label = sections && sections.length === 1
+    ? `unequip ${sections[0]} on ${targets.length} character(s)`
+    : `unequip on ${targets.length} character(s)`;
+  return mutation.mutate(save.dir, label, (staging) => saveService.unequipMany(staging, patch));
 }));
 
 // What this save has researched, joined onto the tech tree.
@@ -248,6 +327,22 @@ function findSaveOr404(name) {
   const save = paths.findSave(name);
   if (!save) { const e = new Error(`no save named "${name}"`); e.status = 404; throw e; }
   return save;
+}
+
+/**
+ * The `targets` array every bulk character route takes: `{ file, sid }[]`,
+ * non-empty. Shape only — that a sid names a real character in that file is
+ * saveService's answer, not a route's.
+ */
+function requireTargets(targets) {
+  if (!Array.isArray(targets) || !targets.length) {
+    const e = new Error('body must include a non-empty "targets" array of { file, sid }'); e.status = 400; throw e;
+  }
+  for (const t of targets) {
+    if (!t || typeof t.file !== 'string' || !t.file || typeof t.sid !== 'string' || !t.sid) {
+      const e = new Error('every target must be { file: string, sid: string }'); e.status = 400; throw e;
+    }
+  }
 }
 
 router.put('/saves/:name/platoons/:file/characters/:sid/medical/parts/:n', handle(async (req) => {
@@ -348,9 +443,14 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
 // section compatibility) lives in saveService.addItem() itself.
 router.post('/saves/:name/platoons/:file/characters/:sid/inventory', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
-  const { templateSid, section, quantity, level, materialSid, companySid, gradeId } = req.body || {};
+  const { templateSid, section, quantity, level, materialSid, companySid, gradeId, teaches } = req.body || {};
   if (gradeId !== undefined && (typeof gradeId !== 'string' || !gradeId)) {
     const e = new Error('"gradeId", if given, must be a non-empty string'); e.status = 400; throw e;
+  }
+  // Blueprints: the research-ledger entry the blueprint grants. Shape is
+  // validated in services/blueprints.js; the route only rejects non-strings.
+  if (teaches !== undefined && (typeof teaches !== 'string' || !teaches)) {
+    const e = new Error('"teaches", if given, must be a non-empty string'); e.status = 400; throw e;
   }
   if (typeof templateSid !== 'string' || !templateSid) {
     const e = new Error('body must include "templateSid" (string, a gamedata item template sid)'); e.status = 400; throw e;
@@ -372,7 +472,7 @@ router.post('/saves/:name/platoons/:file/characters/:sid/inventory', handle(asyn
   }
   return mutation.mutate(save.dir, `add item ${templateSid} to ${req.params.sid}`,
     (staging) => saveService.addItem(staging, req.params.file, req.params.sid, templateSid,
-      { quantity, section, level, materialSid, companySid, gradeId }));
+      { quantity, section, level, materialSid, companySid, gradeId, ...(teaches === undefined ? {} : { teaches }) }));
 }));
 
 module.exports = router;

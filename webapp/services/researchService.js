@@ -5,8 +5,10 @@ const path = require('node:path');
 
 const { readFile, writeFile } = require('./kenshi/codec');
 const { asText, fromText } = require('./kenshi/binary');
-const paths = require('./pathService');
 const gamedata = require('./gamedataService');
+// Base-then-mods.cfg-then-unlisted. Shared with racesService, which needs the
+// same rule for exactly the same reason — see loadOrder.js.
+const { filesInLoadOrder } = require('./loadOrder');
 
 /**
  * Research: what the player has finished, and unlocking more of it.
@@ -99,37 +101,6 @@ let cached = null;
  * noise the player can neither research nor use.
  */
 function isReserved(sid) { return !sid.includes('-'); }
-
-/**
- * Every gamedata file, in the game's own load order: base first, then
- * `data/mods.cfg` order, then anything installed but unlisted.
- *
- * Unlisted files go LAST rather than being dropped. rebirth.mod is exactly that
- * case in this install — absent from mods.cfg yet plainly active (the save's
- * ledger is full of its sids) — and putting it last is what makes tech 2058
- * resolve to the `repeats: 5` the ledger actually shows.
- */
-function filesInLoadOrder() {
-  const files = gamedata.dataFiles();
-  const install = paths.installDir();
-  let order = [];
-  if (install) {
-    try {
-      order = fs.readFileSync(path.join(install, 'data', 'mods.cfg'), 'latin1')
-        .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-    } catch { /* no mods.cfg: base-then-everything-else is still a sane order */ }
-  }
-  const rank = new Map(order.map((n, i) => [n.toLowerCase(), i + 1]));
-  const rankOf = (file) => {
-    const base = path.basename(file);
-    if (!base.endsWith('.mod')) return 0; // gamedata.base and friends always load first
-    return rank.get(base.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
-  };
-  return files
-    .map((f, i) => ({ f, r: rankOf(f), i }))
-    .sort((a, b) => a.r - b.r || a.i - b.i)
-    .map((x) => x.f);
-}
 
 /** Resolve every type-21 tech: scalars last-definition-wins, extra rows unioned. */
 function build() {

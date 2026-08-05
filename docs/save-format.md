@@ -212,11 +212,27 @@ the handle on top of one per state record.
 A character's **race** is likewise not where you would look for it: it is in the
 `appearance (66)` record's *extra data* section, category `"race"`, as a single
 row whose `target` is the race's stringID (typecode 7). It is not a key in
-`bools`/`floats`/`ints`/`strings`. The rest of that record, and the
-`medical (57)` record's `hit<n>`/`sid<n>` body plan, vary per race in ways not
-derived here — which is why `services/characterFactory.js` builds a new
-character by cloning an existing one of the wanted race rather than
-synthesising those structures.
+`bools`/`floats`/`ints`/`strings`.
+
+That one row is the save's entire statement of species; everything a race
+*implies* comes from the type-7 record in gamedata. In particular the
+`medical (57)` record's body plan is not independent data — a race's
+`extra['combat anatomy']` has one row per body part, whose `target` is the part
+(typecode 16), `v0` is that part's `hit<n>` and `v1` its undamaged maximum.
+Across every character of every save on the development machine — 3717, in 15
+races — the part sets agree 3717/3717 and `hit<n> == v0` 3717/3717. Resolving it
+needs the game's load order, the rows unioned across definitions (a mod may
+re-state one limb), and `2147483647` read as "remove this part"; see
+`services/racesService.js` and AGENTS.md §3.
+
+The appearance record's *sliders* are a different matter: their key sets vary per
+race (a Shek record has `bone_wide_jaw`/`bone_horns_thick` keys a Greenlander's
+does not, and 13 distinct key shapes were observed within Greenlanders alone).
+Nothing here derives which keys a race requires, which is why
+`services/characterFactory.js` builds a NEW character by cloning an existing one
+of the wanted race rather than synthesising those structures — and why
+`saveService.setRace()`, which changes an EXISTING character's race, leaves the
+sliders exactly as they are and warns that the character will look different.
 
 ### Body-part health
 
@@ -225,6 +241,15 @@ synthesising those structures.
 undamaged arm reads `flesh 100` against `hit 80`, and a bonedog's hind legs read
 `70.7` against `50`. The editor reports both raw and judges damage against the
 character's own highest intact part, which is unambiguous.
+
+The real per-part maximum lives in the race, not the save: it is the second
+number (`v1`) on that part's `combat anatomy` row (§5, "Reading a character").
+It is a *natural* maximum rather than a hard ceiling — 39 live Hive Worker
+Drones read up to 125 against a `v1` of 75, and they are the characters whose
+`hitmult<n>` is not 1, i.e. the ones wearing robotic limbs.
+
+The other per-part floats are per-CHARACTER, not per-race: `hitmult<n>` is 1,
+`rig<n>` and `wear<n>` are 0 on every character without prosthetics.
 
 ---
 

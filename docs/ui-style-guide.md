@@ -113,6 +113,31 @@ The same logic applies to text: `.ok` for healthy state, `.warn` for degraded,
 
 - **Page:** `main` is capped at `1240px`.
 
+### Every control in a row is the same height
+
+`--control-h` is the height of a button, an input and a select, set once in
+`styles.css` and applied to all three. **Do not set a height, or vertical
+padding that would beat it, on an individual control.** Without it each control
+was as tall as its own font and padding happened to make it — a `.btn` ran
+~2.4rem against an input's ~2.1rem — so a row like `Cats [47800] [Apply]`
+bottom-aligned three boxes of three different heights and read as a bug.
+`--control-h-xs` is the compact variant, for `.btn--xs` in table action cells
+where the full height would fatten every row.
+
+Two rules follow from it:
+
+- **`.field-row` bottom-aligns** (`align-items: flex-end`), because a `.field`
+  stacks its caption above its control and the controls are what should line up.
+  A bare `.field-check` in such a row gets `--control-h` too, or its text sits
+  level with the neighbouring input's bottom *border* instead of its text.
+- **`.action-bar` centres** (`align-items: center`). It mixes children that have
+  a stacked caption with children that don't (a label, a count, buttons, a
+  checkbox), and bottom-aligning those scattered their text across three lines.
+  Every `.btn` in it takes `--control-h`, `--xs` or not: ghost styling is what
+  says "secondary", and a button 0.5rem shorter than its neighbour reads as an
+  unrelated widget rather than a hierarchy. The one primary goes last and is
+  pushed to the far end, so "Clear" and "Apply changes" are never adjacent.
+
 ### Master–detail is the rule for collections
 
 A squad is routinely 10–30 characters. **Never render a grid of expanded cards
@@ -191,6 +216,24 @@ every control in the row a pending edit and commit them together:
   pair for weapons, so the row shows the named tier or the named grade, and the
   raw numbers live behind a per-row "More" disclosure. Never make a field
   unreachable to tidy the default view — move it, don't drop it.
+
+### Defaults are a decision, and warnings are not refusals
+
+Two rules the Gear pickers follow, both worth copying:
+
+- **Default to what the user actually wants, not to the safest number.**
+  A new piece of armour is created at Specialist and a new weapon at Edge Type 3
+  (by name where the ladder has one, else by position — see `defaultGradeId()`),
+  because someone opening a save editor to hand out gear is not asking for
+  Prototype. Never default to the top of a ladder either: Meitou is a decision
+  the user should make out loud. The control sits right there showing what was
+  chosen, which is what makes a strong default honest rather than sneaky.
+- **A compatibility warning renders next to an ENABLED button.** Race fit,
+  including Kenshi's own racial armour restrictions, is advisory everywhere in
+  this app (AGENTS.md §3). Say what the game thinks, in a `.note-warn`, before
+  the write — in the picker, in the bulk pre-flight, and on the row for gear
+  that is already wrong — and let the user proceed. Disabling the button would
+  make this editor refuse what it exists to do.
 
 ## 5. Copy
 

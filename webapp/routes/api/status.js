@@ -13,6 +13,7 @@ const names = require('../../services/names');
 const personalities = require('../../services/personalities');
 const vendors = require('../../services/vendorsService');
 const research = require('../../services/researchService');
+const racesService = require('../../services/racesService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 
@@ -127,6 +128,11 @@ router.get('/gamedata/items', handle(async (req) => {
       description: cat ? (cat.wiki && cat.wiki.description) || null : null,
       allowedSections,
       slotsWidened,
+      // Kenshi's own racial armour restrictions for this template, or null when
+      // it restricts nothing (the norm). Sent as sid+name pairs so the picker
+      // can warn BEFORE the write — the client matches on the character's
+      // `race.sid`, never on the name, because two races here share one name.
+      raceRule: raceRuleRow(t.sid),
     };
   });
 
@@ -140,6 +146,22 @@ router.get('/gamedata/items', handle(async (req) => {
     slots: ITEM_SLOT_FILTERS,
   };
 }));
+
+/**
+ * One template's racial restriction, resolved to `{ sid, name }` pairs, or null
+ * when it has none.
+ *
+ * Race names come from racesService (load order), never `gamedata.nameOf` —
+ * this install's `17-gamedata.quack` is "Human" by first-definition-wins and
+ * "Greenlander" to the running game and the player. A restriction listing races
+ * the player has never heard of is not a warning, it is a puzzle.
+ */
+function raceRuleRow(sid) {
+  const rules = gamedata.raceRules(sid);
+  if (!rules) return null;
+  const pair = (s) => ({ sid: s, name: racesService.nameOf(s, s) });
+  return { only: rules.only.map(pair), exclude: rules.exclude.map(pair) };
+}
 
 // The weapon grade ladder (TODO.md 2.2(i)), for the "Add item" picker's
 // quality control when the selected template is a weapon (type 2). A weapon's
@@ -222,5 +244,45 @@ router.post('/locations/rebuild', handle(async () => { locations.rebuild(); retu
 router.get('/research', handle(async () => ({ techs: research.catalogue(), stats: research.stats() })));
 
 router.post('/research/rebuild', handle(async () => { research.rebuild(); return research.stats(); }));
+
+// The race catalogue: every type-7 gamedata record, resolved in the game's own
+// mod load order (services/racesService.js). Load order is not a nicety here —
+// first-definition-wins calls `17-gamedata.quack` "Human" where the running
+// game, and the player, call it "Greenlander".
+//
+// `switchable` is the subset PUT .../characters/:sid/race can target: a race
+// needs `combat anatomy` for this editor to know the body plan to write.
+// `?q=` filters by name substring, `?playable=1` to the character-creator races.
+router.get('/races', handle(async (req) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
+  const playableOnly = req.query.playable === '1' || req.query.playable === 'true';
+  const rows = racesService.catalogue().filter((r) => {
+    if (playableOnly && !r.playable) return false;
+    if (q && !r.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  return {
+    races: rows.map((r) => ({
+      sid: r.sid,
+      name: r.name,
+      // What to show in a picker: `name`, suffixed with the originating file
+      // where two races share a name (this install has two "Alpha Fishman").
+      label: r.label,
+      playable: r.playable,
+      isRobot: r.isRobot,
+      // Two races sharing this share an appearance slider set, so a switch
+      // between them keeps the character's face. Derived from the race's own
+      // `editor limits` XML, not from a hand-written family list.
+      appearanceFamily: r.appearanceFamily,
+      switchable: r.anatomy.length > 0,
+      parts: r.anatomy.length,
+      anatomy: r.anatomy,
+      definitions: r.definitions,
+    })),
+    stats: racesService.stats(),
+  };
+}));
+
+router.post('/races/rebuild', handle(async () => { racesService.rebuild(); return racesService.stats(); }));
 
 module.exports = router;

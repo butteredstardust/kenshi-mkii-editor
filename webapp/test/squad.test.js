@@ -25,11 +25,10 @@ const { asText, fromText, byteLength } = require('../services/kenshi/binary');
  */
 const scratchSave = fixture.scratchSave;
 
-/** First player squad file + first character in it, from the live save. */
+/** First player squad file + first character in it, from the FIXTURE. */
 function firstPlayerCharacter() {
-  const src = fixture.fixtureSave();
-  if (!src) return null;
-  const st = saveService.status(src.name);
+  const st = fixture.fixtureStatus();
+  if (!st) return null;
   const squad = st.squads.find((q) => q.characters.length);
   if (!squad) return null;
   return { platoonFile: squad.file, sid: squad.characters[0].sid, name: squad.characters[0].name, faction: st.world.faction };
@@ -474,11 +473,7 @@ test('setPersonality writes one int and refuses the values the game never uses',
 });
 
 test('dialogue is reported from the origin template and is never writable', (t) => {
-  const squad = (() => {
-    const src = fixture.fixtureSave();
-    if (!src) return null;
-    return saveService.status(src.name).squads.find((q) => q.characters.length) || null;
-  })();
+  const squad = fixture.fixtureSquad();
   if (!squad) return t.skip('no player squad');
 
   // The investigation result this encodes: a CHAR_STATE record carries NO

@@ -21,6 +21,8 @@ const state = {
   namePool: [], // plausible names from Kenshi's own namesM/F/MF.txt
   races: null, // { races, default } for THIS save — a new member is cloned from
   // an existing character, so the list is what the save contains, not all of gamedata.
+  raceCatalogue: [], // EVERY race in gamedata, load-order resolved (services/racesService.js).
+  // Switching a race clones nothing, so it can offer races this save has never seen.
   // "Add member" form state, kept here so the re-render after a successful add
   // doesn't wipe what the user typed for the next one (same reason as trainChoice).
   addMember: null,
@@ -42,6 +44,20 @@ const state = {
   // lands. `researchSel` is a Set of tech sids — techs have stable ids, so
   // unlike the roster there is no file::sid key to build.
   research: null,
+  // Faction relations, fetched per save (they are 114 type-37 records in that
+  // save's own quick.save) and cleared whenever the save changes or a write
+  // lands. `factionEdits` is a Map keyed "<fromGamedataSid>|<toGamedataSid>" —
+  // faction sids are stable gamedata ids, so unlike the roster there is no
+  // file::sid key to build. Both the player table and the drill-down write into
+  // the SAME map, so a batch can span both and still be one staged edit.
+  factions: null,
+  factionEdits: new Map(),
+  factionFilter: {
+    q: '', standing: '', onlyMet: false, hideDebug: true,
+    viewQ: '', // the drill-down's own search — see factionMatches()
+  },
+  factionFocus: null, // gamedata sid whose outgoing relations are open
+  factionView: null, // the loaded relationsOf() result for factionFocus
   researchSel: new Set(),
   researchFilter: { q: '', category: '', onlyTodo: true },
   researchReqs: true, // "include prerequisites" — see researchService.plan()
@@ -51,7 +67,29 @@ const state = {
   // is completely unchanged until you tick something.
   selection: new Set(),
   selectMode: false,
+  // Race stringID the roster is narrowed to, or '' for all. A sid, never a name
+  // — two races in this install share a display name. Paired with "All shown",
+  // this is how "give every Skeleton this" is done in two clicks.
+  raceFilter: '',
+  // Which roster groups (platoon files) are expanded. `null` means "follow the
+  // selection" — only the group holding the selected character is open, and it
+  // follows them as they move. The moment the user toggles a group by hand this
+  // becomes a real Set and their choice sticks, until the selection moves to a
+  // group that isn't open, which hands control back. See rosterGroupsOpen().
+  rosterOpen: null,
   bulk: null, // { loadoutId, skipIfSlotFilled } — survives the re-render after a write
+  // The bulk panel's OTHER half: one item picked once and given to everyone
+  // selected ("equip the whole squad with Blackened Chainmail"). Same shape as
+  // `addItem` minus the per-character key, because the whole point is that it
+  // is not tied to one character.
+  // { query, kind, slot, results, total, template, level, gradeId, quantity, section, skipIfSlotFilled }
+  bulkItem: null,
+  // The bulk panel's two edits to gear the selection ALREADY owns, kept here for
+  // the same reason as `bulk`: both re-render on success, and a form that snaps
+  // back to its defaults contradicts the receipt that just said what was applied.
+  // { armourLevel, gradeId, weaponLevel, includeCarried, includePackContents }
+  bulkGear: null,
+  bulkUnequip: null, // { slot, templateSid }
   pendingReceipt: null, // survives the re-render a mutation triggers (see wire())
   trainChoice: null, // { key, archetype, sub } — likewise survives the re-render
   // "Add item" picker state, keyed like trainChoice so it survives the
@@ -82,6 +120,10 @@ async function boot() {
   if (state.save) state.status = await API.saveStatus(state.save);
   state.archetypes = await API.archetypes();
   state.personalities = await API.personalities().catch(() => []);
+  // The full race catalogue. Save-independent (it comes from the install's
+  // gamedata), so it is fetched once at boot like the archetypes — unlike
+  // `state.races`, which is per-save because adding a member needs a donor.
+  state.raceCatalogue = await API.raceCatalogue().then((r) => r.races).catch(() => []);
   state.recruits = await API.recruits().catch(() => []);
   // Kenshi's own name pool, so a new member is never called nothing. Fetched
   // once — the files don't change while the app runs.
@@ -345,6 +387,85 @@ const LEVEL_PRESETS = [
 ];
 
 /**
+ * The tier a new piece of armour is created at unless the user says otherwise.
+ * Specialist rather than the ladder's bottom: someone reaching for this editor
+ * to hand out armour is not asking for Prototype, and the control is right
+ * there to change.
+ */
+const DEFAULT_ARMOUR_LEVEL = 80;
+
+/**
+ * The grade a new weapon is created at unless the user says otherwise: Edge
+ * Type 3, the best grade below Meitou in vanilla Kenshi.
+ *
+ * This install does not have one. `rebirth.mod` renames the top band to Edge
+ * Type 1 / 4 / 5 (ranks 70/75/80), so "Edge Type 3" resolves by NAME where it
+ * exists and otherwise by POSITION — the highest rank below the ladder's
+ * maximum, which is the position Edge Type 3 occupies in vanilla and lands on
+ * Edge Type 5 here. Never the ladder maximum itself: that is Meitou, a unique
+ * grade, and defaulting a whole squad to it is a decision the user should make
+ * out loud. A tie is broken toward the real manufacturer over `PLAYER_WEAPONS`
+ * ("Homemade"), which is the crafted-by-you variant of the same tier.
+ */
+function defaultGradeId() {
+  const grades = state.weaponGrades || [];
+  if (!grades.length) return '';
+  const named = grades.filter((g) => /^edge type 3$/i.test(g.modelName));
+  const pool = named.length ? named : (() => {
+    const top = Math.max(...grades.map((g) => g.rank));
+    const below = grades.filter((g) => g.rank < top);
+    if (!below.length) return grades;
+    const best = Math.max(...below.map((g) => g.rank));
+    return below.filter((g) => g.rank === best);
+  })();
+  const real = pool.find((g) => g.companySid !== 'PLAYER_WEAPONS');
+  return (real || pool[0]).id;
+}
+
+/** The default `level` for a newly created item of this template type. */
+const defaultLevelFor = (type) => (type === 3 ? DEFAULT_ARMOUR_LEVEL : undefined);
+
+/**
+ * Does the game's own data (or the wiki's slot table) say this character
+ * shouldn't wear this template? The client-side twin of services/fitCheck.js,
+ * for the ONE thing the server cannot answer ahead of time: a template the
+ * character does not own yet, being previewed in a picker.
+ *
+ * `template.raceRule` comes straight off the server (`/api/gamedata/items`) and
+ * is matched on the race's **sid**, never its name — two races in this install
+ * share a display name. `armourSlots` likewise arrives resolved per character.
+ * Nothing here decides anything: every one of these is also produced by the
+ * server on the write, and neither refuses.
+ */
+function raceFitWarnings(template, character, section) {
+  const out = [];
+  if (!template || !character) return out;
+  const race = character.race;
+  const rule = template.raceRule;
+
+  if (race && rule) {
+    const has = (list) => (list || []).some((r) => r.sid === race.sid);
+    if (has(rule.exclude)) {
+      out.push(`${template.name} cannot be worn by ${race.name}`);
+    } else if ((rule.only || []).length && !has(rule.only)) {
+      const named = rule.only.slice(0, 3).map((r) => r.name).join(', ')
+        + (rule.only.length > 3 ? ` and ${rule.only.length - 3} more` : '');
+      out.push(`${template.name} can only be worn by ${named}`);
+    }
+  }
+
+  if (race && race.armourSlots && section && ARMOUR_SLOTS.includes(section)
+    && !race.armourSlots.includes(section)) {
+    out.push(`${race.slotRuleLabel || race.name} have no ${section} slot in game`);
+  }
+  return out;
+}
+
+// The five slots the wiki's per-race table covers. Weapons and packs are not
+// part of that table and are never flagged by it.
+const ARMOUR_SLOTS = ['head', 'shirt', 'armour', 'legs', 'boots'];
+
+/**
  * Slot glyphs. Inline SVG, not an icon font (style guide §1): each one encodes
  * WHICH slot a row occupies, so it carries information the text would
  * otherwise have to repeat, and it makes a long inventory scannable by shape
@@ -409,6 +530,14 @@ function icon(name, label) {
 function sectionSummary(glyph, label) {
   return `<summary>${icon(glyph, label)}<span>${label}</span></summary>`;
 }
+
+/**
+ * "Worn", i.e. anything that is not one of the two storage buckets — the
+ * client-side mirror of saveService's EQUIP_SECTIONS. An unequip only ever
+ * means moving one of these back to Carried.
+ */
+const BUCKET_SLOTS = ['main', 'backpack_content'];
+const isWorn = (section) => !!section && !BUCKET_SLOTS.includes(section);
 
 /**
  * Put the two storage buckets first. Adding something usually means "into the
@@ -483,15 +612,29 @@ function itemRow(it) {
     </select>`;
   }
 
+  // Server-computed for every owned item (saveService.readPlatoon): the game's
+  // own racial restrictions plus the wiki's slot table. Shown on the row rather
+  // than only on a write, because the most common case is armour that is
+  // ALREADY on the wrong character — nothing would ever surface it otherwise.
+  const fit = it.fitWarnings || [];
+
   return `<tr data-sid="${esc(it.sid)}">
-    <td class="col-item"><span class="item-name">${icon(glyph, it.section)}<span>${esc(it.name)}</span></span>
-      ${it.catalog?.category ? `<div class="muted">${esc(it.catalog.category)}</div>` : ''}</td>
+    <td class="col-item"><span class="item-name">${icon(glyph, it.section)}<span>${esc(it.name)}</span>
+      ${fit.length ? '<span class="badge badge--warn" title="Race fit">race</span>' : ''}</span>
+      ${fit.map((w) => `<div class="note-warn">${esc(w.text)}</div>`).join('')}
+      ${it.blueprint
+    // Every blueprint is called "Blueprints", so without this a stack of five
+    // different ones reads as five copies of one item.
+    ? `<div class="muted">unlocks ${esc(it.blueprint.subjectName || it.blueprint.teaches || 'nothing')}</div>`
+    : it.catalog?.category ? `<div class="muted">${esc(it.catalog.category)}</div>` : ''}</td>
     <td class="n shrink">${qtyCell}</td>
     <td class="shrink">${itemSlotSelect(it)}
       <div class="muted item-collision-note"></div></td>
     <td class="shrink">${qualityCell}</td>
     <td class="shrink"><span class="actions">
       <button class="btn apply-item-btn" data-sid="${esc(it.sid)}" disabled>Apply</button>
+      ${isWorn(it.section) ? `<button class="btn btn--ghost btn--xs unequip-item-btn" data-sid="${esc(it.sid)}"
+        title="Move this back to Carried" ${dis()}>Unequip</button>` : ''}
       <button class="btn btn--ghost btn--xs more-item-btn" aria-expanded="false"
         title="Raw level and quality values">More</button>
     </span></td>
@@ -627,9 +770,23 @@ function addItemConfig(pick) {
       </span>
     </div>
     <p class="hint add-item-collision"></p>
+    <div class="add-item-fit"></div>
     ${t.slotsWidened ? '<p class="hint">Unrecognised kind — every slot is offered.</p>' : ''}
     ${isWeapon ? '<p class="hint">Grade is the manufacturer/material pair; Level is separate.</p>' : ''}
   </div>`;
+}
+
+/**
+ * The race-fit block shown under a picker, BEFORE the write. Warnings only —
+ * the button beside it stays enabled, because this editor's whole job is
+ * writing things Kenshi's own UI will not offer (AGENTS.md §3). Naming the
+ * consequence and then letting the user decide is the same contract the
+ * "replaces X" collision note follows.
+ */
+function fitNotice(warnings, { who = null } = {}) {
+  if (!warnings.length) return '';
+  return `<p class="note-warn">${who ? `${esc(who)}: ` : ''}${warnings.map(esc).join('. ')}.
+    <span class="muted">Applying anyway is allowed — the game may not show it.</span></p>`;
 }
 
 /**
@@ -771,7 +928,7 @@ function bulkPanel(picked) {
     </div>
     <p class="hint">One edit, one backup. Poor race fits are reported, never blocked.</p>
 
-    <details class="section" open>
+    <details class="section" ${state.bulkItem && state.bulkItem.template ? '' : 'open'}>
       ${sectionSummary('armour', 'Apply a loadout')}
       <div class="section-body stack">
         <div class="field-row">
@@ -791,8 +948,306 @@ function bulkPanel(picked) {
         <div id="bulk-preflight"></div>
       </div>
     </details>
+
+    ${bulkItemSection()}
+    ${bulkRegradeSection()}
+    ${bulkUnequipSection(picked)}
     <pre class="receipt" id="bulk-receipt" hidden></pre>
   </article>`;
+}
+
+/**
+ * "Upgrade what they're already wearing."
+ *
+ * The other two halves of this panel both ADD an item. This one adds nothing:
+ * it re-grades gear the selection already owns, which is the thing a player
+ * asks for once the squad is kitted out ("everyone's armour to Masterwork,
+ * every weapon to Edge Type 5"). Doing it through the Gear row's Apply is one
+ * staged edit — and one backup — per item, on a squad of ten that is a hundred.
+ *
+ * Two controls, not one, because the underlying field genuinely differs by kind
+ * (the same split the per-row Quality cell makes): armour's tier is
+ * `ints.level` on a named ladder, a weapon's grade is the company/material
+ * pair. Weapon Level is a third, separate field and lives behind the same
+ * "raw value" framing it has everywhere else.
+ */
+function bulkRegradeSection() {
+  const g = state.bulkGear || {};
+  const grades = state.weaponGrades || [];
+
+  return `<details class="section" id="bulk-regrade-section">
+    ${sectionSummary('stats', 'Set the quality of what they already have')}
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field">Armour tier
+          <select id="bulk-regrade-armour" ${dis()}>
+            <option value="">leave alone</option>
+            ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}" ${g.armourLevel === v ? 'selected' : ''}>${esc(label)} (${esc(v)})</option>`).join('')}
+          </select></label>
+        <label class="field">Weapon grade
+          <select id="bulk-regrade-grade" ${dis()}>
+            <option value="">leave alone</option>
+            ${grades.map((x) => `<option value="${esc(x.id)}" ${g.gradeId === x.id ? 'selected' : ''}>${esc(x.modelName)} — ${esc(x.companyName)}</option>`).join('')}
+          </select></label>
+        <label class="field">Weapon level
+          <input type="number" id="bulk-regrade-weapon-level" class="w-sm" step="1" min="0" max="100"
+            value="${esc(g.weaponLevel ?? '')}" placeholder="leave alone" ${dis()}></label>
+      </div>
+      <div class="field-row">
+        <label class="field-check">
+          <input type="checkbox" id="bulk-regrade-carried" ${g.includeCarried ? 'checked' : ''}>
+          Include carried items
+        </label>
+        <label class="field-check">
+          <input type="checkbox" id="bulk-regrade-pack" ${g.includePackContents ? 'checked' : ''}>
+          Include backpack contents
+        </label>
+        <button class="btn btn--primary" id="bulk-regrade-apply" ${dis()} disabled>Apply</button>
+      </div>
+      <p class="hint">Only what they are wearing, unless you widen it above. Nothing is added, removed or moved —
+        armour keeps its tier field, a weapon keeps its level; the grade is the manufacturer/material pair.</p>
+      <div id="bulk-regrade-preflight"></div>
+    </div>
+  </details>`;
+}
+
+/**
+ * "Take it off again."
+ *
+ * Unequipping is a move to Carried, never a delete — the item stays in the
+ * character's inventory. Two filters because both readings of the request are
+ * real: a slot ("take everyone's helmet off") and one specific item ("nobody
+ * should still be wearing that chainmail"). The item list is built from what
+ * the selection is ACTUALLY wearing, so it can never name something no one has.
+ */
+function bulkUnequipSection(picked) {
+  const u = state.bulkUnequip || {};
+  const slot = u.slot || '';
+  const slots = [...EQUIP_SLOTS, 'backpack_attach'];
+
+  return `<details class="section" id="bulk-unequip-section">
+    ${sectionSummary('bag', 'Unequip')}
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field">Slot
+          <select id="bulk-unequip-slot" ${dis()}>
+            <option value="">Everything worn</option>
+            ${slots.map((s) => `<option value="${esc(s)}" ${slot === s ? 'selected' : ''}>${esc(SLOT_LABELS[s] || s)}</option>`).join('')}
+          </select></label>
+        <label class="field field--grow">Item
+          <select id="bulk-unequip-item" ${dis()}>
+            ${wornItemOptions(picked, slot, u.templateSid)}
+          </select></label>
+        <button class="btn btn--primary" id="bulk-unequip-apply" ${dis()}>Unequip</button>
+      </div>
+      <p class="hint">Everything taken off moves to Carried — nothing is dropped or destroyed.
+        The item list is what this selection is wearing right now.</p>
+      <div id="bulk-unequip-preflight"></div>
+    </div>
+  </details>`;
+}
+
+/**
+ * The `<option>`s for the unequip panel's item filter: one per distinct
+ * template the SELECTION is currently wearing, in the chosen slot. Rebuilt
+ * imperatively when the selection or the slot changes, so it can never offer to
+ * take off something nobody has on.
+ */
+function wornItemOptions(picked, slot, selected) {
+  const worn = [];
+  const seen = new Set();
+  for (const { c } of picked) {
+    for (const it of c.inventory || []) {
+      if (!isWorn(it.section)) continue;
+      if (slot && it.section !== slot) continue;
+      if (!it.base || seen.has(it.base)) continue;
+      seen.add(it.base);
+      worn.push(it);
+    }
+  }
+  worn.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+  return `<option value="">Any item</option>
+    ${worn.map((it) => `<option value="${esc(it.base)}" ${selected === it.base ? 'selected' : ''}>${esc(it.name)} — ${esc(SLOT_LABELS[it.section] || it.section)}</option>`).join('')}`;
+}
+
+/** One `.preflight` row per character. Shared by the two panels below. */
+function preflightRows(picked, describe) {
+  return `<div class="preflight">${picked.map(({ c }) => {
+    const what = describe(c);
+    return `<div class="preflight-row">
+      <span class="who">${esc(c.name || '(unnamed)')}<span class="race">${esc(c.race ? c.race.name : 'unknown race')}</span></span>
+      <span class="what">${what || '<em>nothing</em>'}</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+/**
+ * What the re-grade is about to touch, per character, before the write — the
+ * same "name the consequence first" rule the loadout half follows. Computed
+ * from the inventory already on the character; the server re-derives it.
+ */
+function bulkRegradePreflight(picked, opts) {
+  const { armourLevel, gradeId, weaponLevel, includeCarried, includePackContents } = opts;
+  if (armourLevel === undefined && !gradeId && weaponLevel === undefined) return '';
+
+  const inScope = (c) => {
+    const own = (c.inventory || []).filter((it) => includeCarried || isWorn(it.section));
+    const nested = includePackContents
+      ? (c.inventory || []).flatMap((it) => it.contents || [])
+      : [];
+    return [...own, ...nested];
+  };
+
+  return preflightRows(picked, (c) => {
+    const items = inScope(c);
+    const armour = items.filter((it) => it.kindType === 3);
+    const weapons = items.filter((it) => it.kindType === 2);
+    const bows = items.filter((it) => it.kindType === 107);
+    const parts = [];
+    if (armourLevel !== undefined && armour.length) {
+      parts.push(`${esc(armour.length)} armour → ${esc(tierLabel(armourLevel))}`);
+    }
+    if (gradeId && weapons.length) {
+      const g = (state.weaponGrades || []).find((x) => x.id === gradeId);
+      parts.push(`${esc(weapons.length)} weapon(s) → ${esc(g ? g.modelName : gradeId)}`);
+    }
+    if (weaponLevel !== undefined && (weapons.length || bows.length)) {
+      parts.push(`${esc(weapons.length + bows.length)} weapon level(s) → ${esc(weaponLevel)}`);
+    }
+    return parts.map((p) => `<div>${p}</div>`).join('');
+  });
+}
+
+/** The named tier for a level, or the bare number when it isn't one of the six. */
+function tierLabel(level) {
+  const hit = LEVEL_PRESETS.find(([v]) => v === level);
+  return hit ? `${hit[1]} (${hit[0]})` : `level ${level}`;
+}
+
+/** What the unequip is about to take off, per character. */
+function bulkUnequipPreflight(picked, { slot, templateSid }) {
+  return preflightRows(picked, (c) => {
+    const going = (c.inventory || []).filter((it) => isWorn(it.section)
+      && (!slot || it.section === slot)
+      && (!templateSid || it.base === templateSid));
+    return going.length ? esc(going.map((it) => it.name).join(', ')) : '';
+  });
+}
+
+/**
+ * "Give everyone selected this one item."
+ *
+ * The loadout half above answers "kit this squad out"; this half answers the
+ * much more common "they all need a Blackened Chainmail". Doing that with a
+ * loadout would mean inventing a 30th one-item catalogue entry per item in the
+ * game, and doing it through the Gear page's per-character Add item means one
+ * staged edit and one backup per character — the exact thing the bulk route
+ * exists to avoid. It is the same picker as `addItemSection()`, deliberately:
+ * one item search in this app, learned once. Ids rather than the `.add-item-*`
+ * classes because wire()'s per-card loop wires those against a single
+ * character, and this card has no single character.
+ */
+function bulkItemSection() {
+  const pick = state.bulkItem || {};
+  return `<details class="section" id="bulk-item-section" ${pick.template ? 'open' : ''}>
+    ${sectionSummary('add', 'Give one item to everyone')}
+    <div class="section-body stack">
+      <div class="field-row">
+        <label class="field field--grow">Search items
+          <input type="search" id="bulk-item-search" placeholder="e.g. Blackened Chainmail, katana"
+            value="${esc(pick.query || '')}" ${dis()}></label>
+        <label class="field">Category
+          <select id="bulk-item-kind" ${dis()}>
+            <option value="">All</option>
+            ${(state.itemKinds || []).map((k) => `<option value="${esc(k.kind)}" ${pick.kind === k.kind ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}
+          </select></label>
+        <label class="field">Slot
+          <select id="bulk-item-slot" ${dis()}>
+            <option value="">Any</option>
+            ${(state.itemSlots || []).map((s) => `<option value="${esc(s)}" ${pick.slot === s ? 'selected' : ''}>${esc(SLOT_LABELS[s] || s)}</option>`).join('')}
+          </select></label>
+      </div>
+      <p class="hint">Slot only lists items whose slot the editor can confirm — search by name for the rest.
+        Every character selected gets their own copy; nothing is shared or moved between them.</p>
+      <div id="bulk-item-results" class="picker-results"></div>
+      <div id="bulk-item-config"></div>
+      <div id="bulk-item-preflight"></div>
+    </div>
+  </details>`;
+}
+
+/**
+ * The inverse of `carryFirst()`, and deliberately so.
+ *
+ * The per-character picker defaults to Carried because "Add item" there means
+ * "put this in their inventory". This panel is titled Equip: "give everyone a
+ * Blackened Chainmail" means WEAR it, and defaulting to Carried would quietly
+ * hand twenty characters an unworn shirt. Body slots first, the two storage
+ * buckets after, for the items (food, ore, a map) that have no body slot at all.
+ */
+function wearFirst(sections) {
+  const isBucket = (s) => s === 'main' || s === 'backpack_content';
+  return [...sections.filter((s) => !isBucket(s)), ...sections.filter(isBucket)];
+}
+
+/**
+ * The configure step for the one item, sized to the whole selection rather
+ * than to one character. Quality controls are the same three-way split
+ * `addItemConfig()` makes (armour Level ladder, weapon grade pair, neither for
+ * trade goods) — every character gets the item at the same quality, which is
+ * the point of setting it once here.
+ */
+function bulkItemConfig(pick, count) {
+  const t = pick.template;
+  const isWeapon = t.type === 2;
+  const isArmour = t.type === 3;
+
+  const levelControl = (isWeapon || isArmour) ? `
+    <label class="field">Level
+      <input type="number" id="bulk-item-level" class="w-sm" step="1" min="0" max="100"
+        value="${esc(pick.level ?? '')}" placeholder="level"></label>
+    <label class="field">Preset
+      <select id="bulk-item-level-preset">
+        <option value="">choose…</option>
+        ${LEVEL_PRESETS.map(([v, label]) => `<option value="${esc(v)}">${esc(label)} (${esc(v)})</option>`).join('')}
+      </select></label>` : '';
+
+  const gradeControl = isWeapon ? `
+    <label class="field">Grade
+      <select id="bulk-item-grade">
+        <option value="">lowest (default)</option>
+        ${(state.weaponGrades || []).map((g) => `<option value="${esc(g.id)}" ${pick.gradeId === g.id ? 'selected' : ''}>${esc(g.modelName)} — ${esc(g.companyName)}</option>`).join('')}
+      </select></label>` : '';
+
+  const quantityControl = t.stackable ? `
+    <label class="field">Quantity each
+      <input type="number" id="bulk-item-quantity" class="w-sm" step="1" min="1"
+        value="${esc(pick.quantity ?? 1)}"></label>` : '';
+
+  return `<div class="stack">
+    <h4 class="group-label">Selected — ${esc(t.name)} <span class="muted">(${esc(t.kind)})</span></h4>
+    ${t.description ? `<p class="hint">${esc(t.description)}</p>` : ''}
+    <div class="field-row">
+      ${levelControl}
+      ${gradeControl}
+      ${quantityControl}
+      <label class="field">Place in
+        <select id="bulk-item-place">
+          ${wearFirst(t.allowedSections).map((s) => `<option value="${esc(s)}" ${pick.section === s ? 'selected' : ''}>${esc(SLOT_LABELS[s] || s)}</option>`).join('')}
+        </select></label>
+      <label class="field-check">
+        <input type="checkbox" id="bulk-item-skip" ${pick.skipIfSlotFilled ? 'checked' : ''}>
+        Skip a slot that's already filled
+      </label>
+      <span class="actions">
+        <button class="btn btn--primary" id="bulk-item-apply" ${dis()}>Give to ${esc(count)}</button>
+        <button class="btn btn--ghost" id="bulk-item-clear">Clear</button>
+      </span>
+    </div>
+    ${t.slotsWidened ? '<p class="hint">Unrecognised kind — every slot is offered.</p>' : ''}
+    ${isWeapon ? '<p class="hint">Grade is the manufacturer/material pair; Level is separate.</p>' : ''}
+  </div>`;
 }
 
 /**
@@ -801,9 +1256,8 @@ function bulkPanel(picked) {
  * "replaces X" note, scaled to a squad. Computed client-side from data already
  * on the character; the server re-derives it all anyway.
  */
-function bulkPreflight(picked, loadout) {
+function bulkPreflight(picked, loadout, skip = false) {
   if (!loadout) return '';
-  const skip = !!(state.bulk || {}).skipIfSlotFilled;
   const buckets = new Set(['main', 'backpack_content']);
 
   return `<div class="preflight">${picked.map(({ c }) => {
@@ -821,12 +1275,20 @@ function bulkPreflight(picked, loadout) {
       .filter((n) => c.race && (n.races || []).some((r) => c.race.name.toLowerCase().includes(r.toLowerCase())))
       .map((n) => n.note);
 
+    // The reason this panel warns at all: a kit is applied to a whole squad at
+    // once, and a mixed-race squad is exactly where "Shek cannot wear that
+    // helmet" needs saying BEFORE the write, not in the receipt afterwards.
+    const fit = gets.flatMap((it) => raceFitWarnings(
+      { name: it.name || it.templateSid, raceRule: it.raceRule, type: it.type }, c, it.section,
+    ));
+
     return `<div class="preflight-row">
       <span class="who">${esc(c.name || '(unnamed)')}<span class="race">${esc(c.race ? c.race.name : 'unknown race')}</span></span>
       <span class="what">
         ${gets.length ? esc(gets.map((it) => it.name || it.templateSid).join(', ')) : '<em>nothing — every slot already filled</em>'}
         ${replaces.length ? `<div class="muted">replaces ${esc(replaces.join(', '))}</div>` : ''}
         ${skipped.length ? `<div class="muted">skipping ${esc(skipped.length)} already-filled slot(s)</div>` : ''}
+        ${fit.map((w) => `<div class="note-warn">${esc(w)}</div>`).join('')}
         ${notes.map((n) => `<div class="note-warn">${esc(n)}</div>`).join('')}
       </span>
     </div>`;
@@ -858,7 +1320,7 @@ function renderGear() {
       </span>
     </section>
     <div class="workspace">
-      ${rosterNav(groups, { selectable: state.selectMode })}
+      ${rosterNav(groups, { selectable: state.selectMode, races: rosterRaces(all) })}
       <div id="detail">${detail}</div>
     </div>`;
 }
@@ -868,6 +1330,54 @@ function renderGear() {
  * because this writes through the mutation gate like everything else here and
  * so needs the same shape: a labelled field, one primary Apply, a receipt.
  */
+/**
+ * The race row: what this character is, and what it can be changed to.
+ *
+ * Two things worth knowing about the list. It is the FULL gamedata catalogue,
+ * not `state.races` — that one is the per-save donor pool "Add member" needs,
+ * and a race switch clones nobody, so it can offer races this save has never
+ * contained. And it is filtered to `switchable`: a race with no `combat anatomy`
+ * anywhere in gamedata gives the editor no body plan to write, and the server
+ * refuses it, so offering it would be offering an error.
+ *
+ * The two optgroups are the only editorial judgement here — "playable" is the
+ * race record's own flag, and it is the difference between the races Kenshi's
+ * character creator offers and the 47 others (Soldierbot, P4 Unit, animals) that
+ * work but were never meant to be picked.
+ */
+function raceRow(c) {
+  const current = c.race;
+  const all = (state.raceCatalogue || []).filter((r) => r.switchable);
+  if (!current) return '';
+  if (!all.length) {
+    return `<p class="hint">Race: <b>${esc(current.name)}</b>. No race catalogue loaded, so it cannot be changed.</p>`;
+  }
+  // A race the save uses but gamedata cannot resolve a body plan for still has
+  // to appear, or the select would silently misreport what this character is.
+  const listed = all.some((r) => r.sid === current.sid);
+  const playable = all.filter((r) => r.playable);
+  const other = all.filter((r) => !r.playable);
+  // `label`, not `name`: several races share a name and the label carries the
+  // originating file that tells them apart.
+  const opt = (r) => `<option value="${esc(r.sid)}" ${r.sid === current.sid ? 'selected' : ''}>${esc(r.label || r.name)}</option>`;
+  const from = (state.raceCatalogue || []).find((r) => r.sid === current.sid);
+
+  return `<div class="field-row">
+      <label class="field field--grow">Race
+        <select class="char-race" data-initial="${esc(current.sid)}" ${dis()}>
+          ${listed ? '' : `<option value="${esc(current.sid)}" selected>${esc(current.name)} (body plan unknown)</option>`}
+          <optgroup label="Playable">${playable.map(opt).join('')}</optgroup>
+          <optgroup label="Other">${other.map(opt).join('')}</optgroup>
+        </select></label>
+      <button class="btn set-race" ${dis()}>Set</button>
+    </div>
+    <p class="hint">Rewrites the appearance record's race and rescales each body part to the new
+      race's limits. Wounds are kept in proportion, gear and stats are untouched.
+      ${from && from.appearanceFamily
+    ? `Faces carry over between races sharing a slider set — <b>${esc(from.appearanceFamily.replace(/^editor_data_|\.xml$/g, ''))}</b> here.`
+    : ''}</p>`;
+}
+
 function identitySection(c) {
   const list = state.personalities || [];
   const known = list.some((p) => p.value === c.personality);
@@ -883,6 +1393,8 @@ function identitySection(c) {
         <button class="btn btn--primary rename-char" ${dis()}>Apply</button>
       </div>
       <p class="hint">Up to 63 bytes.</p>
+
+      ${raceRow(c)}
 
       ${c.personality != null ? `<div class="field-row">
         <label class="field field--grow">Personality
@@ -1073,7 +1585,14 @@ function buildRoster() {
   }
 
   const f = state.filter.trim().toLowerCase();
-  const match = ({ c }) => !f || (c.name || '').toLowerCase().includes(f) || (c.origin || '').toLowerCase().includes(f);
+  // Race is a filter of its own rather than part of the name search: "which of
+  // these twenty are Skeletons" is the question a racially restricted item
+  // raises, and typing "skeleton" into a name box would also match a character
+  // called Skeleton and miss nothing else. Matched on the race SID, never the
+  // name — two races in this install share a display name.
+  const raceSid = state.raceFilter || '';
+  const match = ({ c }) => (!f || (c.name || '').toLowerCase().includes(f) || (c.origin || '').toLowerCase().includes(f))
+    && (!raceSid || (c.race && c.race.sid === raceSid));
   const shown = all.filter(match);
 
   const groups = s.squads
@@ -1082,7 +1601,45 @@ function buildRoster() {
 
   const sel = all.find(({ c, file }) => keyOf(file, c.sid) === state.selected);
 
-  return { s, all, groups, sel };
+  return { s, all, groups, sel, shown };
+}
+
+/** The races present in this save's roster, most numerous first, for the filter. */
+function rosterRaces(all) {
+  const byRace = new Map();
+  for (const { c } of all) {
+    if (!c.race) continue;
+    const e = byRace.get(c.race.sid) || { sid: c.race.sid, name: c.race.name, count: 0 };
+    e.count += 1;
+    byRace.set(c.race.sid, e);
+  }
+  return [...byRace.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+/**
+ * Which platoon groups are expanded right now.
+ *
+ * A save with several squads renders one long undivided list, and the squad you
+ * are actually working on is buried in it. So a group is a real disclosure: the
+ * one holding the selected character is open, the rest are shut, and selecting
+ * someone elsewhere moves the open group to them.
+ *
+ * `state.rosterOpen === null` is that automatic mode. A manual toggle
+ * materialises the set and pins it, so the user can open two squads side by side
+ * and keep them open — but if the selection lands in a group they closed, the
+ * automatic rule takes over again rather than leaving the editor pointed at
+ * somebody invisible.
+ *
+ * With a single group there is nothing to choose between, so it is always open.
+ */
+function rosterGroupsOpen(groups) {
+  const selFile = state.selected ? state.selected.split('::')[0] : null;
+  if (groups.length < 2) return new Set(groups.map((g) => g.file));
+  const manual = state.rosterOpen;
+  if (manual && (!selFile || manual.has(selFile))) return manual;
+  state.rosterOpen = null;
+  const auto = groups.find((g) => g.file === selFile) || groups[0];
+  return new Set(auto ? [auto.file] : []);
 }
 
 /**
@@ -1090,21 +1647,39 @@ function buildRoster() {
  * everywhere except the Gear tab, and off there until the user asks for it, so
  * the single-character flow is untouched by default.
  */
-function rosterNav(groups, { selectable = false } = {}) {
+function rosterNav(groups, { selectable = false, races = [] } = {}) {
+  // "All" selects what is SHOWN, not the whole save — with the race filter set
+  // that is exactly "select every Skeleton", which is the reason the filter
+  // exists. The label says so rather than leaving it to be discovered.
+  const filtered = !!state.raceFilter || !!state.filter.trim();
   const bar = selectable ? `<div class="roster-select-bar">
       <span>${esc(state.selection.size)} selected</span>
       <span class="actions">
-        <button class="btn btn--ghost btn--xs" id="select-all">All</button>
+        <button class="btn btn--ghost btn--xs" id="select-all">${filtered ? 'All shown' : 'All'}</button>
         <button class="btn btn--ghost btn--xs" id="select-none">None</button>
       </span>
     </div>` : '';
 
+  const raceBar = races.length > 1 ? `<label class="field roster-race">Race
+      <select id="roster-race" ${state.raceFilter ? 'class="is-set"' : ''}>
+        <option value="">All races</option>
+        ${races.map((r) => `<option value="${esc(r.sid)}" ${state.raceFilter === r.sid ? 'selected' : ''}>${esc(r.name)} (${esc(r.count)})</option>`).join('')}
+      </select></label>` : '';
+
+  const open = rosterGroupsOpen(groups);
+
   return `<nav class="roster" aria-label="Squad roster">
     <input type="search" class="roster-filter" id="roster-filter" placeholder="Filter by name…"
       value="${esc(state.filter)}" autocomplete="off">
+    ${raceBar}
     ${bar}
-    ${groups.map((g) => `<div class="roster-group">${esc(g.file.replace(/\.platoon$/, ''))}</div>
-      <ul class="roster-list">${g.chars.map((c) => rosterItem(c, g.file, { selectable })).join('')}</ul>`).join('')
+    ${groups.map((g) => `<details class="roster-squad" data-group="${esc(g.file)}" ${open.has(g.file) ? 'open' : ''}>
+      <summary class="roster-group">
+        <span>${esc(g.file.replace(/\.platoon$/, ''))}</span>
+        <span class="roster-group-count">${esc(g.chars.length)}</span>
+      </summary>
+      <ul class="roster-list">${g.chars.map((c) => rosterItem(c, g.file, { selectable })).join('')}</ul>
+    </details>`).join('')
       || '<p class="empty-state">No match.</p>'}
   </nav>`;
 }
@@ -1402,20 +1977,23 @@ function vendorStock(shop) {
 
   const KIND = { 2: 'weapon', 3: 'armour', 4: 'trade goods', 46: 'backpack', 107: 'crossbow', 111: 'limb', 102: 'map', 21: 'research', 51: 'manufacturer' };
   const blocked = shop.items.filter((i) => !i.addable).length;
+  const bps = shop.items.filter((i) => i.blueprint).length;
   return `<p class="hint">${esc(shop.shop)} in ${esc(shop.town)} — stock lists:
       ${esc(shop.lists.map((l) => l.name).join(', '))}.
       What the shop <em>can</em> carry; actual stock is rolled in game.${blocked
-    ? ` ${esc(blocked)} row(s) are research or manufacturer entries rather than objects, so they have no Add.` : ''}</p>
+    ? ` ${esc(blocked)} row(s) are weapon-manufacturer entries rather than objects, so they have no Add.` : ''}${bps
+    ? ` ${esc(bps)} row(s) are blueprints — the shop sells the blueprint, not the thing it unlocks.` : ''}</p>
     <div class="table-wrap"><table class="data-table">
       <thead><tr><th class="col-item">Item</th><th>Kind</th><th>From list</th><th class="shrink"></th></tr></thead>
-      <tbody>${shop.items.map((it) => `<tr data-template="${esc(it.sid)}"${it.addable ? '' : ' class="row-muted"'}>
-        <td class="col-item"><span class="item-name">${icon(ITEM_KIND_ICONS[it.type] || 'bag', KIND[it.type] || '')}<span>${esc(it.name)}</span></span>
+      <tbody>${shop.items.map((it) => `<tr data-row="${esc(it.key)}"${it.addable ? '' : ' class="row-muted"'}>
+        <td class="col-item"><span class="item-name">${icon(it.blueprint ? 'list' : (ITEM_KIND_ICONS[it.type] || 'bag'), it.blueprint ? 'blueprint' : (KIND[it.type] || ''))}<span>${esc(it.name)}</span></span>
+          ${it.blueprint ? `<div class="muted">unlocks ${esc(it.blueprint.subjectName || it.sid)}</div>` : ''}
           ${it.addable ? '' : `<div class="muted">${esc(it.reason)}</div>`}</td>
-        <td class="muted">${esc(KIND[it.type] || `type ${it.type}`)}</td>
+        <td class="muted">${esc(it.blueprint ? 'blueprint' : (KIND[it.type] || `type ${it.type}`))}</td>
         <td class="muted">${esc(it.category)}</td>
         <td class="shrink"><span class="actions">
           ${it.addable
-    ? `<button class="btn btn--xs vendor-add" data-template="${esc(it.sid)}" ${dis()}>Add</button>`
+    ? `<button class="btn btn--xs vendor-add" data-row="${esc(it.key)}" ${dis()}>Add</button>`
     : '<span class="muted">—</span>'}
         </span></td>
       </tr>`).join('')}</tbody>
@@ -1600,6 +2178,210 @@ async function renderResearch() {
     </section>`;
 }
 
+/*
+ * Factions (services/factionsService.js).
+ *
+ * Two things a player wants and the save records separately:
+ *
+ *  1. **How everyone feels about me.** Stored on the OTHER faction's record —
+ *     the player's own type-37 record carries no relation rows at all — so this
+ *     page is a list of 113 factions each with one editable number.
+ *  2. **How they feel about each other.** The same mechanism one hop over, so
+ *     it is the same table behind a disclosure rather than a second page.
+ *
+ * Both feed ONE pending-edit map and ONE Apply. Every relation in a save lives
+ * in the same quick.save, so N separate writes would mean N backups and N
+ * intermediate on-disk states for edits that all land in one file — the same
+ * reason the Research page batches (style guide §4 "one row, one commit",
+ * applied at panel scale).
+ */
+
+// Standing -> label and badge tier. The BANDS come from the faction's own
+// `enemy classification`/`business relations` ints and are resolved server-side;
+// this only says which of the four intent tiers each word belongs to (style
+// guide §3 — danger for "attacks you", warn for degraded, accent for good).
+const STANDINGS = {
+  hostile: ['Hostile', 'badge--danger'],
+  unfriendly: ['Will not trade', 'badge--warn'],
+  wary: ['Wary', 'badge--warn'],
+  neutral: ['Neutral', 'badge--muted'],
+  friendly: ['Friendly', 'badge--accent'],
+  allied: ['Allied', 'badge--accent'],
+};
+
+// Quick values for the number input. Deliberately the round numbers Kenshi's
+// own data uses (-100/-50/0/50/100 account for 12669 of the fixture's 12882
+// rows) rather than invented gradations.
+const RELATION_PRESETS = [
+  ['100', 'Allied'], ['50', 'Friendly'], ['0', 'Neutral'], ['-50', 'Unfriendly'], ['-100', 'Hostile'],
+];
+
+const editKey = (from, to) => `${from}|${to}`;
+
+function standingBadge(standing, relation) {
+  const [label, cls] = STANDINGS[standing] || [standing, 'badge--muted'];
+  return `<span class="badge ${cls}">${esc(label)}</span>
+    <span class="muted">${esc(num(relation))}</span>`;
+}
+
+/**
+ * The editable cell for one directional relation. `data-initial` is what the
+ * save holds; the Apply button diffs against it, so a value typed back to where
+ * it started correctly contributes nothing (style guide §4).
+ */
+function relationInput(from, to, relation, editable) {
+  if (!editable) return '<span class="muted">—</span>';
+  const key = editKey(from, to);
+  const pending = state.factionEdits.get(key);
+  return `<span class="actions">
+      <input type="number" class="relation-input w-sm" min="-100" max="100" step="1"
+        data-from="${esc(from)}" data-to="${esc(to)}" data-initial="${esc(inputNum(relation))}"
+        value="${esc(pending === undefined ? inputNum(relation) : inputNum(pending))}" ${dis()}>
+      <select class="relation-preset" data-key="${esc(key)}" ${dis()} aria-label="Preset">
+        <option value="">…</option>
+        ${RELATION_PRESETS.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}
+      </select>
+    </span>`;
+}
+
+/**
+ * The two tables share the standing/engine-faction filters — those describe
+ * kinds of faction, which mean the same thing in both — but each owns its own
+ * search text. Sharing that made typing "Holy" into the top box silently cut the
+ * drill-down to two rows, which reads as a broken table rather than a filter.
+ * "Only ones I've met" is player-relative and applies to the top table alone.
+ */
+function factionMatches(f, view) {
+  const q = state.factionFilter;
+  if (q.hideDebug && f.notReal) return false;
+  if (!view && q.onlyMet && !f.met) return false;
+  if (q.standing && f.standing !== q.standing) return false;
+  const text = view ? q.viewQ : q.q;
+  if (!text) return true;
+  return f.name.toLowerCase().includes(text.toLowerCase());
+}
+
+/** The player-facing table: every faction's standing toward the player. */
+function factionTable(r) {
+  const shown = r.factions.filter((f) => factionMatches(f, false));
+  if (!shown.length) {
+    return '<div class="empty-state"><strong>Nothing matches</strong>No faction matches this search and filter.</div>';
+  }
+  return `<div class="table-wrap"><table class="data-table">
+      <thead><tr>
+        <th class="col-item">Faction</th><th>Standing</th><th>Met</th>
+        <th class="n">Turns hostile at</th><th class="shrink">Relation</th><th class="shrink"></th>
+      </tr></thead>
+      <tbody>${shown.map((f) => `<tr${f.notReal ? ' class="row-muted"' : ''}>
+        <td class="col-item"><span class="item-name">${icon('squad', 'faction')}<span>${esc(f.name)}</span></span>
+          ${f.notReal ? '<div class="muted">engine utility faction, not a real one</div>' : ''}</td>
+        <td>${standingBadge(f.standing, f.relation)}</td>
+        <td class="muted">${f.met ? 'yes' : 'not yet'}</td>
+        <td class="muted n">${esc(f.enemyAt)}</td>
+        <td class="shrink">${relationInput(f.sid, r.player.gamedataSid, f.relation, f.editable)}</td>
+        <td class="shrink"><span class="actions actions--end">
+          <button class="btn btn--xs btn--ghost faction-open" data-faction="${esc(f.sid)}">Their view</button>
+        </span></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+/** The drill-down: one faction's outgoing list. Same edit mechanism. */
+function factionViewTable() {
+  const v = state.factionView;
+  if (!v) return '<p class="hint">Pick a faction to see how it sees everyone else.</p>';
+  const shown = v.relations.filter((f) => factionMatches(f, true));
+  return `<p class="hint">How <strong>${esc(v.faction.name)}</strong> sees everyone else. This is the other
+      direction and it is not a mirror — a faction can hate someone who is indifferent to it.
+      ${esc(v.faction.name)} turns hostile at ${esc(v.faction.enemyAt)} and stops trading below
+      ${esc(v.faction.tradeAt)}.</p>
+    <label class="field field--grow">Search
+      <input type="search" id="faction-view-q" placeholder="faction name"
+        value="${esc(state.factionFilter.viewQ)}"></label>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th class="col-item">Toward</th><th>Standing</th><th class="shrink">Relation</th></tr></thead>
+      <tbody>${shown.map((f) => `<tr${f.notReal || f.isSelf ? ' class="row-muted"' : ''}>
+        <td class="col-item"><span class="item-name">${icon('squad', 'faction')}<span>${esc(f.name)}</span></span>
+          ${f.isPlayer ? '<div class="muted">your squad</div>' : ''}
+          ${f.isSelf ? '<div class="muted">itself — always 100, not editable</div>' : ''}</td>
+        <td>${standingBadge(f.standing, f.relation)}</td>
+        <td class="shrink">${relationInput(v.faction.sid, f.sid, f.relation, f.editable)}</td>
+      </tr>`).join('') || '<tr><td colspan="3" class="muted">Nothing matches.</td></tr>'}</tbody>
+    </table></div>`;
+}
+
+async function renderFactions() {
+  if (!state.save) return `${savePicker()}<div class="empty-state"><strong>No save</strong>No Kenshi save was found to read factions from.</div>`;
+  if (!state.factions) {
+    try {
+      state.factions = await API.factions(state.save);
+    } catch (err) {
+      return `${savePicker()}<div class="empty-state"><strong>Factions unavailable</strong>${esc(err.message)}</div>`;
+    }
+  }
+  const r = state.factions;
+  const c = r.counts;
+  const pending = state.factionEdits.size;
+
+  return `${savePicker()}
+    <section class="panel" id="factions-panel">
+      <div class="panel-head"><h2>${icon('squad', 'Factions')} Factions</h2>
+        <span class="muted">${esc(c.total)} factions · ${esc(c.met)} met</span></div>
+
+      <div class="pills">
+        <span class="pill"><span class="pill-key">Squad</span><span class="pill-val">${esc(r.player.name)}</span></span>
+        <span class="pill-sep"></span>
+        <span class="pill"><span class="pill-key">Hostile</span><span class="pill-val">${esc(c.hostile)}</span></span>
+        <span class="pill"><span class="pill-key">Unfriendly</span><span class="pill-val">${esc(c.unfriendly)}</span></span>
+        <span class="pill"><span class="pill-key">Neutral</span><span class="pill-val">${esc(c.neutral)}</span></span>
+        <span class="pill"><span class="pill-key">Friendly</span><span class="pill-val">${esc(c.friendly)}</span></span>
+        <span class="pill"><span class="pill-key">Allied</span><span class="pill-val">${esc(c.allied)}</span></span>
+      </div>
+
+      <div class="field-row">
+        <label class="field field--grow">Search
+          <input type="search" id="faction-q" placeholder="faction name" value="${esc(state.factionFilter.q)}"></label>
+        <label class="field">Standing
+          <select id="faction-standing">
+            <option value="">Any</option>
+            ${Object.entries(STANDINGS).map(([k, [label]]) => `<option value="${esc(k)}" ${state.factionFilter.standing === k ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+          </select></label>
+        <label class="field-check"><input type="checkbox" id="faction-met" ${state.factionFilter.onlyMet ? 'checked' : ''}>
+          Only ones I've met</label>
+        <label class="field-check"><input type="checkbox" id="faction-debug" ${state.factionFilter.hideDebug ? 'checked' : ''}>
+          Hide engine factions</label>
+      </div>
+
+      <div class="action-bar">
+        <span class="action-bar-label">${icon('rename', 'Apply')} Changes</span>
+        <span class="muted" id="faction-count">${esc(pending)} pending</span>
+        <button class="btn btn--xs btn--ghost" id="faction-reset">Discard</button>
+        <button class="btn btn--primary" id="faction-apply" ${pending && canWrite() ? '' : 'disabled'}>Apply changes</button>
+      </div>
+      <p class="hint">A relation is directional and lives on the <em>other</em> faction's record — your
+        own carries none. Values run -100 to 100; the "turns hostile at" column is that faction's own
+        threshold from gamedata, not a rule this editor invented. Every pending change is written in one
+        staged edit through the mutation gate.
+        ${c.met < c.total ? `${esc(c.total - c.met)} faction(s) you have not met can still be edited, but the
+          game will not show them to you until you run into them.` : ''}</p>
+      <pre class="receipt" id="faction-receipt" hidden></pre>
+
+      ${factionTable(r)}
+
+      <details class="section" id="faction-view-section" ${state.factionFocus ? 'open' : ''}>
+        ${sectionSummary('list', 'Between other factions')}
+        <div class="section-body">
+          <label class="field field--grow">Faction
+            <select id="faction-focus">
+              <option value="">choose…</option>
+              ${r.factions.map((f) => `<option value="${esc(f.sid)}" ${f.sid === state.factionFocus ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
+            </select></label>
+          <div id="faction-view">${factionViewTable()}</div>
+        </div>
+      </details>
+    </section>`;
+}
+
 function renderWorld() {
   const s = state.status;
   if (!s) return '<p>No save found.</p>';
@@ -1649,9 +2431,10 @@ async function render() {
   page.innerHTML = state.current === 'squad' ? renderSquad()
     : state.current === 'gear' ? renderGear()
       : state.current === 'vendors' ? renderVendors()
-        : state.current === 'research' ? await renderResearch()
-          : state.current === 'world' ? renderWorld()
-            : await renderBackups();
+        : state.current === 'factions' ? await renderFactions()
+          : state.current === 'research' ? await renderResearch()
+            : state.current === 'world' ? renderWorld()
+              : await renderBackups();
   wire();
 }
 
@@ -1771,8 +2554,15 @@ function wireBulkEquip() {
       loadoutId: loadoutSel ? loadoutSel.value : null,
       skipIfSlotFilled: !!(skipBox && skipBox.checked),
     };
-    preflightEl.innerHTML = bulkPreflight(rosterEntries(), currentLoadout());
+    preflightEl.innerHTML = bulkPreflight(rosterEntries(), currentLoadout(),
+      !!(skipBox && skipBox.checked));
   };
+
+  // Filled in by the wire* helpers below; no-ops until then so the tick handler
+  // can call them unconditionally.
+  let refreshItemPanel = () => {};
+  let refreshRegradePanel = () => {};
+  let refreshUnequipPanel = () => {};
 
   // Everything a tick changes, patched in place — see onTick() above.
   syncSelectionUi = () => {
@@ -1783,6 +2573,9 @@ function wireBulkEquip() {
     if (heading) heading.textContent = `Equip ${n} character${n === 1 ? '' : 's'}`;
     if (applyBtn) applyBtn.textContent = `Apply to ${n}`;
     refreshPreflight();
+    refreshItemPanel();
+    refreshRegradePanel();
+    refreshUnequipPanel();
   };
 
   // Changing the loadout only rewrites this panel's own contents, so it is
@@ -1822,6 +2615,376 @@ function wireBulkEquip() {
         render();
       },
       { details: bulkDetails });
+  };
+
+  refreshItemPanel = wireBulkItem({ receipt, rosterEntries });
+  refreshRegradePanel = wireBulkRegrade({ receipt, rosterEntries });
+  refreshUnequipPanel = wireBulkUnequip({ receipt, rosterEntries });
+}
+
+/**
+ * The re-grade half of the bulk panel.
+ *
+ * Like every other panel here it renders its pre-flight imperatively rather
+ * than through render(), which would tear down the roster the selection lives
+ * in. The Apply button stays disabled until at least one of the three controls
+ * is actually set — otherwise its only effect would be the mutation gate's
+ * "edit produced no change", which reads like a bug rather than a no-op.
+ *
+ * @returns {() => void} the repaint the tick handler calls.
+ */
+function wireBulkRegrade({ receipt, rosterEntries }) {
+  const armourSel = document.getElementById('bulk-regrade-armour');
+  if (!armourSel) return () => {};
+  const gradeSel = document.getElementById('bulk-regrade-grade');
+  const levelInput = document.getElementById('bulk-regrade-weapon-level');
+  const carriedBox = document.getElementById('bulk-regrade-carried');
+  const packBox = document.getElementById('bulk-regrade-pack');
+  const applyBtn = document.getElementById('bulk-regrade-apply');
+  const preflightEl = document.getElementById('bulk-regrade-preflight');
+
+  // The request body, minus `targets` — exactly the fields the server accepts
+  // (an unknown key is a 400, not a silently ignored option), and only the ones
+  // the user actually set.
+  const choice = () => {
+    const out = {};
+    if (armourSel.value !== '') out.armourLevel = Number(armourSel.value);
+    if (gradeSel && gradeSel.value) out.gradeId = gradeSel.value;
+    if (levelInput && levelInput.value !== '') out.weaponLevel = Number(levelInput.value);
+    out.includeCarried = !!(carriedBox && carriedBox.checked);
+    out.includePackContents = !!(packBox && packBox.checked);
+    return out;
+  };
+  const isEmpty = (c) => c.armourLevel === undefined && !c.gradeId && c.weaponLevel === undefined;
+
+  const sync = () => {
+    const c = choice();
+    state.bulkGear = {
+      armourLevel: c.armourLevel,
+      gradeId: c.gradeId,
+      weaponLevel: c.weaponLevel,
+      includeCarried: c.includeCarried,
+      includePackContents: c.includePackContents,
+    };
+    applyBtn.disabled = isEmpty(c) || !canWrite();
+    const picked = rosterEntries();
+    applyBtn.textContent = `Apply to ${picked.length}`;
+    if (preflightEl) preflightEl.innerHTML = bulkRegradePreflight(picked, c);
+  };
+
+  for (const el of [armourSel, gradeSel, levelInput, carriedBox, packBox]) {
+    if (!el) continue;
+    el.onchange = sync;
+    el.oninput = sync;
+  }
+  sync();
+
+  applyBtn.onclick = () => {
+    const picked = rosterEntries();
+    if (!picked.length) return showReceipt(receipt, new Error('Select at least one character first.'));
+    const c = choice();
+    if (isEmpty(c)) return showReceipt(receipt, new Error('Choose an armour tier, a weapon grade or a weapon level first.'));
+
+    const label = `re-graded gear on ${picked.length} character(s)`;
+    return runMutation(applyBtn, receipt, label,
+      () => API.regradeMany(state.save, { targets: picked.map(({ c: ch, file }) => ({ file, sid: ch.sid })), ...c }),
+      async (result) => {
+        await refresh();
+        state.panelReceipt = { result, label, details: regradeDetails(result) };
+        render();
+      },
+      { details: regradeDetails });
+  };
+
+  return sync;
+}
+
+/** The bulk re-grade receipt's per-character lines. */
+function regradeDetails(result) {
+  const r = (result.receipts || [])[0];
+  if (!r || !r.characters) return null;
+  const lines = [`${r.itemsChanged} item(s) → ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  for (const c of r.characters) {
+    lines.push(`  ${c.name || '(unnamed)'} — ${c.changed.length} item(s)`);
+    for (const it of c.changed) {
+      const bits = [];
+      if (it.before.level !== it.after.level) bits.push(`level ${it.before.level} → ${it.after.level}`);
+      if (it.before.materialSid !== it.after.materialSid) bits.push('grade set');
+      lines.push(`      ${it.name} (${SLOT_LABELS[it.section] || it.section}) — ${bits.join(', ')}`);
+    }
+    if (c.skipped) lines.push(`      ${c.skipped} item(s) of an unknown kind left alone`);
+  }
+  return lines;
+}
+
+/**
+ * The unequip half of the bulk panel. The item filter is rebuilt whenever the
+ * slot or the selection changes, because it is a list of what those characters
+ * are wearing right now, not a catalogue.
+ *
+ * @returns {() => void} the repaint the tick handler calls.
+ */
+function wireBulkUnequip({ receipt, rosterEntries }) {
+  const slotSel = document.getElementById('bulk-unequip-slot');
+  if (!slotSel) return () => {};
+  const itemSel = document.getElementById('bulk-unequip-item');
+  const applyBtn = document.getElementById('bulk-unequip-apply');
+  const preflightEl = document.getElementById('bulk-unequip-preflight');
+
+  const sync = ({ rebuildItems = true } = {}) => {
+    const picked = rosterEntries();
+    const slot = slotSel.value;
+    if (rebuildItems && itemSel) {
+      // Changing the slot can orphan the chosen item; keep it only if it is
+      // still one of the options rather than silently unequipping something else.
+      const keep = itemSel.value;
+      itemSel.innerHTML = wornItemOptions(picked, slot, keep);
+      if (itemSel.value !== keep) itemSel.value = '';
+    }
+    const templateSid = itemSel ? itemSel.value : '';
+    state.bulkUnequip = { slot, templateSid };
+    applyBtn.disabled = !canWrite();
+    if (preflightEl) preflightEl.innerHTML = bulkUnequipPreflight(picked, { slot, templateSid });
+  };
+
+  slotSel.onchange = () => sync();
+  if (itemSel) itemSel.onchange = () => sync({ rebuildItems: false });
+  sync();
+
+  applyBtn.onclick = () => {
+    const picked = rosterEntries();
+    if (!picked.length) return showReceipt(receipt, new Error('Select at least one character first.'));
+    const { slot, templateSid } = state.bulkUnequip || {};
+
+    const body = { targets: picked.map(({ c, file }) => ({ file, sid: c.sid })) };
+    if (slot) body.sections = [slot];
+    if (templateSid) body.templateSids = [templateSid];
+
+    const what = slot ? (SLOT_LABELS[slot] || slot) : 'everything worn';
+    const label = `unequipped ${what} on ${picked.length} character(s)`;
+    return runMutation(applyBtn, receipt, label,
+      () => API.unequipMany(state.save, body),
+      async (result) => {
+        await refresh();
+        state.panelReceipt = { result, label, details: unequipDetails(result) };
+        render();
+      },
+      { details: unequipDetails });
+  };
+
+  return sync;
+}
+
+/**
+ * Advisory lines from a single-item write: blueprint notes and race fit. The
+ * write already happened by the time these are read — the pre-flight above the
+ * button is where they are meant to be seen first; this is the record of what
+ * the editor thought while doing it.
+ */
+function fitDetails(result) {
+  const r = (result.receipts || [])[0] || {};
+  const lines = [...(r.warnings || [])];
+  for (const w of r.fitWarnings || []) if (!lines.includes(w.text)) lines.push(w.text);
+  return lines.length ? lines : null;
+}
+
+/** The bulk unequip receipt's per-character lines. */
+function unequipDetails(result) {
+  const r = (result.receipts || [])[0];
+  if (!r || !r.characters) return null;
+  const lines = [`${r.itemsMoved} item(s) → Carried, on ${r.charactersTouched} character(s) in ${r.filesTouched} file(s)`];
+  for (const c of r.characters) {
+    const moved = c.moved.map((m) => `${m.name} (${SLOT_LABELS[m.from] || m.from})`).join(', ');
+    lines.push(`  ${c.name || '(unnamed)'} — ${moved || 'nothing'}`);
+  }
+  return lines;
+}
+
+/**
+ * The "give one item to everyone" half of the bulk panel.
+ *
+ * Everything below `#bulk-item-section` is rendered imperatively, the same rule
+ * the per-character item picker follows: a full render() on every keystroke
+ * would tear down the search box mid-type, and here it would also collapse the
+ * roster the selection lives in. Only the write re-renders.
+ *
+ * @returns {() => void} a repaint for the parts that depend on how many
+ *   characters are selected — the tick handler calls it.
+ */
+function wireBulkItem({ receipt, rosterEntries }) {
+  const search = document.getElementById('bulk-item-search');
+  if (!search) return () => {};
+  const kindSel = document.getElementById('bulk-item-kind');
+  const slotSel = document.getElementById('bulk-item-slot');
+  const resultsEl = document.getElementById('bulk-item-results');
+  const configEl = document.getElementById('bulk-item-config');
+  const preflightEl = document.getElementById('bulk-item-preflight');
+
+  const pickOf = () => {
+    if (!state.bulkItem) state.bulkItem = {};
+    return state.bulkItem;
+  };
+
+  // The pre-flight lists what each selected character is about to get and what
+  // it displaces — the same "name the consequence before the write" the loadout
+  // half shows. One item is just a one-item loadout as far as that view cares.
+  const refreshPreflight = () => {
+    const pick = pickOf();
+    if (!preflightEl) return;
+    if (!pick.template) { preflightEl.innerHTML = ''; return; }
+    preflightEl.innerHTML = bulkPreflight(rosterEntries(), {
+      items: [{
+        templateSid: pick.template.sid,
+        name: pick.template.name,
+        section: pick.section,
+        type: pick.template.type,
+        // Carried through so the pre-flight can name who cannot wear it.
+        raceRule: pick.template.raceRule || null,
+      }],
+      raceNotes: [],
+    }, !!pick.skipIfSlotFilled);
+  };
+
+  const wireConfig = () => {
+    const pick = pickOf();
+    if (!pick.template) { configEl.innerHTML = ''; refreshPreflight(); return; }
+    configEl.innerHTML = bulkItemConfig(pick, rosterEntries().length);
+
+    const levelInput = document.getElementById('bulk-item-level');
+    const presetSel = document.getElementById('bulk-item-level-preset');
+    const gradeSel = document.getElementById('bulk-item-grade');
+    const qtyInput = document.getElementById('bulk-item-quantity');
+    const placeSel = document.getElementById('bulk-item-place');
+    const skipBox = document.getElementById('bulk-item-skip');
+
+    // Preset quick-fills the Level box; it never submits on its own.
+    if (presetSel) presetSel.onchange = () => {
+      if (!presetSel.value) return;
+      levelInput.value = presetSel.value;
+      pick.level = Number(presetSel.value);
+      presetSel.value = '';
+    };
+    if (levelInput) levelInput.oninput = () => {
+      pick.level = levelInput.value === '' ? undefined : Number(levelInput.value);
+    };
+    if (gradeSel) gradeSel.onchange = () => { pick.gradeId = gradeSel.value || undefined; };
+    if (qtyInput) qtyInput.oninput = () => { pick.quantity = Number(qtyInput.value); };
+    if (placeSel) placeSel.onchange = () => { pick.section = placeSel.value; refreshPreflight(); };
+    if (skipBox) skipBox.onchange = () => { pick.skipIfSlotFilled = skipBox.checked; refreshPreflight(); };
+
+    document.getElementById('bulk-item-clear').onclick = () => {
+      state.bulkItem = { query: pick.query, kind: pick.kind, slot: pick.slot, results: pick.results, total: pick.total };
+      configEl.innerHTML = '';
+      refreshPreflight();
+    };
+
+    const applyBtn = document.getElementById('bulk-item-apply');
+    applyBtn.onclick = () => {
+      const picked = rosterEntries();
+      if (!picked.length) return showReceipt(receipt, new Error('Select at least one character first.'));
+
+      // Only the fields the server accepts (saveService EQUIP_ITEM_FIELDS) —
+      // an unknown key is a 400, not a silently ignored option.
+      const item = { templateSid: pick.template.sid, section: placeSel.value };
+      if (levelInput && levelInput.value !== '') item.level = Number(levelInput.value);
+      if (gradeSel && gradeSel.value) item.gradeId = gradeSel.value;
+      if (qtyInput && qtyInput.value !== '') item.quantity = Number(qtyInput.value);
+
+      const label = `${pick.template.name} → ${picked.length} character(s)`;
+      return runMutation(applyBtn, receipt, label,
+        () => API.equipMany(state.save, {
+          targets: picked.map(({ c, file }) => ({ file, sid: c.sid })),
+          items: [item],
+          skipIfSlotFilled: !!(skipBox && skipBox.checked),
+        }),
+        async (result) => {
+          await refresh();
+          state.panelReceipt = { result, label, details: bulkDetails(result) };
+          render();
+        },
+        { details: bulkDetails });
+    };
+
+    refreshPreflight();
+  };
+
+  const wireResults = () => {
+    const pick = pickOf();
+    if (!pick.results) { resultsEl.innerHTML = ''; return; }
+    resultsEl.innerHTML = addItemResults(pick.results, pick.total);
+    resultsEl.querySelectorAll('.pick-item-btn').forEach((b) => {
+      b.onclick = async () => {
+        const template = pick.results.find((r) => r.sid === b.dataset.sid);
+        if (!template) return;
+        // The grade ladder only means anything for a weapon, so it is fetched
+        // the first time one is actually picked rather than at boot.
+        if (template.type === 2 && !state.weaponGrades) {
+          try {
+            state.weaponGrades = (await API.weaponGrades()).grades;
+          } catch {
+            state.weaponGrades = []; // optional; the server defaults the grade
+          }
+        }
+        Object.assign(pick, {
+          template,
+          section: wearFirst(template.allowedSections)[0],
+          quantity: template.stackable ? 1 : undefined,
+          level: defaultLevelFor(template.type),
+          gradeId: template.type === 2 ? defaultGradeId() : undefined,
+        });
+        wireConfig();
+      };
+    });
+  };
+
+  const runSearch = async (query) => {
+    const pick = pickOf();
+    pick.query = query;
+    pick.kind = kindSel ? kindSel.value : '';
+    pick.slot = slotSel ? slotSel.value : '';
+    // The filters are part of the request identity, so a slower earlier request
+    // cannot overwrite a newer one that only changed a filter.
+    const token = `${query}|${pick.kind}|${pick.slot}`;
+    try {
+      const res = await API.items(query, 40, { kind: pick.kind, slot: pick.slot });
+      if (`${pick.query}|${pick.kind}|${pick.slot}` !== token) return;
+      pick.results = res.items;
+      pick.total = res.total;
+      if (res.kinds) state.itemKinds = res.kinds;
+      if (res.slots) state.itemSlots = res.slots;
+    } catch (err) {
+      pick.results = [];
+      pick.total = 0;
+      showReceipt(receipt, err);
+    }
+    wireResults();
+  };
+
+  let searchTimer = null;
+  search.oninput = () => {
+    clearTimeout(searchTimer);
+    const q = search.value;
+    searchTimer = setTimeout(() => runSearch(q), 180);
+  };
+  if (kindSel) kindSel.onchange = () => runSearch(search.value);
+  if (slotSel) slotSel.onchange = () => runSearch(search.value);
+
+  // Opening the panel with nothing typed lists the catalogue, so the control is
+  // explorable rather than a blank box that only rewards guesses.
+  const details = document.getElementById('bulk-item-section');
+  details.ontoggle = () => {
+    if (details.open && !pickOf().results) runSearch('');
+  };
+
+  wireResults();
+  wireConfig();
+
+  // Ticking another name changes the button's count and every row of the
+  // pre-flight, and nothing else on this half.
+  return () => {
+    const applyBtn = document.getElementById('bulk-item-apply');
+    if (applyBtn) applyBtn.textContent = `Give to ${rosterEntries().length}`;
+    refreshPreflight();
   };
 }
 
@@ -1868,16 +3031,25 @@ function wireVendors() {
       btn.onclick = () => {
         if (!targetSel) return showReceipt(receipt, new Error('No character to add to.'));
         const [file, sid] = targetSel.value.split('::');
-        const templateSid = btn.dataset.template;
-        const row = (state.vendorShop.items || []).find((i) => i.sid === templateSid);
+        const row = (state.vendorShop.items || []).find((i) => i.key === btn.dataset.row);
+        if (!row) return showReceipt(receipt, new Error('That row is no longer in this shop.'));
         const qty = Math.max(1, Number(qtyInput.value) || 1);
-        return runMutation(btn, receipt, `added ${row ? row.name : 'item'}`,
+        // A blueprint shelf sells the BLUEPRINT, so the template written is the
+        // blueprint item's, and the row's own sid rides along as what it
+        // teaches. Sending row.sid here would add the armour instead.
+        const body = row.blueprint
+          ? { templateSid: row.blueprint.templateSid, teaches: row.blueprint.teaches }
+          : { templateSid: row.sid };
+        return runMutation(btn, receipt, `added ${row.name}`,
           () => API.addItem(state.save, file, sid, {
-            templateSid,
+            ...body,
             section: sectionSel.value,
             ...(qty > 1 ? { quantity: qty } : {}),
           }),
-          async () => { await refresh(); });
+          async () => { await refresh(); },
+          // The "already finished" note is the only way to learn a blueprint is
+          // a dud — the ledger knows and nothing on this page does.
+          { details: (result) => ((result.receipts || [])[0] || {}).warnings || [] });
       };
     }
   };
@@ -1888,6 +3060,158 @@ function wireVendors() {
   if (targetSel) targetSel.onchange = () => { state.vendorTarget = targetSel.value; };
 
   loadStock();
+}
+
+/**
+ * Factions page.
+ *
+ * Like Research, the per-row handlers deliberately do NOT re-render: 113 rows
+ * rebuilt on every keystroke would take the focused number input with them. The
+ * pending-edit map and the two things that depend on its size (the count and
+ * the Apply button) are patched in place instead. Only the write re-renders.
+ */
+function wireFactions() {
+  const panel = document.getElementById('factions-panel');
+  if (!panel) return;
+  const receipt = document.getElementById('faction-receipt');
+  const countEl = document.getElementById('faction-count');
+  const applyBtn = document.getElementById('faction-apply');
+
+  if (state.panelReceipt) {
+    showReceipt(receipt, state.panelReceipt.result, {
+      label: state.panelReceipt.label, details: state.panelReceipt.details,
+    });
+    state.panelReceipt = null;
+  }
+
+  const syncCount = () => {
+    countEl.textContent = `${state.factionEdits.size} pending`;
+    applyBtn.disabled = !state.factionEdits.size || !canWrite();
+  };
+
+  // One input's pending value. Typing back to the saved value REMOVES the entry
+  // rather than queueing a no-op, so "3 pending" always means three real
+  // changes and the gate never sees an edit that produces no change.
+  const trackInput = (input) => {
+    const key = editKey(input.dataset.from, input.dataset.to);
+    const initial = Number(input.dataset.initial);
+    const value = Number(input.value);
+    if (input.value === '' || !Number.isFinite(value)) { state.factionEdits.delete(key); return syncCount(); }
+    if (value === initial) state.factionEdits.delete(key);
+    else state.factionEdits.set(key, Math.max(-100, Math.min(100, value)));
+    return syncCount();
+  };
+
+  const wireRows = (root) => {
+    for (const input of root.querySelectorAll('.relation-input')) {
+      input.oninput = () => trackInput(input);
+    }
+    for (const sel of root.querySelectorAll('.relation-preset')) {
+      sel.onchange = () => {
+        if (!sel.value) return;
+        const input = sel.parentElement.querySelector('.relation-input');
+        input.value = sel.value;
+        sel.value = '';
+        trackInput(input);
+      };
+    }
+    for (const btn of root.querySelectorAll('.faction-open')) {
+      btn.onclick = () => { state.factionFocus = btn.dataset.faction; loadView(); };
+    }
+  };
+
+  const viewEl = document.getElementById('faction-view');
+  const focusSel = document.getElementById('faction-focus');
+
+  // The drill-down redraws ITSELF rather than calling render(): a full pass
+  // would tear down the panel and lose both the scroll position and the caret
+  // in whichever box is being typed into (style guide §4, "Pickers").
+  const drawView = ({ refocus = false } = {}) => {
+    viewEl.innerHTML = factionViewTable();
+    wireRows(viewEl);
+    const q = document.getElementById('faction-view-q');
+    if (q) {
+      q.oninput = () => { state.factionFilter.viewQ = q.value; drawView({ refocus: true }); };
+      if (refocus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+    }
+  };
+
+  const loadView = async () => {
+    const section = document.getElementById('faction-view-section');
+    if (section) section.open = true;
+    if (focusSel) focusSel.value = state.factionFocus || '';
+    if (!state.factionFocus) { state.factionView = null; drawView(); return; }
+    const sid = state.factionFocus;
+    viewEl.innerHTML = '<p class="hint">Loading…</p>';
+    try {
+      const v = await API.factionRelations(state.save, sid);
+      if (state.factionFocus !== sid) return; // a newer selection won
+      state.factionView = v;
+      drawView();
+    } catch (err) {
+      viewEl.innerHTML = '';
+      showReceipt(receipt, err);
+    }
+  };
+
+  wireRows(panel);
+  if (focusSel) focusSel.onchange = () => { state.factionFocus = focusSel.value || null; loadView(); };
+  // A view already in state was rendered into the HTML above but its own
+  // controls are not wired yet; one with no data still needs fetching.
+  if (state.factionFocus && !state.factionView) loadView();
+  else drawView();
+
+  // Filters re-render (the table is what they change), so pending edits have to
+  // survive in state — which is exactly why they live in state.factionEdits and
+  // not in the DOM.
+  const q = document.getElementById('faction-q');
+  if (q) q.oninput = () => {
+    state.factionFilter.q = q.value;
+    render();
+    const next = document.getElementById('faction-q');
+    if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); }
+  };
+  const standing = document.getElementById('faction-standing');
+  if (standing) standing.onchange = () => { state.factionFilter.standing = standing.value; render(); };
+  const met = document.getElementById('faction-met');
+  if (met) met.onchange = () => { state.factionFilter.onlyMet = met.checked; render(); };
+  const debug = document.getElementById('faction-debug');
+  if (debug) debug.onchange = () => { state.factionFilter.hideDebug = debug.checked; render(); };
+
+  const reset = document.getElementById('faction-reset');
+  if (reset) reset.onclick = () => { state.factionEdits.clear(); render(); };
+
+  applyBtn.onclick = () => {
+    const changes = [...state.factionEdits.entries()].map(([key, relation]) => {
+      const [from, to] = key.split('|');
+      return { from, to, relation };
+    });
+    if (!changes.length) return showReceipt(receipt, new Error('Change a relation first.'));
+    const label = changes.length === 1 ? '1 relation set' : `${changes.length} relations set`;
+    return runMutation(applyBtn, receipt, label,
+      () => API.setFactionRelations(state.save, changes),
+      async (result) => {
+        // A successful write re-renders (every badge and standing count moves),
+        // which replaces the .receipt element the result was just written into —
+        // so stash it for the next wire() to re-attach, the same trick the
+        // character cards use.
+        state.factionEdits.clear();
+        state.factions = null;
+        state.factionView = null;
+        state.panelReceipt = { result, label, details: factionDetails(result) };
+        render();
+      },
+      { details: factionDetails });
+  };
+
+  syncCount();
+}
+
+/** Turn a relation receipt into readable before -> after lines. */
+function factionDetails(result) {
+  const r = (result.receipts || [])[0];
+  if (!r || !r.changed) return null;
+  return r.changed.map((c) => `${c.fromName} → ${c.toName}: ${num(c.before)} → ${num(c.after)} (${c.standing})`);
 }
 
 /**
@@ -2160,6 +3484,12 @@ function wire() {
     state.addMember = null; // race sids and platoon files are per-save
     state.research = null; // research state belongs to the save, not the app
     state.researchSel.clear();
+    // Faction relations are per-save too, and a pending edit names a faction by
+    // gamedata sid — which would look valid against the new save and write a
+    // number the user chose while reading a different world.
+    state.factions = null;
+    state.factionView = null;
+    state.factionEdits.clear();
     await refresh();
     await loadRaces();
     render();
@@ -2168,6 +3498,7 @@ function wire() {
   wireSquadPanel();
   wireBulkEquip();
   wireVendors();
+  wireFactions();
   wireResearch();
 
   const money = document.getElementById('save-money');
@@ -2180,6 +3511,24 @@ function wire() {
   page.querySelectorAll('[data-select]').forEach((b) => {
     b.onclick = () => { state.selected = b.dataset.select; render(); };
   });
+
+  // Roster group disclosure. <details> already opened or closed itself by the
+  // time this fires, so all this does is record the choice — re-rendering here
+  // would tear down the element mid-click and fight the browser for it.
+  page.querySelectorAll('.roster-squad').forEach((d) => {
+    d.ontoggle = () => {
+      const open = new Set([...page.querySelectorAll('.roster-squad')]
+        .filter((x) => x.open).map((x) => x.dataset.group));
+      state.rosterOpen = open;
+    };
+  });
+
+  // Narrowing the roster by race re-renders (it changes which rows exist), and
+  // deliberately does NOT clear the selection: picking "Skeleton", hitting
+  // "All shown", then switching to "Hive Prince" and hitting it again is how a
+  // mixed selection gets built.
+  const raceSel = document.getElementById('roster-race');
+  if (raceSel) raceSel.onchange = () => { state.raceFilter = raceSel.value; render(); };
 
   const filter = document.getElementById('roster-filter');
   if (filter) filter.oninput = () => {
@@ -2197,7 +3546,7 @@ function wire() {
     // Re-attach the receipt stashed by a mutation that re-rendered this card.
     const pending = state.pendingReceipt;
     if (pending && pending.key === keyOf(file, sid)) {
-      showReceipt(receipt, pending.result, { label: pending.label });
+      showReceipt(receipt, pending.result, { label: pending.label, details: pending.details });
       state.pendingReceipt = null;
     }
     // Medical edits change what the card renders, so they re-render; stat edits
@@ -2206,14 +3555,20 @@ function wire() {
     // result was just written into — so the confirmation would vanish the
     // instant the edit succeeded, making a working mutation look like a no-op.
     // Stash it and let the next wire() re-attach it to the fresh element.
-    const run = (btn, label, fn, rerender = false) => runMutation(
+    // `details` is the one receipt surface's extra-lines channel (style guide
+    // §2.5) — the race switch is the caller that needs it, since its advisory
+    // warnings are the whole reason it never refuses.
+    const run = (btn, label, fn, rerender = false, details = null) => runMutation(
       btn, receipt, label, fn, async (result) => {
         await refresh();
         if (rerender) {
-          state.pendingReceipt = { key: keyOf(file, sid), result, label };
+          state.pendingReceipt = {
+            key: keyOf(file, sid), result, label, details: details ? details(result) : null,
+          };
           render();
         }
       },
+      { details },
     );
 
     const renameBtn = card.querySelector('.rename-char');
@@ -2237,6 +3592,37 @@ function wire() {
       // Re-renders: the card's own hint line describes the chosen personality.
       return run(persoBtn, `personality set to ${label}`,
         () => API.setPersonality(state.save, file, sid, Number(sel.value)), true);
+    };
+
+    const raceBtn = card.querySelector('.set-race');
+    if (raceBtn) raceBtn.onclick = () => {
+      const sel = card.querySelector('.char-race');
+      if (sel.value === sel.dataset.initial) {
+        return showReceipt(receipt, new Error('Pick a different race first.'));
+      }
+      const label = sel.selectedOptions[0].textContent;
+      // Re-renders: the race shows in the card head, the roster row and the
+      // health section's body-part table, all of which this changes.
+      //
+      // The warnings are the point of the receipt here. A race switch never
+      // refuses on fit (AGENTS.md §3 — race compatibility is advisory), so
+      // "expect this character to look different" and "this race is not
+      // playable" are things the user can only learn from the result.
+      return run(raceBtn, `race set to ${label}`,
+        () => API.setRace(state.save, file, sid, sel.value), true,
+        (result) => {
+          const r = (result.receipts || [])[0] || {};
+          const lines = (r.warnings || []).slice();
+          if (r.parts) {
+            const moved = r.parts.filter((p) => p.before.hit !== p.after.hit
+              || p.before.sid !== p.after.sid);
+            if (moved.length) {
+              lines.push('', ...moved.map((p) => `${p.after.name}: hit ${num(p.before.hit)} → ${num(p.after.hit)}`
+                + `, flesh ${num(p.before.flesh)} → ${num(p.after.flesh)} of ${num(p.after.max)}`));
+            }
+          }
+          return lines;
+        });
     };
 
     const statsBtn = card.querySelector('.save-stats');
@@ -2359,8 +3745,17 @@ function wire() {
       if (applyBtn) applyBtn.onclick = () => {
         const patch = collectPatch(row);
         if (Object.keys(patch).length === 0) return showReceipt(receipt, new Error('Nothing changed on this row.'));
-        return run(applyBtn, 'item updated', () => API.updateItem(state.save, file, sid, itemSid, patch), true);
+        return run(applyBtn, 'item updated',
+          () => API.updateItem(state.save, file, sid, itemSid, patch), true, fitDetails);
       };
+
+      // Unequip one item: a move to `main`, which is just the slot control's
+      // most common destination with the two clicks taken out. It goes through
+      // the same per-item route, so it is one staged edit like every other row
+      // action — the bulk panel is where "take this off everyone" lives.
+      const unequipBtn = row.querySelector('.unequip-item-btn');
+      if (unequipBtn) unequipBtn.onclick = () => run(unequipBtn, 'unequipped',
+        () => API.updateItem(state.save, file, sid, itemSid, { section: 'main' }), true);
     });
 
     // ---------------------------------------------------------- Add item --
@@ -2401,8 +3796,11 @@ function wire() {
         if (gradeSel) gradeSel.onchange = () => { pick.gradeId = gradeSel.value || undefined; };
         if (qtyInput) qtyInput.oninput = () => { pick.quantity = Number(qtyInput.value); };
 
+        const fitEl = configEl.querySelector('.add-item-fit');
+
         // Name what this placement will displace BEFORE the write, same as the
-        // per-row "replaces X" note on the move control.
+        // per-row "replaces X" note on the move control — and, in the same
+        // breath, whether this character's race can wear it at all.
         const updateCollision = () => {
           pick.section = sectionSel.value;
           const target = sectionSel.value;
@@ -2412,6 +3810,7 @@ function wire() {
             ? (ch.inventory || []).find((it) => it.section === target)
             : null;
           collision.textContent = occupant ? `Replaces ${occupant.name}, which moves back to Carried (main).` : '';
+          if (fitEl) fitEl.innerHTML = fitNotice(raceFitWarnings(pick.template, ch, target));
         };
         sectionSel.onchange = updateCollision;
         updateCollision();
@@ -2428,7 +3827,7 @@ function wire() {
           if (gradeSel && gradeSel.value) body.gradeId = gradeSel.value;
           if (qtyInput && qtyInput.value !== '') body.quantity = Number(qtyInput.value);
           return run(addBtn, `added ${pick.template.name}`,
-            () => API.addItem(state.save, file, sid, body), true);
+            () => API.addItem(state.save, file, sid, body), true, fitDetails);
         };
       };
 
@@ -2453,8 +3852,10 @@ function wire() {
               template,
               section: template.allowedSections[0],
               quantity: template.stackable ? 1 : undefined,
-              level: undefined,
-              gradeId: undefined,
+              // Sensible tier out of the box rather than the ladder's floor —
+              // see DEFAULT_ARMOUR_LEVEL / defaultGradeId().
+              level: defaultLevelFor(template.type),
+              gradeId: template.type === 2 ? defaultGradeId() : undefined,
             });
             wireConfig();
           };
