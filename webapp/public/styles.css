@@ -172,6 +172,37 @@ main { padding: var(--s5) var(--shell-pad); }
 .section > summary:hover { color: var(--ink); }
 .section-body { padding-top: var(--s3); }
 
+/* A repeated, scannable disclosure row — Recruits and Loadouts each browse
+ * 100+ entries where every one is a candidate for expansion. `.section` was
+ * built for 3-4 sub-headings inside ONE card ("Equipped", "Stats") and is
+ * deliberately small-caps and muted for that; reusing it here would put 144
+ * recruit NAMES in shouty uppercase, which is the wrong emphasis for a list
+ * you're scanning by name. Same collapse mechanics and caret as `.section`,
+ * normal case, name-first. */
+.list-row { border-top: 1px solid var(--line-soft); padding: var(--s2) 0; }
+.list-row:first-of-type { border-top: none; padding-top: 0; }
+.list-row > summary {
+  display: flex; align-items: center; gap: var(--s3);
+  cursor: pointer; list-style: none; padding: var(--s1) 0; border-radius: var(--radius);
+  transition: color var(--motion) var(--ease);
+}
+.list-row > summary::-webkit-details-marker { display: none; }
+.list-row > summary::before {
+  content: ""; width: .4em; height: .4em; flex: none;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); margin-right: .3em; color: var(--muted);
+  transition: transform var(--motion) var(--ease);
+}
+.list-row[open] > summary::before { transform: rotate(45deg); }
+.list-row > summary:hover { color: var(--accent); }
+/* `.item-name` already does icon+text layout (items.mjs); bold it here only —
+ * the row's primary label is the one thing that should out-weigh the meta
+ * text beside it. `margin-right: auto` rather than `space-between` on the
+ * summary: the caret is a ::before, so it is a flex item too, and
+ * space-between across three items centres the NAME — which is the one thing
+ * in a 144-row list that has to start at the same x on every row. */
+.list-row > summary > .item-name { font-weight: 600; margin-right: auto; }
+
 /* --------------------------------------------------------------- fields -- */
 
 select, input, button, textarea {

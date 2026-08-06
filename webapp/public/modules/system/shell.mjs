@@ -12,10 +12,12 @@ import {
 } from '../items.mjs';
 import { defaultGradeId, defaultLevelFor } from '../grades.mjs';
 import { renderSquad, wireSquadPanel, loadRaces } from '../features/squad.mjs';
-import { renderGear, wireBulkEquip, fitDetails } from '../features/gear.mjs';
+import { renderGear, fitDetails } from '../features/gear.mjs';
 import { renderVendors, wireVendors } from '../features/vendors.mjs';
 import { renderResearch, wireResearch } from '../features/research.mjs';
 import { renderFactions, wireFactions } from '../features/factions.mjs';
+import { renderRecruits, wireRecruits } from '../features/recruits.mjs';
+import { renderLoadouts, wireLoadouts, wireBulkEquip } from '../features/loadouts.mjs';
 import { renderWorld } from '../features/world.mjs';
 import { renderBackups } from '../features/backups.mjs';
 
@@ -85,8 +87,10 @@ async function render() {
       : state.current === 'vendors' ? renderVendors()
         : state.current === 'factions' ? await renderFactions()
           : state.current === 'research' ? await renderResearch()
-            : state.current === 'world' ? renderWorld()
-              : await renderBackups();
+            : state.current === 'recruits' ? renderRecruits()
+              : state.current === 'loadouts' ? renderLoadouts()
+                : state.current === 'world' ? renderWorld()
+                  : await renderBackups();
   wire();
 }
 
@@ -118,6 +122,8 @@ function wire() {
   wireVendors();
   wireFactions();
   wireResearch();
+  wireRecruits();
+  wireLoadouts();
 
   const money = document.getElementById('save-money');
   if (money) money.onclick = () => runMutation(

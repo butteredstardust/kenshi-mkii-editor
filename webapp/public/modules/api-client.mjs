@@ -59,6 +59,14 @@ export const API = {
   names: (count = 60) => request('GET', `/api/names?count=${encodeURIComponent(count)}`),
   addSquadMember: (name, file, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters`, body),
+  // Read-only preview of what addSquadMember()'s provisioning WOULD give a
+  // recruit of this shape — no save touched, so the "Add member" form can show
+  // it before the write. `archetype`/`sub` are required by the route; every
+  // other key is dropped when empty rather than sent as `loadoutId=`.
+  provisioningPreview: (params) => request('GET', '/api/provisioning/preview?'
+    + Object.entries(params || {})
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')),
   trainCharacter: (name, file, sid, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/train`,
     body),

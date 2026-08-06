@@ -17,12 +17,14 @@ export const state = {
   // doesn't wipe what the user typed for the next one (same reason as trainChoice).
   addMember: null,
   // Receipt for whichever PANEL-level (not card-level) mutation just ran — the
-  // Squad tab's rename/add-member panel or the Gear tab's bulk equip. Both
+  // Squad tab's rename/add-member panel or the Loadouts tab's bulk equip. Both
   // re-render on success, which replaces the .receipt element the result was
   // just written into, so it is stashed here and re-attached by the next wire().
   // Only one of those panels exists at a time (they are on different tabs).
   panelReceipt: null,
-  loadouts: [], // named gear sets for bulk equip (editorial — services/loadouts.js)
+  loadouts: [], // named gear sets — the Loadouts catalogue AND bulk equip's source (editorial — services/loadouts.js)
+  loadoutFilter: { q: '', category: '' }, // Loadouts tab's own search/category filter
+  recruitFilter: { q: '', group: '' }, // Recruits tab's own search/group filter
   locations: [], // town positions, from the INSTALL's world data (not the save)
   vendors: null, // { tree, stats } — who sells what, from gamedata not the save
   vendorSel: null, // { faction, town, shopId } drill-down selection
@@ -51,10 +53,9 @@ export const state = {
   researchSel: new Set(),
   researchFilter: { q: '', category: '', onlyTodo: true },
   researchReqs: true, // "include prerequisites" — see researchService.plan()
-  // Bulk equip: a Set of the same stable "<file>::<sid>" keys `selected` uses,
-  // never indices — the roster can be filtered and the save re-read between
-  // renders. Empty means "not in selection mode", so single-character editing
-  // is completely unchanged until you tick something.
+  // Bulk equip (Loadouts tab): a Set of the same stable "<file>::<sid>" keys
+  // `selected` uses, never indices — the roster can be filtered and the save
+  // re-read between renders. Empty means "not in selection mode".
   selection: new Set(),
   selectMode: false,
   // Race stringID the roster is narrowed to, or '' for all. A sid, never a name

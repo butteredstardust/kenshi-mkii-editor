@@ -20,6 +20,7 @@ const characterFactory = require('./characterFactory');
 const research = require('./researchService');
 const blueprints = require('./blueprints');
 const fitCheck = require('./fitCheck');
+const provisioning = require('./provisioning');
 const ids = require('./kenshi/ids');
 
 /**
@@ -1631,6 +1632,59 @@ function clearStolen(saveDir, platoonFile, characterSid, itemSid) {
 // blueprint that teaches nothing (see services/blueprints.js).
 const ADD_ITEM_OPTIONS = new Set(['quantity', 'section', 'level', 'materialSid', 'companySid', 'gradeId', 'teaches']);
 
+/**
+ * The shared "build one new item and attach it to this bag, in this parse"
+ * core — build the type-42 record via itemFactory.buildItemRecord(), displace
+ * a prior single-occupancy occupant via displaceIntoSlot(), then mint the
+ * record's identity and append it to the container via ids.addRecord()/
+ * ids.addInstance(). Every caller that needs a NEW item attached to an
+ * existing INVENTORY (41) record in an in-memory parse goes through this one
+ * function — addItem(), equipMany() and addSquadMember()'s provisioning step
+ * all call it, so there is exactly one mint-and-attach path rather than
+ * several that can quietly drift apart (the itemFactory.TEMPLATE_TYPES trap
+ * AGENTS.md §3 warns about with backpacks/crossbows/limbs).
+ *
+ * Deliberately does NOT validate templateSid/section/quantity itself —
+ * callers that need to fail before doing other work (addItem() fails before
+ * even parsing the platoon file; equipMany() validates every item once up
+ * front for every target) keep their own validation, in their own order, so
+ * this refactor changes no error message or its timing. itemFactory.
+ * buildItemRecord() still validates the template/typecode itself and throws
+ * on anything it cannot mint.
+ *
+ * @param {object} parsed  the platoon (or any filetype-15) parse `bag` lives
+ *   in — ids.addRecord()/ids.addInstance() both need it
+ * @param {object} bag     the INVENTORY (41) record to attach the item to
+ * @param {Map<string, object>} bySid  kept in lockstep: the new record is
+ *   added to it before this returns
+ * @param {string} templateSid
+ * @param {object} opts    section/level/quantity/gradeId/materialSid/
+ *   companySid/teaches — same shape as itemFactory.buildItemRecord()'s opts
+ * @returns {{ record: object, meta: object, displaced: object|null }}
+ */
+function attachNewItem(parsed, bag, bySid, templateSid, opts = {}) {
+  const { record, meta } = itemFactory.buildItemRecord(templateSid, {
+    section: opts.section,
+    level: opts.level,
+    quantity: opts.quantity ?? 1,
+    gradeId: opts.gradeId,
+    materialSid: opts.materialSid,
+    companySid: opts.companySid,
+    ...(opts.teaches === undefined ? {} : { teaches: opts.teaches }),
+  });
+
+  // The SAME displacement helper setItemSection()/addItem() use — this rule
+  // must never grow a second copy. excludeSid is null: the new record has no
+  // sid until ids.addRecord() stamps one below.
+  const displaced = displaceIntoSlot(bag, bySid, null, opts.section);
+
+  ids.addRecord(parsed, record);
+  ids.addInstance(bag, record.sid);
+  bySid.set(record.sid, record);
+
+  return { record, meta, displaced };
+}
+
 function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
   const unknown = Object.keys(opts).filter((k) => !ADD_ITEM_OPTIONS.has(k));
   if (unknown.length) {
@@ -1679,7 +1733,9 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
     raceName: race ? race.name : null,
   });
 
-  const { record, meta } = itemFactory.buildItemRecord(templateSid, {
+  // build + displace + mint + attach, all in the one shared core (see
+  // attachNewItem()'s comment) — never a second copy of this path.
+  const { record, meta, displaced } = attachNewItem(parsed, bag, bySid, templateSid, {
     section,
     level: opts.level,
     quantity,
@@ -1688,16 +1744,6 @@ function addItem(saveDir, platoonFile, characterSid, templateSid, opts = {}) {
     companySid: opts.companySid,
     ...(opts.teaches === undefined ? {} : { teaches: opts.teaches }),
   });
-
-  // Same collision rule as setItemSection() — adding into an occupied
-  // single-occupancy slot must displace the prior occupant back to `main` in
-  // this SAME write. excludeSid is null: the new item has no sid yet and
-  // cannot already be in `bag`.
-  const displaced = displaceIntoSlot(bag, bySid, null, section);
-
-  ids.addRecord(parsed, record); // stamps record.id/record.sid, appends to parsed.records
-  ids.addInstance(bag, record.sid); // appends to bag.instances, bumps bag.instanceCount
-  bySid.set(record.sid, record);
 
   return {
     file: relFile,
@@ -2322,9 +2368,23 @@ function squadMetaFor(world, platoonFile) {
  * @param {string} opts.sub              sub-archetype id
  * @param {string} [opts.tier='capable'] power tier id (services/recruits.js)
  * @param {function} [opts.rng]          injectable for deterministic tests
+ * @param {boolean} [opts.provision=true] equip the recruit as part of this
+ *   same staged edit (services/provisioning.js) — armour, weapon(s), a
+ *   medical kit, food and a cats stack, all minted into the SAME in-memory
+ *   parse as the character itself so a failure can never leave a naked
+ *   recruit. `false` reproduces the old behaviour: character added, empty
+ *   inventory.
+ * @param {string} [opts.loadoutId]      override provisioning's own
+ *   archetype/sub/tier-derived default loadout (services/provisioning.js's
+ *   defaultLoadoutFor()). An id that doesn't resolve throws — nothing is ever
+ *   written, since this throw happens before either file's bytes are read
+ *   back out to the caller.
+ * @param {object[]} [opts.items]        extra items to provision on top of
+ *   the loadout, same shape as a loadout entry
  */
 function addSquadMember(saveDir, platoonFile, {
   name, raceSid, archetype, sub, tier = 'capable', rng = Math.random,
+  provision = true, loadoutId, items,
 } = {}) {
   // Validate everything cheap and everything that can throw on bad input BEFORE
   // parsing a 4 MB save (same discipline as addItem()).
@@ -2421,6 +2481,69 @@ function addSquadMember(saveDir, platoonFile, {
   const membersBefore = gs.ints.get('members');
   if (gs.ints.has('members')) gs.ints.set('members', membersBefore + 1);
 
+  // --- provisioning: gear minted into the SAME in-memory parse, as part of
+  //     this SAME staged edit (AGENTS.md §2 — a failure must never leave a
+  //     naked recruit). Resolved AFTER the character exists so the medical
+  //     kit/food choice and the fit-check warnings below can see this
+  //     character's own race/body plan, but nothing has been written to
+  //     disk yet either way — if provisionFor() throws (e.g. an unknown
+  //     loadoutId), this function throws too and mutationService never sees
+  //     a return value to install.
+  let provisioned = null;
+  if (provision) {
+    const bag = newStates.find((r) => r.type === T.INVENTORY);
+    const medicalRec = newStates.find((r) => r.type === T.MEDICAL);
+    const bySidForItems = new Map(parsed.records.map((r) => [r.sid, r]));
+    const partSids = fitCheck.bodyPartSids(medicalRec, BODY_SLOTS);
+    const raceNameForFit = races.nameOf(raceSid, raceSid);
+
+    const plan = provisioning.provisionFor({ archetype, sub, tier, loadoutId, items, raceSid, rng });
+    const provisionedItems = [];
+    const warnings = [...plan.warnings];
+
+    for (const it of plan.items) {
+      let outcome;
+      try {
+        outcome = attachNewItem(parsed, bag, bySidForItems, it.templateSid, {
+          section: it.section, level: it.level, quantity: it.quantity, gradeId: it.gradeId,
+        });
+      } catch (err) {
+        // A provisioning-kit item that will not mint (an unresolvable template,
+        // a slot its kind cannot occupy) is reported, never fatal — the recruit
+        // still arrives with everything else, per AGENTS.md §3's "report and
+        // continue" rule for anything advisory.
+        warnings.push(`could not add "${it.templateSid}" to the new recruit's kit: ${err.message}`);
+        continue;
+      }
+      const { record, meta } = outcome;
+      provisionedItems.push({
+        sid: record.sid,
+        templateSid: it.templateSid,
+        name: meta.templateName,
+        section: it.section,
+        quantity: record.ints.get('quantity'),
+        level: record.ints.get('level'),
+        grade: meta.grade,
+      });
+      warnings.push(...fitCheck.warningsFor({
+        templateSid: it.templateSid,
+        itemName: meta.templateName,
+        section: it.section,
+        partSids,
+        raceSid,
+        raceName: raceNameForFit,
+      }).map((w) => w.text));
+    }
+
+    provisioned = {
+      loadoutId: plan.loadoutId,
+      loadoutLabel: plan.loadoutLabel,
+      items: provisionedItems,
+      cats: plan.cats,
+      warnings,
+    };
+  }
+
   const receipt = {
     character: {
       sid: handleSid,
@@ -2447,6 +2570,7 @@ function addSquadMember(saveDir, platoonFile, {
       worldMembers: { before: membersBefore ?? null, after: gs.ints.get('members') ?? null },
     },
     clearedBountyKeys: buildMeta.clearedBountyKeys || [],
+    provisioned,
   };
 
   // Two files, one staged edit — mutationService verifies and installs both or
@@ -2684,7 +2808,9 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
           }
         }
 
-        const { record, meta } = itemFactory.buildItemRecord(item.templateSid, {
+        // build + displace + mint + attach, all in the one shared core (see
+        // attachNewItem()'s comment) — never a second copy of this path.
+        const { record, meta, displaced } = attachNewItem(parsed, bag, bySid, item.templateSid, {
           section: item.section,
           level: item.level,
           quantity: item.quantity,
@@ -2692,11 +2818,6 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
           materialSid: item.materialSid,
           companySid: item.companySid,
         });
-
-        // The SAME displacement helper setItemSection()/addItem() use — this
-        // rule must never grow a second copy. excludeSid is null: the new
-        // record has no sid until addRecord() stamps one.
-        const displaced = displaceIntoSlot(bag, bySid, null, item.section);
         if (displaced) {
           entry.displaced.push({
             sid: displaced.sid,
@@ -2704,10 +2825,6 @@ function equipMany(saveDir, { targets, items, raceNotes = [], skipIfSlotFilled =
             section: 'main',
           });
         }
-
-        ids.addRecord(parsed, record);
-        ids.addInstance(bag, record.sid);
-        bySid.set(record.sid, record);
         addedCount += 1;
 
         entry.added.push({

@@ -9,6 +9,7 @@ const loadouts = require('../../services/loadouts');
 const locations = require('../../services/locationsService');
 const research = require('../../services/researchService');
 const racesService = require('../../services/racesService');
+const provisioning = require('../../services/provisioning');
 
 const router = express.Router();
 
@@ -107,9 +108,16 @@ router.put('/saves/:name/platoons/:file/characters/:sid/race', handle(async (req
 }));
 
 // Add a new member to a squad (two-file write: the .platoon and quick.save).
+// `provision`/`loadoutId`/`items` control the recruit's starting gear
+// (services/provisioning.js), minted into the SAME staged edit as the
+// character itself — never a second write. Domain validation (an unknown
+// loadoutId, a bad item shape) lives in saveService/provisioning; this route
+// only checks the shapes of the extra fields, per AGENTS.md §4.
 router.post('/saves/:name/platoons/:file/characters', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
-  const { name, raceSid, archetype, sub, tier } = req.body || {};
+  const {
+    name, raceSid, archetype, sub, tier, provision, loadoutId, items,
+  } = req.body || {};
   for (const [key, value] of Object.entries({ name, raceSid, archetype, sub })) {
     if (typeof value !== 'string' || !value) {
       const e = new Error(`body must include "${key}" (non-empty string)`); e.status = 400; throw e;
@@ -118,9 +126,45 @@ router.post('/saves/:name/platoons/:file/characters', handle(async (req) => {
   if (tier !== undefined && (typeof tier !== 'string' || !tier)) {
     const e = new Error('"tier", if given, must be a non-empty string'); e.status = 400; throw e;
   }
+  if (provision !== undefined && typeof provision !== 'boolean') {
+    const e = new Error('"provision", if given, must be a boolean'); e.status = 400; throw e;
+  }
+  if (loadoutId !== undefined && (typeof loadoutId !== 'string' || !loadoutId)) {
+    const e = new Error('"loadoutId", if given, must be a non-empty string'); e.status = 400; throw e;
+  }
+  if (items !== undefined && !Array.isArray(items)) {
+    const e = new Error('"items", if given, must be an array'); e.status = 400; throw e;
+  }
   return mutation.mutate(save.dir, `add ${name} to ${req.params.file}`,
-    (staging) => saveService.addSquadMember(staging, req.params.file,
-      { name, raceSid, archetype, sub, ...(tier === undefined ? {} : { tier }) }));
+    (staging) => saveService.addSquadMember(staging, req.params.file, {
+      name,
+      raceSid,
+      archetype,
+      sub,
+      ...(tier === undefined ? {} : { tier }),
+      ...(provision === undefined ? {} : { provision }),
+      ...(loadoutId === undefined ? {} : { loadoutId }),
+      ...(items === undefined ? {} : { items }),
+    }));
+}));
+
+// Preview what provisionFor() WOULD give a recruit of this shape, without
+// touching any save — so the UI can show it before the write. Read-only:
+// nothing here goes through mutationService.
+router.get('/provisioning/preview', handle(async (req) => {
+  const { archetype, sub, tier, loadoutId, raceSid } = req.query || {};
+  for (const [key, value] of Object.entries({ archetype, sub })) {
+    if (typeof value !== 'string' || !value) {
+      const e = new Error(`query must include "${key}" (non-empty string)`); e.status = 400; throw e;
+    }
+  }
+  return provisioning.provisionFor({
+    archetype,
+    sub,
+    tier: typeof tier === 'string' && tier ? tier : undefined,
+    loadoutId: typeof loadoutId === 'string' && loadoutId ? loadoutId : undefined,
+    raceSid: typeof raceSid === 'string' && raceSid ? raceSid : undefined,
+  });
 }));
 
 // Bulk equip: give every character in `targets` every item in `items`, in ONE

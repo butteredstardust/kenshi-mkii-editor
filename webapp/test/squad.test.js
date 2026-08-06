@@ -259,7 +259,15 @@ test('addSquadMember mints a whole character across two files and round-trips', 
     const race = saveService.defaultRace(saveService.availableRaces(scratch.dir));
     const receipt = await mutation.mutate(scratch.dir, 'test: add member',
       (staging) => saveService.addSquadMember(staging, target.platoonFile, {
+        // `provision: false` on purpose. This test is about the CHARACTER
+        // record cluster — six state records and seven ids — and provisioning
+        // (services/provisioning.js) now mints a type-42 ITEM record per item
+        // of the recruit's starting kit into the same file, which would make
+        // the counts below depend on the size of a loadout rather than on the
+        // thing being asserted. The provisioned path has its own round-trip
+        // coverage in test/provisioning.test.js.
         name: 'Ruka', raceSid: race.sid, archetype: 'soldier', sub: 'unarmed', tier: 'veteran', rng: seededRng(),
+        provision: false,
       }));
 
     // Two files, one edit — this is the only mutation in the app that does this.

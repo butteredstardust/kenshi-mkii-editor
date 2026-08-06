@@ -8,6 +8,8 @@ import { EQUIP_SLOTS, SLOT_LABELS } from '../slots.mjs';
 import { inventorySection } from '../items.mjs';
 import { render, refresh, savePicker } from '../nav.mjs';
 import { buildRoster, rosterNav } from './roster.mjs';
+import { loadoutItems } from './loadouts.mjs';
+import { loadoutGroups } from './bulk-equip.mjs';
 
 /**
  * Race list for the current save. Per-save, not global: "Add member" clones an
@@ -487,6 +489,66 @@ function suggestName() {
   return pick;
 }
 
+/**
+ * Resolve the preview endpoint's RAW items (templateSid only, plus whatever
+ * numeric field the server derived) against the loadout the preview says it
+ * picked, so `loadoutItems()` — the one item-list renderer in this app — can
+ * render them without a second implementation.
+ *
+ * A provisioned recruit's item list is never exactly its source kit: the
+ * server layers a med/repair kit, food and a cats stack on top, none of which
+ * are in that kit's own `items`. So the source kit is only the FIRST place a
+ * templateSid is looked for — the whole catalogue is the second, and it
+ * happens to name every one of those extras (first aid kit, Foodcube, Ration
+ * Pack, Cats), because some other kit does carry them. Without that second
+ * pass the preview showed a recruit arriving with "43959-rebirth.mod ×9".
+ *
+ * Anything neither pass resolves still falls through with `name: null`, which
+ * `loadoutItems()` renders as the raw templateSid in a muted span — never
+ * dropped, just honestly unresolved.
+ */
+function resolvePreviewItems(preview) {
+  const rows = state.loadouts || [];
+  const kit = preview.loadoutId ? rows.find((l) => l.id === preview.loadoutId) : null;
+  const byTemplate = new Map();
+  // Catalogue first, source kit last, so the kit's own row wins the key —
+  // a piece's `raceRule` is per-template and identical either way, but the
+  // kit is the definition this preview actually came from.
+  for (const l of rows) for (const it of l.items) if (it.name) byTemplate.set(it.templateSid, it);
+  for (const it of (kit ? kit.items : [])) byTemplate.set(it.templateSid, it);
+  return (preview.items || []).map((it) => {
+    const known = byTemplate.get(it.templateSid);
+    return { ...it, name: known ? known.name : null, raceRule: known ? known.raceRule : (it.raceRule || null) };
+  });
+}
+
+function renderGearPreview(data) {
+  const resolved = resolvePreviewItems(data);
+  return `<div class="stack">
+    <p class="hint">${data.loadoutLabel ? `Arrives as <b>${esc(data.loadoutLabel)}</b> — ` : ''}${esc(plural(resolved.length, 'item'))}, ${esc(data.cats)} cats.</p>
+    ${loadoutItems({ items: resolved })}
+    ${(data.warnings || []).map((w) => `<p class="hint note-warn">${esc(w)}</p>`).join('')}
+  </div>`;
+}
+
+/**
+ * The preview panel's content, purely from `state.addMember.preview` — never
+ * fetches. The fetch itself is imperative (wireSquadPanel's refreshGearPreview,
+ * same reasoning as the bulk-equip pre-flight: it must not tear down the form
+ * mid-choice) and writes its result into that same field, so this same
+ * function renders both the first paint (from whatever was cached across the
+ * last re-render) and every subsequent imperative repaint.
+ */
+function gearPreviewBlock(form) {
+  const p = form.preview;
+  if (!p) return '<p class="hint">Choose a race, specialisation and gear above to preview what they arrive with.</p>';
+  if (p.none) return '<p class="hint">Arrives empty-handed — no gear, no cats.</p>';
+  if (p.loading) return '<p class="hint">Loading preview…</p>';
+  if (p.error) return `<p class="hint note-warn">Could not preview starting gear: ${esc(p.error)}</p>`;
+  if (p.data) return renderGearPreview(p.data);
+  return '';
+}
+
 function addMemberSection(groups) {
   const races = (state.races && state.races.races) || [];
   const form = state.addMember || {};
@@ -570,8 +632,22 @@ function addMemberSection(groups) {
         <button class="btn btn--primary" id="add-member" ${dis()}>Add member</button>
       </div>
 
+      <div class="field-row">
+        <label class="field field--grow">Starting gear
+          <select id="member-gear" ${dis()}>
+            <option value="" ${(form.gearId || '') === '' ? 'selected' : ''}>Auto — matched to their role</option>
+            <option value="none" ${form.gearId === 'none' ? 'selected' : ''}>Nothing — arrives empty-handed</option>
+            ${loadoutGroups().map(([group, rows]) => `<optgroup label="${esc(group)}">
+              ${rows.map((l) => `<option value="${esc(l.id)}" ${form.gearId === l.id ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
+            </optgroup>`).join('')}
+          </select></label>
+      </div>
+      <div id="member-gear-preview">${gearPreviewBlock(form)}</div>
+
       <p class="hint">Cloned from a living character of that race in this save (the number beside each race is
-        how many). Arrives at the squad, healthy and carrying nothing.</p>
+        how many). Provisioned on arrival with Specialist-grade armour, a Catun No.3 weapon, a med or repair kit,
+        some food, and 300–5000 cats — override the exact kit with "Starting gear" above, or pick "Nothing" to
+        arrive with none of it.</p>
     </div>
   </details>`;
 }
@@ -757,6 +833,7 @@ export function wireSquadPanel() {
   const subSel = document.getElementById('member-sub');
   const tierSel = document.getElementById('member-tier');
   const fileSel = document.getElementById('member-file');
+  const gearSel = document.getElementById('member-gear');
   const recruitSel = document.getElementById('recruit-pick');
   const blurb = document.getElementById('recruit-blurb');
   const groups = (state.status ? state.status.squads : []).map((q) => q.file);
@@ -775,6 +852,11 @@ export function wireSquadPanel() {
     sub: subSel.value,
     tier: tierSel.value,
     file: fileSel ? fileSel.value : groups[0],
+    // '' = auto (server picks by archetype/sub/tier), 'none' = provision:
+    // false, anything else is a loadout id sent as an override. Kept
+    // alongside the rest of the form so a re-render after a successful add
+    // remembers the last choice, same as every other field here.
+    gearId: gearSel ? gearSel.value : '',
   });
 
   const populateSubs = () => {
@@ -783,8 +865,57 @@ export function wireSquadPanel() {
       .map((x) => `<option value="${esc(x.id)}">${esc(x.label)}</option>`).join('');
   };
 
-  archSel.onchange = () => { populateSubs(); remember(); };
-  [nameInput, raceSel, subSel, tierSel, fileSel].forEach((el) => {
+  /**
+   * Fetch the read-only provisioning preview and paint it into
+   * `#member-gear-preview`, imperatively — like every other picker preview in
+   * this app, a full render() here would tear down the form (and the name
+   * field) mid-choice. This is a GET with no mutation-gate involvement at all,
+   * so it runs regardless of `state.env.gameRunning`; only the Add member
+   * button itself is blocked from writing.
+   *
+   * Skips the fetch entirely when the params haven't actually changed (the
+   * cache key below), so re-wiring after an unrelated re-render of this panel
+   * doesn't re-hit the network for a preview it already has.
+   */
+  const previewEl = () => document.getElementById('member-gear-preview');
+  const refreshGearPreview = async () => {
+    const el = previewEl();
+    if (!el) return;
+    const gearId = gearSel ? gearSel.value : '';
+    if (gearId === 'none') {
+      state.addMember = { ...form(), preview: { none: true } };
+      el.innerHTML = gearPreviewBlock(state.addMember);
+      return;
+    }
+    const key = [archSel.value, subSel.value, tierSel.value, raceSel.value, gearId].join('|');
+    const cached = form().preview;
+    if (cached && cached.key === key && (cached.data || cached.error)) {
+      el.innerHTML = gearPreviewBlock(form());
+      return;
+    }
+    state.addMember = { ...form(), preview: { key, loading: true } };
+    el.innerHTML = gearPreviewBlock(state.addMember);
+    const query = { archetype: archSel.value, sub: subSel.value, tier: tierSel.value, raceSid: raceSel.value };
+    if (gearId) query.loadoutId = gearId;
+    try {
+      const data = await API.provisioningPreview(query);
+      // A slower earlier request must not clobber a newer one — same
+      // discipline the item search picker uses (bulk-equip.mjs's runSearch).
+      if (form().preview.key !== key) return;
+      state.addMember = { ...form(), preview: { key, data } };
+    } catch (err) {
+      if (form().preview.key !== key) return;
+      state.addMember = { ...form(), preview: { key, error: err.message || 'request failed' } };
+    }
+    const stillThere = previewEl();
+    if (stillThere) stillThere.innerHTML = gearPreviewBlock(form());
+  };
+
+  archSel.onchange = () => { populateSubs(); remember(); refreshGearPreview(); };
+  [raceSel, subSel, tierSel, gearSel].forEach((el) => {
+    if (el) el.onchange = () => { remember(); refreshGearPreview(); };
+  });
+  [nameInput, fileSel].forEach((el) => {
     if (el) el.onchange = remember;
   });
   nameInput.oninput = remember;
@@ -813,11 +944,17 @@ export function wireSquadPanel() {
     populateSubs();
     subSel.value = r.sub;
     tierSel.value = r.tier;
+    // A recruit's own `loadoutId` IS that character's gear (read off gamedata,
+    // not guessed) — the gear select follows it. A recruit with none falls
+    // back to auto, never to whatever override was left selected from a
+    // previous pick.
+    if (gearSel) gearSel.value = r.loadoutId || '';
     blurb.textContent = match
       ? r.blurb
       : `${r.blurb} (no ${r.race} in this save — using ${raceSel.selectedOptions[0]?.textContent || 'the selected race'}.)`;
     Object.assign(form(), { recruitId: r.id, blurb: blurb.textContent });
     remember();
+    refreshGearPreview();
   };
 
   if (recruitSel) recruitSel.onchange = () => {
@@ -839,6 +976,12 @@ export function wireSquadPanel() {
     applyRecruit(r);
   };
 
+  // First paint of the preview for whatever the form already holds — cheap
+  // thanks to refreshGearPreview()'s own cache check, so re-wiring this panel
+  // after an unrelated save mutation (teleport, rename, …) doesn't re-hit the
+  // network for a preview nothing invalidated.
+  refreshGearPreview();
+
   const addBtn = document.getElementById('add-member');
   if (addBtn) addBtn.onclick = () => {
     const name = nameInput.value.trim();
@@ -846,12 +989,19 @@ export function wireSquadPanel() {
     const file = fileSel ? fileSel.value : groups[0];
     if (!file) return showReceipt(receipt, new Error('This save has no player squad to add to.'));
     remember();
-    return run(addBtn, `${name} joined`, () => API.addSquadMember(state.save, file, {
+    const body = {
       name,
       raceSid: raceSel.value,
       archetype: archSel.value,
       sub: subSel.value,
       tier: tierSel.value,
-    }));
+    };
+    // '' (auto) sends neither field — the server's own default already
+    // provisions. 'none' means provision:false; anything else is a loadoutId
+    // override. Never both, and never `items` — the UI has no per-item picker.
+    const gearId = gearSel ? gearSel.value : '';
+    if (gearId === 'none') body.provision = false;
+    else if (gearId) body.loadoutId = gearId;
+    return run(addBtn, `${name} joined`, () => API.addSquadMember(state.save, file, body));
   };
 }

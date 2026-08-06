@@ -11,6 +11,40 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ### Added
 
+- **Recruits and Loadouts tabs.** Two new pages for inspecting the catalogues
+  the editor has always used but never shown. Recruits lists all 144 entries
+  under their 11 group headings, each expanding to the skills their archetype
+  trains, the numbers their tier will actually write, where the character is
+  found (and, separately and honestly, the towns this install's data cannot
+  place), and the gear set that *is* that character. Loadouts lists all 148
+  kits under their 11 categories, each expanding to its items with slot,
+  quantity, armour level and weapon grade resolved to names, plus the racial
+  restrictions on each piece. Both are search-and-filter, read-only, and
+  save-independent — nothing on the Recruits page reads or writes a save at
+  all.
+- **The catalogues doubled.** 75 recruits in 10 groups became 144 in 11 (the
+  new `hunter` group split the melee scouts and bounty hunters out of
+  `ranger`, which had become two-thirds katana users under a heading people
+  pick for crossbows), and 66 loadouts became 148, every one now filed under
+  one of 11 ordered categories.
+
+- **Recruit provisioning.** Adding a new squad member now equips them in the
+  SAME staged edit as the character itself — armour, weapon(s), a medical kit
+  (a robotics repair kit rather than bandages for a Skeleton, which does not
+  eat and gets no food), a couple of food items, and a random 300-5000 cats.
+  The gear set is auto-picked from the recruit's archetype/sub/tier
+  (`services/provisioning.js`'s `defaultLoadoutFor()`), a
+  `services/recruits.js` entry's own `loadoutId` always wins where one exists,
+  and the caller can still name a different loadout, pass explicit items, or
+  turn provisioning off entirely (`provision: false` reproduces the old
+  behaviour exactly). Armour always mints at Specialist (level 80) and a
+  melee weapon always at Catun No.3 (the real `Catun Scrapmaster` manufacturer
+  row, not the player-crafted "Homemade" variant of the same model) —
+  overriding whatever grade the chosen loadout template carried, since a
+  recruit's gear quality is a separate decision from which pieces they get.
+  `POST /api/saves/:name/platoons/:file/characters` takes `provision?`/
+  `loadoutId?`/`items?`; `GET /api/provisioning/preview` shows what a given
+  shape would produce without writing anything.
 - **Bounties, on the Squad tab** (TODO.md 3.6). A "wanted" badge and a
   Bounties section appear on a character carrying one, showing who wants
   them, the amount (editable), and expiry/claimed/crimes as reference-only
@@ -33,7 +67,7 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   CHARACTER template in your installed data, resolved in load order.
 - The same 29 characters as ready-made recruits, each linked to their loadout,
   with race and power tier taken from their template's `race` and
-  `combat stats`. The recruit catalogue is now 75 entries.
+  `combat stats`.
 - **Hackers**, the cleaver weapon class, as a trainable soldier sub-archetype.
 - **Search boxes on long dropdowns.** Any list of more than five options gets a
   filter above it — grades, loadouts, recruits, factions, towns, races. Typing
@@ -46,6 +80,19 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ### Changed
 
+- **Bulk equip moved from the Gear tab to the Loadouts tab.** Choosing a kit
+  and applying it to several characters is now one page instead of two: the
+  kit's contents are named and browsed immediately above the panel that applies
+  them. Gear is single-character again. Nothing about the write changed — still
+  one staged edit and one backup however many characters and items are
+  involved.
+- The bulk-equip loadout dropdown now groups the 148 kits by the same 11
+  categories the page itself is grouped by. It previously grouped by the
+  leading tag, which worked at 66 kits but had grown to 52 of them under
+  "Light armour" and 8 under "Other".
+- The Add member panel no longer says a recruit "arrives carrying nothing" —
+  it shows what they will actually arrive with, before the write, and offers a
+  gear override (or "Nothing", which reproduces the old behaviour).
 - **Weapons are chosen by grade, not by level.** The "Weapon Level" number
   input is gone from the Gear pages: picking a grade ("Meitou", "Edge Type 5")
   now sets the weapon's level to that grade's own ladder rank, server-side. The
