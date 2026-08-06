@@ -348,20 +348,74 @@ function statPills(c) {
   </div>`;
 }
 
+/**
+ * Bounties (TODO.md 3.6). Rendered ONLY when `c.bounties.length > 0` — an
+ * unbountied character shows nothing at all, not an empty section, per the
+ * task's explicit instruction.
+ *
+ * There is no "add a bounty" control anywhere here, deliberately: the
+ * `amount<n>` key is absent entirely on an unbountied character, and this
+ * editor never mints a key that isn't already on the record (AGENTS.md §3
+ * — see `saveService.setBountyAmount()`'s comment). So this can only ever
+ * reduce or clear a bounty that already exists.
+ *
+ * `bountyexp<n>`/`claim<n>`/`crimes<n>` are shown as read-only muted text —
+ * surfaced for honesty, not editable, because nothing has established what
+ * they actually do. The faction column shows the resolved name when
+ * `factionsService.templateOf()` finds one, and falls back to the raw
+ * raw string otherwise — never hidden. (A miss is rarer than it looks:
+ * `defaultEmpireFactionSID` isn't stringID-shaped but still resolves, to the
+ * United Cities.)
+ */
+function bountiesSection(c) {
+  const bounties = c.bounties || [];
+  if (!bounties.length) return '';
+  return `<details class="section" open>
+    ${sectionSummary('blood', 'Bounties')}
+    <div class="section-body stack">
+      <div class="table-wrap"><table class="data-table table--compact">
+        <thead><tr>
+          <th>Wanted by</th><th class="n">Amount</th><th class="n">Expires</th>
+          <th class="n">Claimed</th><th class="n">Crimes</th><th class="shrink"></th>
+        </tr></thead>
+        <tbody>${bounties.map((b) => `<tr data-index="${esc(b.index)}">
+          <td>${esc(b.factionName || b.factionSid || 'unknown')}</td>
+          <td class="n"><input type="number" class="bounty-amount-input w-sm" min="1" step="1"
+            value="${esc(inputNum(b.amount))}" data-initial="${esc(inputNum(b.amount))}" ${dis()}></td>
+          <td class="n muted">${esc(b.bountyexp ?? '—')}</td>
+          <td class="n muted">${esc(b.claim ?? '—')}</td>
+          <td class="n muted">${esc(b.crimes ?? '—')}</td>
+          <td class="shrink"><button class="btn btn--xs apply-bounty-btn" data-index="${esc(b.index)}" ${dis()}>Apply</button></td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="actions">
+        <button class="btn btn--danger reduce-bounties-btn" ${dis()}>Reduce all to 1</button>
+      </div>
+      <p class="hint">A bounty cannot be removed outright — the safe method (per the FCS guide) is to
+        reduce the amount to a small positive value and let it expire on its own in game. Setting it to
+        0 is refused deliberately. Expiry/claimed/crimes are shown for reference only; nothing here has
+        established what they do, so they are not editable.</p>
+    </div>
+  </details>`;
+}
+
 export function characterCard(c, file) {
   const m = c.medical || {};
   const flags = ['dead', 'unconscious', 'coma', 'incapacitated'].filter((k) => m[k]);
+  const wanted = (c.bounties || []).length > 0;
 
   return `<article class="card" data-file="${esc(file)}" data-sid="${esc(c.sid)}" data-name="${esc(c.name)}">
     <div class="card-head">
       <h3>${esc(c.name)}</h3>
       ${c.isLeader ? '<span class="badge badge--accent">leader</span>' : ''}
+      ${wanted ? '<span class="badge badge--warn">wanted</span>' : ''}
       ${flags.map((f) => `<span class="badge badge--danger">${esc(f)}</span>`).join('')}
       <span class="muted">${esc(c.race ? c.race.name : '')}${c.origin ? ` · ${esc(c.origin)}` : ''}</span>
     </div>
     ${statPills(c)}
     ${c.medical ? vitalsBlock(m) : ''}
     ${identitySection(c)}
+    ${bountiesSection(c)}
     ${c.medical ? healthSection(m) : ''}
     ${c.stats ? statsSection(c) : ''}
     ${inventorySection(c)}

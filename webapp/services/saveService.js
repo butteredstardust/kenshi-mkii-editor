@@ -8,6 +8,8 @@ const { asText, fromText, byteLength } = require('./kenshi/binary');
 const paths = require('./pathService');
 const gamedata = require('./gamedataService');
 const races = require('./racesService');
+const factions = require('./factionsService');
+const colors = require('./colorsService');
 const archetypes = require('./archetypes');
 const personalities = require('./personalities');
 const recruits = require('./recruits');
@@ -203,8 +205,44 @@ function itemOf(rec, bySid = null) {
   const section = asText(s.get('section') || '');
   const { sections: allowedSections, widened: slotsWidened } = itemSlots.allowedSections(baseSid, section);
   const pack = packContentsOf(rec, bySid);
+  // Colour (TODO.md 3.1): `strings['color sid']` names a typecode-55 record,
+  // and — per services/colorsService.js — an armour template's allow-list is
+  // advisory, never a gate: the full catalogue is offered, widened, when the
+  // template carries none (the common case).
+  const colorSid = asText(s.get('color sid') || '');
+  const { sids: allowedColors, widened: colorsWidened } = colors.allowedColors(baseSid, colorSid);
+  // Uniform (TODO.md 3.2): `strings.uniform` names a typecode-10 faction, the
+  // same catalogue services/factionsService.js builds. **Not every type-42
+  // record carries this key at all** — type-4/46/102 templates omit it
+  // (AGENTS.md §3, TODO.md 2.2(a)) — so `hasUniform` is what decides whether
+  // the UI offers the control, not whether `uniformSid` is empty.
+  const hasUniformKey = s.has('uniform');
+  const uniformSid = hasUniformKey ? asText(s.get('uniform') || '') : '';
+  // Stolen (TODO.md 3.3): any of the four ownedby C/CS/I/S ints nonzero.
+  // `ownedbyTYPE` is 11 on every live record regardless, so it is reported but
+  // never part of the signal — see services/saveService.js's updateItem() for
+  // the write side and colorsService/factionsService-style module comments
+  // for the fuller evidence trail (TODO.md 3.3).
+  const owner = {
+    C: rec.ints.get('ownedbyC') ?? null,
+    CS: rec.ints.get('ownedbyCS') ?? null,
+    I: rec.ints.get('ownedbyI') ?? null,
+    S: rec.ints.get('ownedbyS') ?? null,
+    TYPE: rec.ints.get('ownedbyTYPE') ?? null,
+  };
+  const stolen = !!(owner.C || owner.CS || owner.I || owner.S);
   return {
     sid: rec.sid,
+    colorSid,
+    colorName: colors.nameOf(colorSid, null),
+    colorHex: colors.hexOf(colorSid),
+    allowedColors,
+    colorsWidened,
+    uniformSid,
+    uniformName: hasUniformKey && uniformSid ? factions.templateOf(uniformSid)?.name ?? null : null,
+    hasUniform: hasUniformKey,
+    stolen,
+    owner,
     // Non-empty only for a container (a backpack) — see packContentsOf().
     contents: pack.contents,
     containerSid: pack.containerSid,
@@ -312,6 +350,58 @@ function statsOf(rec) {
   }
   skills.sort((a, b) => b.level - a.level);
   return { attributes, skills, xp: f.get('xp') ?? 0, freePoints: f.get('free attribute points') ?? 0 };
+}
+
+/**
+ * A character's bounties, off the CHAR_STATE (36) record (TODO.md 3.6, guide
+ * fields `amount#`/`bountyexp#`/`bountyfac#`/`claim#`/`crimes#`).
+ *
+ * **When a character has no bounty, every one of these keys is ABSENT
+ * entirely — not present-and-zero.** Confirmed against a real record
+ * (`platoon/Cannibals_3.platoon`, "Cannibal"): `amount0`, `bountyexp0`,
+ * `claim0`, `crimes0` and `bountyfac0` all present together, and a second
+ * index (`…1`) present alongside the first with the same amount under a
+ * different faction. So indices are discovered by walking the `amount<n>`
+ * keys that actually exist — never assumed to be 0..1 — and this is also WHY
+ * there is no "add a bounty" function anywhere in this file: this editor
+ * never mints a key that isn't already on the record (AGENTS.md §3), and an
+ * unbountied character has no bounty keys to build on. A bounty feature here
+ * can only ever reduce or clear one that already exists.
+ *
+ * `bountyfac<n>` (WHO wants them) is a typecode-10 faction stringID, resolved
+ * through `factionsService.templateOf` — but it is not guaranteed to resolve,
+ * so `factionName` is `null` on a miss and never a throw (same caution as
+ * `relationSID<n>`, AGENTS.md §3).
+ * The odd shape is NOT the miss, though: `defaultEmpireFactionSID` is not a
+ * `<id>-<file>` stringID but it still resolves — it is one of the literal-name
+ * sids AGENTS.md §3 documents, and it names the United Cities.
+ * `locationsService.js` had already mapped exactly that string by hand. So
+ * treat an unfamiliar `bountyfac<n>` as "look it up and cope with a miss",
+ * not as "this shape can't be a faction".
+ *
+ * Returns `[]`, never `null`, when the character carries no bounty at all.
+ */
+function bountiesOf(rec) {
+  if (!rec) return [];
+  const indices = [];
+  for (const key of rec.ints.keys()) {
+    const m = /^amount(\d+)$/.exec(key);
+    if (m) indices.push(m[1]);
+  }
+  indices.sort((a, b) => Number(a) - Number(b));
+  return indices.map((n) => {
+    const factionSid = asText(rec.strings.get(`bountyfac${n}`) || '') || null;
+    const tmpl = factionSid ? factions.templateOf(factionSid) : null;
+    return {
+      index: Number(n),
+      amount: rec.ints.get(`amount${n}`),
+      bountyexp: rec.ints.get(`bountyexp${n}`) ?? null,
+      claim: rec.ints.get(`claim${n}`) ?? null,
+      crimes: rec.ints.get(`crimes${n}`) ?? null,
+      factionSid,
+      factionName: tmpl ? tmpl.name : null,
+    };
+  });
 }
 
 /**
@@ -443,6 +533,9 @@ function readPlatoon(file) {
       position: inst.pos,
       medical: medicalOf(pick(T.MEDICAL)),
       stats: statsOf(pick(T.STATS)),
+      // See bountiesOf() — [] for an unbountied character, never null, so the
+      // UI can badge/render on `.length` without a null check at every call site.
+      bounties: bountiesOf(state),
       inventory: bag
         ? bag.instances.map((ii) => bySid.get(ii.target)).filter(Boolean)
           .map((r) => withFit(itemOf(r, bySid)))
@@ -1004,6 +1097,88 @@ function restoreLimbs(saveDir, platoonFile, sid) {
 }
 
 /**
+ * The message shared by setBountyAmount() and clearBounties() for a rejected
+ * `amount <= 0` — spelled out rather than a bare "must be > 0" so nobody reads
+ * this later and "fixes" it as an arbitrary limit (TODO.md 3.6's explicit
+ * instruction).
+ */
+const BOUNTY_AMOUNT_ERROR = 'bounty amount must be a positive integer greater than 0 — the FCS guide '
+  + 'explicitly warns against setting a bounty to 0; a small positive value that simply expires on its '
+  + "own is the documented SAFE way to remove a bounty, and this editor refuses 0 to keep that the "
+  + 'only path';
+
+function checkBountyAmount(amount) {
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error(BOUNTY_AMOUNT_ERROR);
+}
+
+/**
+ * Set `ints.amount<bountyIndex>` on a character's CHAR_STATE (36) record —
+ * the FCS guide's documented safe way to shrink a bounty (TODO.md 3.6).
+ *
+ * **This can only ever REDUCE or CLEAR an existing bounty — it can never ADD
+ * one.** See bountiesOf()'s comment: `amount<n>` is entirely absent on an
+ * unbountied character, and this editor never mints a key that isn't already
+ * on the record (AGENTS.md §3). So `amount<bountyIndex>` must already exist,
+ * or the write is refused. No upper clamp — nothing suggests one is needed.
+ */
+function setBountyAmount(saveDir, platoonFile, characterSid, bountyIndex, amount) {
+  checkBountyAmount(amount);
+  const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
+  const rec = records.state;
+  if (!rec) throw new Error(`${platoonFile}: character "${characterSid}" has no CHAR_STATE record (type 36)`);
+
+  const key = `amount${bountyIndex}`;
+  if (!rec.ints.has(key)) {
+    throw new Error(`${platoonFile}: character "${characterSid}" has no bounty at index ${bountyIndex} `
+      + `("${key}" is not on the record) — a bounty can only be reduced or cleared, never added`);
+  }
+
+  const before = rec.ints.get(key);
+  rec.ints.set(key, amount);
+  return { file: relFile, bytes: writeFile(parsed), before, after: amount, index: Number(bountyIndex) };
+}
+
+/**
+ * Reduce EVERY bounty on a character to the same small positive `amount`
+ * (default 1), in ONE staged edit (TODO.md 3.6's "clear/reduce a bounty"
+ * task). Same > 0 rule and reasoning as setBountyAmount().
+ *
+ * Deliberately leaves `bountyexp<n>`, `claim<n>`, `crimes<n>` and
+ * `bountyfac<n>` untouched: the guide's safe method is about the amount
+ * alone, and nothing here has established what the other four families do or
+ * whether writing them is safe. A character with no `amount<n>` keys at all
+ * produces a no-op edit and is left to mutationService.mutate()'s existing
+ * "edit produced no change" rejection — mirrors restoreLimbs(), not a special
+ * case here.
+ */
+function clearBounties(saveDir, platoonFile, characterSid, { amount = 1 } = {}) {
+  checkBountyAmount(amount);
+  const { relFile, parsed, records } = resolveCharacter(saveDir, platoonFile, characterSid);
+  const rec = records.state;
+  if (!rec) throw new Error(`${platoonFile}: character "${characterSid}" has no CHAR_STATE record (type 36)`);
+
+  const indices = [];
+  for (const key of rec.ints.keys()) {
+    const m = /^amount(\d+)$/.exec(key);
+    if (m) indices.push(m[1]);
+  }
+
+  const before = {};
+  for (const n of indices) {
+    before[`amount${n}`] = rec.ints.get(`amount${n}`);
+    rec.ints.set(`amount${n}`, amount);
+  }
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    before,
+    after: Object.fromEntries(indices.map((n) => [`amount${n}`, amount])),
+    indices: indices.map(Number),
+  };
+}
+
+/**
  * Resolve `(saveDir, platoonFile, characterSid, itemSid)` to that character's
  * INVENTORY record plus the target ITEM record — and confirm the item
  * actually belongs to THIS character, not some other character's inventory in
@@ -1085,7 +1260,10 @@ function setItemSection(saveDir, platoonFile, characterSid, itemSid, targetSecti
 // ignored, for the same reason addItem() rejects them: silently dropping a
 // misnamed field would write a *different* item than the caller asked for and
 // still report success.
-const UPDATE_ITEM_FIELDS = new Set(['section', 'level', 'quality', 'quantity', 'materialSid', 'gradeId']);
+const UPDATE_ITEM_FIELDS = new Set([
+  'section', 'level', 'quality', 'quantity', 'materialSid', 'gradeId',
+  'colorSid', 'uniformSid', 'clearStolen',
+]);
 
 /**
  * Set any combination of an item's slot, level, quality and quantity in ONE
@@ -1115,10 +1293,14 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
   if (unknown.length) {
     throw new Error(`updateItem: unknown field(s) ${unknown.join(', ')} — supported: ${[...UPDATE_ITEM_FIELDS].join(', ')}`);
   }
-  const { section, level, quality, quantity, materialSid, gradeId } = opts;
+  const {
+    section, level, quality, quantity, materialSid, gradeId, colorSid, uniformSid, clearStolen,
+  } = opts;
   if (section === undefined && level === undefined && quality === undefined
-    && quantity === undefined && materialSid === undefined && gradeId === undefined) {
-    throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid, gradeId');
+    && quantity === undefined && materialSid === undefined && gradeId === undefined
+    && colorSid === undefined && uniformSid === undefined && clearStolen === undefined) {
+    throw new Error('updateItem: provide at least one of section, level, quality, quantity, materialSid, '
+      + 'gradeId, colorSid, uniformSid, clearStolen');
   }
 
   const ctx = resolveCharacterItem(saveDir, platoonFile, characterSid, itemSid);
@@ -1198,6 +1380,53 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
     grade = itemFactory.resolveGrade({ gradeId, materialSid });
   }
 
+  // Colour (TODO.md 3.1): `strings['color sid']` exists on every type-42
+  // record (empty string when unset — never absent), so this can never mint
+  // the key. Empty string CLEARS it, per the FCS guide's own "clear by leaving
+  // it blank" instruction. A non-empty value that doesn't resolve through
+  // colorsService is a WARNING, never a refusal — mods define schemes this
+  // install may not have indexed, and blocking on that would defeat the whole
+  // point of an editor that writes what the game's own UI will not offer
+  // (AGENTS.md §3).
+  let colorWarning = null;
+  if (colorSid !== undefined) {
+    if (typeof colorSid !== 'string') throw new Error('colorSid must be a string (use "" to clear)');
+    if (!itemRec.strings.has('color sid')) throw new Error(`item "${itemSid}" has no "color sid" string field`);
+    if (colorSid && !colors.bySid(colorSid)) {
+      colorWarning = `"${colorSid}" is not a colour scheme this install has indexed — writing it anyway`;
+    }
+  }
+
+  // Uniform (TODO.md 3.2): unlike `color sid`, `strings.uniform` is NOT on
+  // every record — type-4/46/102 templates omit it entirely (AGENTS.md §3),
+  // and minting it would be inventing a key the game never put there. Refuse
+  // outright when the record has no such key, exactly like the missing
+  // `level`/`quality` refusals above. A non-empty value that doesn't resolve
+  // to a type-10 faction is a WARNING, not a refusal — `defaultEmpireFactionSID`
+  // is a legitimate live value (TODO.md Phase 0 §2.2(a)) that resolves to
+  // nothing through factionsService.
+  let uniformWarning = null;
+  if (uniformSid !== undefined) {
+    if (typeof uniformSid !== 'string') throw new Error('uniformSid must be a string (use "" to clear)');
+    if (!itemRec.strings.has('uniform')) {
+      throw new Error(`"${itemName}" (item "${itemSid}") has no "uniform" key — this template's item shape never carries one (see AGENTS.md §3)`);
+    }
+    if (uniformSid && !factions.templateOf(uniformSid)) {
+      uniformWarning = `"${uniformSid}" is not a faction this install has indexed — writing it anyway`;
+    }
+  }
+
+  // Stolen (TODO.md 3.3): `true` only, and only when all five `ownedby*` keys
+  // already exist — refuse minting rather than guess a shape for a record
+  // that doesn't carry them (none observed in the fixture, but the rule stays
+  // the same as everywhere else in this file).
+  if (clearStolen !== undefined) {
+    if (clearStolen !== true) throw new Error('clearStolen must be true');
+    for (const key of ['ownedbyC', 'ownedbyCS', 'ownedbyI', 'ownedbyS', 'ownedbyTYPE']) {
+      if (!itemRec.ints.has(key)) throw new Error(`item "${itemSid}" has no "${key}" int field`);
+    }
+  }
+
   // ---- apply ----
   const before = {
     section: currentSection,
@@ -1206,6 +1435,15 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
     quantity: itemRec.ints.get('quantity') ?? null,
     materialSid: asText(itemRec.strings.get('material sid') || ''),
     companySid: asText(itemRec.strings.get('company sid') || ''),
+    colorSid: asText(itemRec.strings.get('color sid') || ''),
+    uniformSid: itemRec.strings.has('uniform') ? asText(itemRec.strings.get('uniform') || '') : null,
+    owner: {
+      C: itemRec.ints.get('ownedbyC') ?? null,
+      CS: itemRec.ints.get('ownedbyCS') ?? null,
+      I: itemRec.ints.get('ownedbyI') ?? null,
+      S: itemRec.ints.get('ownedbyS') ?? null,
+      TYPE: itemRec.ints.get('ownedbyTYPE') ?? null,
+    },
     displacedSid: null,
     displacedSection: null,
   };
@@ -1242,11 +1480,23 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
     itemRec.strings.set('material sid', grade.modelSid);
     itemRec.strings.set('company sid', grade.companySid);
   }
+  if (colorSid !== undefined) itemRec.strings.set('color sid', colorSid);
+  if (uniformSid !== undefined) itemRec.strings.set('uniform', uniformSid);
+  if (clearStolen) {
+    itemRec.ints.set('ownedbyC', 0);
+    itemRec.ints.set('ownedbyCS', 0);
+    itemRec.ints.set('ownedbyI', 0);
+    itemRec.ints.set('ownedbyS', 0);
+    itemRec.ints.set('ownedbyTYPE', 11);
+  }
+
+  const warnings = [colorWarning, uniformWarning].filter(Boolean);
 
   return {
     file: relFile,
     bytes: writeFile(parsed),
     before,
+    warnings,
     after: {
       name: itemName,
       section: asText(itemRec.strings.get('section') || ''),
@@ -1255,6 +1505,15 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
       quantity: itemRec.ints.get('quantity') ?? null,
       materialSid: asText(itemRec.strings.get('material sid') || ''),
       companySid: asText(itemRec.strings.get('company sid') || ''),
+      colorSid: asText(itemRec.strings.get('color sid') || ''),
+      uniformSid: itemRec.strings.has('uniform') ? asText(itemRec.strings.get('uniform') || '') : null,
+      owner: {
+        C: itemRec.ints.get('ownedbyC') ?? null,
+        CS: itemRec.ints.get('ownedbyCS') ?? null,
+        I: itemRec.ints.get('ownedbyI') ?? null,
+        S: itemRec.ints.get('ownedbyS') ?? null,
+        TYPE: itemRec.ints.get('ownedbyTYPE') ?? null,
+      },
       grade: grade ? { id: grade.id, modelName: grade.modelName, companyName: grade.companyName, rank: grade.rank } : null,
       levelFromGrade: impliedLevel !== undefined,
       displacedSid: displaced ? displaced.sid : null,
@@ -1289,6 +1548,32 @@ function updateItem(saveDir, platoonFile, characterSid, itemSid, opts = {}) {
 function setItemQuality(saveDir, platoonFile, characterSid, itemSid, { level, quality } = {}) {
   if (level === undefined && quality === undefined) throw new Error('setItemQuality: provide level and/or quality');
   return updateItem(saveDir, platoonFile, characterSid, itemSid, { level, quality });
+}
+
+/**
+ * Set/clear an item's colour scheme (TODO.md 3.1). `colorSid: ''` clears it —
+ * the key is never absent on a type-42 record, so this never mints.
+ */
+function setItemColor(saveDir, platoonFile, characterSid, itemSid, colorSid) {
+  return updateItem(saveDir, platoonFile, characterSid, itemSid, { colorSid: colorSid ?? '' });
+}
+
+/**
+ * Set/clear an item's uniform faction tag (TODO.md 3.2). `uniformSid: ''`
+ * clears it. Refuses outright on an item whose template shape carries no
+ * `uniform` key at all (type-4/46/102, AGENTS.md §3) — see updateItem().
+ */
+function setUniform(saveDir, platoonFile, characterSid, itemSid, uniformSid) {
+  return updateItem(saveDir, platoonFile, characterSid, itemSid, { uniformSid: uniformSid ?? '' });
+}
+
+/**
+ * Clear an item's stolen flags (TODO.md 3.3): `ownedbyC/CS/I/S` to 0,
+ * `ownedbyTYPE` to 11 — the observed "unowned" shape (6371 of the fixture's
+ * 8300 records).
+ */
+function clearStolen(saveDir, platoonFile, characterSid, itemSid) {
+  return updateItem(saveDir, platoonFile, characterSid, itemSid, { clearStolen: true });
 }
 
 /**
@@ -2829,4 +3114,6 @@ module.exports = {
   resolveCharacter, setStats, setStat, trainCharacter,
   healPart, damagePart, setHunger, revive, restoreLimbs,
   setItemSection, setItemQuality, updateItem, addItem,
+  setItemColor, setUniform, clearStolen,
+  bountiesOf, setBountyAmount, clearBounties,
 };

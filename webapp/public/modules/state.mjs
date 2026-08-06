@@ -91,6 +91,8 @@ export const state = {
   addItem: null,
   itemKinds: [], itemSlots: [], // filter vocabulary, owned by the server
   weaponGrades: null, // fetched once, lazily — only needed when a weapon is picked
+  colors: null, // the type-55 colour-scheme catalogue (TODO.md 3.1), fetched once
+  factionCatalogue: null, // the full type-10 faction catalogue — the uniform picker's source (TODO.md 3.2)
   // Backups accumulate one per edit and never expire, so the list is long and
   // mostly about saves you are not looking at. Both filters are view-only.
   backupFilter: { allSaves: false, showAll: false },

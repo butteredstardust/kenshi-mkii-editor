@@ -82,6 +82,17 @@ export const API = {
   setItemQuality: (name, file, sid, itemSid, body) => request('PUT',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}/quality`,
     body),
+  // Colour scheme (TODO.md 3.1). "" clears it.
+  setItemColor: (name, file, sid, itemSid, colorSid) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}/color`,
+    { colorSid }),
+  // Uniform faction tag (TODO.md 3.2). "" clears it.
+  setUniform: (name, file, sid, itemSid, uniformSid) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}/uniform`,
+    { uniformSid }),
+  // Clear stolen flags (TODO.md 3.3).
+  clearStolen: (name, file, sid, itemSid) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/inventory/${encodeURIComponent(itemSid)}/clear-stolen`),
   // Unified per-item edit: slot, level, quality, quantity and/or weapon grade
   // in ONE staged write. This is what the Gear row's single "Apply" sends;
   // setItemSection/setItemQuality above are the narrower legacy routes.
@@ -142,6 +153,12 @@ export const API = {
   // edit however many techs are named, since they all live in that one record.
   unlockResearch: (name, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/research/unlock`, body),
+  // The type-55 colour-scheme catalogue (TODO.md 3.1), save-independent.
+  colors: () => request('GET', '/api/colors'),
+  // The full type-10 faction catalogue, save-independent — the Gear row's
+  // uniform picker source. Distinct from factions() below, which is a save's
+  // relation STATE, not the catalogue of factions that exist.
+  factionCatalogue: () => request('GET', '/api/factions'),
   // How every faction feels about the player, in this save. Directional and
   // save-scoped: the value lives on the OTHER faction's type-37 record, because
   // the player's own record carries no relation rows at all.
@@ -154,6 +171,14 @@ export const API = {
   // same quick.save record set.
   setFactionRelations: (name, changes) => request('PUT',
     `/api/saves/${encodeURIComponent(name)}/factions/relations`, { changes }),
+  // Bounties (TODO.md 3.6): amount<n> only, reduces or clears — there is no
+  // "add" route (saveService.setBountyAmount() never mints the key).
+  setBountyAmount: (name, file, sid, n, amount) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/bounties/${encodeURIComponent(n)}`,
+    { amount }),
+  clearBounties: (name, file, sid, amount) => request('POST',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/bounties/clear`,
+    amount === undefined ? undefined : { amount }),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

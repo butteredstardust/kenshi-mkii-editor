@@ -13,6 +13,8 @@ const saveService = require('../services/saveService');
 const mutation = require('../services/mutationService');
 const itemSlots = require('../services/itemSlots');
 const gamedata = require('../services/gamedataService');
+const colorsService = require('../services/colorsService');
+const factionsService = require('../services/factionsService');
 const { readFile, writeFile } = require('../services/kenshi/codec');
 const { asText } = require('../services/kenshi/binary');
 
@@ -1569,6 +1571,417 @@ test('updateItem rejects a grade on a non-weapon and an unknown grade sid, save 
       /is not a known weapon grade/,
     );
     assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+// --------------------------------------------------- colour/uniform/stolen --
+
+/**
+ * Find (platoonFile, characterSid, itemSid) for the first inventory item —
+ * as `itemOf()` reports it, so `colorSid`/`hasUniform`/`stolen`/`owner` are
+ * already resolved — matching `pred`. Backs the colour/uniform/stolen tests
+ * (TODO.md 3.1/3.2/3.3).
+ */
+function findItemWhere(pred) {
+  const src = fixture.fixtureSave();
+  if (!src) return null;
+  const pdir = path.join(src.dir, 'platoon');
+  if (!fs.existsSync(pdir)) return null;
+  for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon')).sort()) {
+    const { characters } = saveService.readPlatoon(path.join(pdir, f));
+    for (const ch of characters) {
+      for (const it of ch.inventory || []) {
+        if (pred(it)) return { platoonFile: f, sid: ch.sid, itemSid: it.sid };
+      }
+    }
+  }
+  return null;
+}
+
+test('updateItem sets colorSid on an item, then clears it with "" — key never deleted', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere(() => true);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no inventory item found in this save'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    if (!before.strings.has('color sid')) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('item has no "color sid" field'); }
+    const beforeStringKeys = [...before.strings.keys()];
+    const otherStringsBefore = new Map([...before.strings].filter(([k]) => k !== 'color sid'));
+    const beforeInts = new Map(before.ints);
+    const beforeFloats = new Map(before.floats);
+
+    const scheme = colorsService.catalogue().find((c) => c.sid !== asText(before.strings.get('color sid') || ''));
+    if (!scheme) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no colour scheme available to set'); }
+
+    const receipt = await mutation.mutate(scratch.dir, 'test: set item colour',
+      (staging) => saveService.setItemColor(staging, found.platoonFile, found.sid, found.itemSid, scheme.sid));
+    assert.strictEqual(receipt.rollbackStatus, 'not needed');
+
+    const mid = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    assert.strictEqual(mid.strings.get('color sid'), scheme.sid);
+    // Nothing else on the record moved: same string keys/values, same ints, same floats.
+    for (const [k, v] of otherStringsBefore) assert.strictEqual(mid.strings.get(k), v, `string ${k} changed`);
+    assert.deepStrictEqual([...mid.strings.keys()], beforeStringKeys);
+    assert.deepStrictEqual(new Map(mid.ints), beforeInts);
+    assert.deepStrictEqual(new Map(mid.floats), beforeFloats);
+
+    // Clear it — the key must still be present, just empty (never deleted).
+    const receipt2 = await mutation.mutate(scratch.dir, 'test: clear item colour',
+      (staging) => saveService.setItemColor(staging, found.platoonFile, found.sid, found.itemSid, ''));
+    assert.strictEqual(receipt2.rollbackStatus, 'not needed');
+    const after = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    assert.strictEqual(after.strings.has('color sid'), true, 'the key must never be deleted');
+    assert.strictEqual(after.strings.get('color sid'), '');
+    assert.deepStrictEqual([...after.strings.keys()], beforeStringKeys);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem sets uniformSid on an item that carries the uniform key, changing only that string', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere((it) => it.hasUniform);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no item with a "uniform" key found'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    const beforeStringKeys = [...before.strings.keys()];
+    const otherStringsBefore = new Map([...before.strings].filter(([k]) => k !== 'uniform'));
+    const target = factionsService.catalogue().find((f) => f.sid !== asText(before.strings.get('uniform') || ''));
+    if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no alternate faction to set'); }
+
+    const receipt = await mutation.mutate(scratch.dir, 'test: set item uniform',
+      (staging) => saveService.setUniform(staging, found.platoonFile, found.sid, found.itemSid, target.sid));
+    assert.strictEqual(receipt.rollbackStatus, 'not needed');
+
+    const after = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    assert.strictEqual(after.strings.get('uniform'), target.sid);
+    for (const [k, v] of otherStringsBefore) assert.strictEqual(after.strings.get(k), v, `string ${k} changed`);
+    assert.deepStrictEqual([...after.strings.keys()], beforeStringKeys);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem refuses uniformSid on an item whose shape carries no uniform key, save byte-identical', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere((it) => !it.hasUniform);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no item lacking a "uniform" key found'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: uniform on a keyless item',
+        (staging) => saveService.setUniform(staging, found.platoonFile, found.sid, found.itemSid, '1083-gamedata.base')),
+      /has no "uniform" key/,
+    );
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('clearStolen zeroes all four ownedby ints and sets ownedbyTYPE to 11, preserving key order', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere((it) => it.stolen);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no item flagged stolen (nonzero ownedbyS/CS/C/I) found in this save'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    const beforeIntKeys = [...before.ints.keys()];
+
+    const receipt = await mutation.mutate(scratch.dir, 'test: clear stolen flags',
+      (staging) => saveService.clearStolen(staging, found.platoonFile, found.sid, found.itemSid));
+    assert.strictEqual(receipt.rollbackStatus, 'not needed');
+
+    const after = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    assert.strictEqual(after.ints.get('ownedbyC'), 0);
+    assert.strictEqual(after.ints.get('ownedbyCS'), 0);
+    assert.strictEqual(after.ints.get('ownedbyI'), 0);
+    assert.strictEqual(after.ints.get('ownedbyS'), 0);
+    assert.strictEqual(after.ints.get('ownedbyTYPE'), 11);
+    assert.deepStrictEqual([...after.ints.keys()], beforeIntKeys, 'ints key order must be unchanged');
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('clearStolen is rejected as a no-op on an already-clean record', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere((it) => it.owner.C === 0 && it.owner.CS === 0 && it.owner.I === 0
+    && it.owner.S === 0 && it.owner.TYPE === 11);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no already-clean (all-zero, TYPE 11) item found'); }
+
+  try {
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: clear stolen no-op',
+        (staging) => saveService.clearStolen(staging, found.platoonFile, found.sid, found.itemSid)),
+      /produced no change/,
+    );
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('updateItem applies section, colorSid, uniformSid and clearStolen together in ONE staged edit', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const found = findItemWhere((it) => it.hasUniform);
+  if (!found) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no item with a "uniform" key found'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    const currentSection = asText(before.strings.get('section') || '');
+    // Both storage buckets are always allowed regardless of kind (itemSlots.js),
+    // so picking whichever one the item is NOT currently in guarantees a legal,
+    // and different, target — no need to resolve the item's kind here.
+    const targetSection = currentSection === 'main' ? 'backpack_content' : 'main';
+    const scheme = colorsService.catalogue()[0];
+    const targetFaction = factionsService.catalogue().find((f) => f.sid !== asText(before.strings.get('uniform') || ''));
+    if (!scheme || !targetFaction) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no colour scheme or faction available'); }
+
+    const result = await mutation.mutate(scratch.dir, 'test: combined section/colour/uniform/stolen edit',
+      (staging) => saveService.updateItem(staging, found.platoonFile, found.sid, found.itemSid, {
+        section: targetSection, colorSid: scheme.sid, uniformSid: targetFaction.sid, clearStolen: true,
+      }));
+
+    // ONE file touched, ONE backup, one receipt — not four separate writes.
+    assert.deepStrictEqual(result.changedFiles, [path.join('platoon', found.platoonFile)]);
+    assert.strictEqual(result.receipts.length, 1);
+
+    const after = saveService.resolveCharacter(scratch.dir, found.platoonFile, found.sid).bySid.get(found.itemSid);
+    assert.strictEqual(after.strings.get('section'), targetSection);
+    assert.strictEqual(after.strings.get('color sid'), scheme.sid);
+    assert.strictEqual(after.strings.get('uniform'), targetFaction.sid);
+    assert.strictEqual(after.ints.get('ownedbyC'), 0);
+    assert.strictEqual(after.ints.get('ownedbyCS'), 0);
+    assert.strictEqual(after.ints.get('ownedbyI'), 0);
+    assert.strictEqual(after.ints.get('ownedbyS'), 0);
+    assert.strictEqual(after.ints.get('ownedbyTYPE'), 11);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+// ------------------------------------------------------------------------
+// Bounties (TODO.md 3.6). Every bountied character in the fixture is an NPC
+// (Cannibals, Outlaw Farmers, ...) in a non-player .platoon file — the
+// fixture's only player squad carries no bounty at all — so these helpers
+// scan EVERY .platoon file, not just the player's, via saveService.readPlatoon
+// (never saveService.status(), per AGENTS.md §4). The service functions take
+// an explicit platoon file and don't care whether the character belongs to
+// the player.
+// ------------------------------------------------------------------------
+
+/** A character carrying at least `minBounties` bounty indices, from ANY
+ * platoon file in the fixture (not just the player's squad). */
+function findBountyCharacter(minBounties = 1) {
+  const src = fixture.fixtureSave();
+  if (!src) return null;
+  const pdir = path.join(src.dir, 'platoon');
+  if (!fs.existsSync(pdir)) return null;
+  for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon')).sort()) {
+    const { characters } = saveService.readPlatoon(path.join(pdir, f));
+    const c = characters.find((ch) => (ch.bounties || []).length >= minBounties);
+    if (c) return { platoonFile: f, sid: c.sid };
+  }
+  return null;
+}
+
+/** A character carrying no bounty keys at all — for the no-op rejection test. */
+function findNoBountyCharacter() {
+  const src = fixture.fixtureSave();
+  if (!src) return null;
+  const pdir = path.join(src.dir, 'platoon');
+  if (!fs.existsSync(pdir)) return null;
+  for (const f of fs.readdirSync(pdir).filter((n) => n.endsWith('.platoon')).sort()) {
+    const { characters } = saveService.readPlatoon(path.join(pdir, f));
+    const c = characters.find((ch) => (ch.bounties || []).length === 0);
+    if (c) return { platoonFile: f, sid: c.sid };
+  }
+  return null;
+}
+
+test('bountiesOf resolves every bountyfac<n> shape, including the literal-name sids', async (t) => {
+  const target = findBountyCharacter(1);
+  if (!target) return t.skip('no bountied character found in the fixture');
+  const src = fixture.fixtureSave();
+  const { characters } = saveService.readPlatoon(path.join(src.dir, 'platoon', target.platoonFile));
+  const c = characters.find((ch) => ch.sid === target.sid);
+
+  assert.ok(c.bounties.length >= 1, 'character must carry at least one bounty row');
+  for (const b of c.bounties) {
+    assert.strictEqual(typeof b.index, 'number');
+    assert.strictEqual(typeof b.amount, 'number');
+    // factionName must never throw even on a miss — null is the correct
+    // "didn't resolve" signal, not an exception.
+    assert.ok(b.factionName === null || typeof b.factionName === 'string');
+  }
+
+  const known = c.bounties.find((b) => b.factionSid === '1083-gamedata.base');
+  if (known) assert.strictEqual(typeof known.factionName, 'string', 'a known faction sid must resolve to a name');
+
+  // `defaultEmpireFactionSID` is NOT a `<id>-<file>` stringID, and the working
+  // assumption going in was that it therefore could not resolve. It does: it is
+  // one of the literal-name sids AGENTS.md §3 documents (`PLAYER_WEAPONS`,
+  // `RESEARCH_TEMPLATE`, `blank squad`, ...), and factionsService resolves it to
+  // "United Cities". So the rule for these fields is not "the odd shape misses"
+  // — it is that a miss must not throw. Assert the resolution, so a future
+  // change that silently drops literal-name sids fails here.
+  const empire = c.bounties.find((b) => b.factionSid === 'defaultEmpireFactionSID');
+  if (empire) assert.strictEqual(empire.factionName, 'United Cities', 'defaultEmpireFactionSID is a literal-name sid and does resolve');
+});
+
+test('setBountyAmount changes only amount<n>, leaving bountyexp/claim/crimes/bountyfac and key order untouched', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const target = findBountyCharacter(1);
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no bountied character found in the fixture'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.state;
+    const beforeIntKeys = [...before.ints.keys()];
+    const beforeStringKeys = [...before.strings.keys()];
+    const beforeInts = new Map(before.ints);
+    const beforeStrings = new Map(before.strings);
+    // Don't assume which index this character's bounty is at — walk the same
+    // way bountiesOf() does, and use whichever index actually exists.
+    const bountyIndex = beforeIntKeys.map((k) => /^amount(\d+)$/.exec(k)).filter(Boolean)[0][1];
+    const amountKey = `amount${bountyIndex}`;
+    const oldAmount = before.ints.get(amountKey);
+    const newAmount = oldAmount === 1 ? 2 : 1;
+
+    const receipt = await mutation.mutate(scratch.dir, 'test: set bounty amount',
+      (staging) => saveService.setBountyAmount(staging, target.platoonFile, target.sid, bountyIndex, newAmount));
+    assert.strictEqual(receipt.rollbackStatus, 'not needed');
+
+    const after = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.state;
+    assert.strictEqual(after.ints.get(amountKey), newAmount);
+
+    // Everything else on the record — the other three int families, both
+    // bountyfac strings, and key order for both maps — is untouched.
+    for (const [k, v] of beforeInts) if (k !== amountKey) assert.strictEqual(after.ints.get(k), v, `int ${k} changed`);
+    for (const [k, v] of beforeStrings) assert.strictEqual(after.strings.get(k), v, `string ${k} changed`);
+    assert.deepStrictEqual([...after.ints.keys()], beforeIntKeys);
+    assert.deepStrictEqual([...after.strings.keys()], beforeStringKeys);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('setBountyAmount rejects 0, a negative value and a non-integer, save byte-identical', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const target = findBountyCharacter(1);
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no bountied character found in the fixture'); }
+
+  try {
+    const before = backups.hashDir(scratch.dir);
+    for (const bad of [0, -5, 1.5]) {
+      await assert.rejects(
+        mutation.mutate(scratch.dir, `test: bounty amount rejected (${bad})`,
+          (staging) => saveService.setBountyAmount(staging, target.platoonFile, target.sid, 0, bad)),
+        /positive integer/,
+      );
+    }
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('setBountyAmount rejects an index with no amount<n> key on the record, save byte-identical (never mints)', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const target = findBountyCharacter(1);
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no bountied character found in the fixture'); }
+
+  try {
+    const rec = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.state;
+    let missingIndex = 0;
+    while (rec.ints.has(`amount${missingIndex}`)) missingIndex += 1;
+
+    const before = backups.hashDir(scratch.dir);
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: bounty index has no amount key',
+        (staging) => saveService.setBountyAmount(staging, target.platoonFile, target.sid, missingIndex, 1)),
+      /has no bounty at index/,
+    );
+    assert.deepStrictEqual(backups.hashDir(scratch.dir), before);
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('clearBounties sets every amount<n> on a two-bounty character in ONE staged edit, leaving the rest untouched', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const target = findBountyCharacter(2);
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('no character with 2+ bounty indices found in the fixture'); }
+
+  try {
+    const before = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.state;
+    const beforeIntKeys = [...before.ints.keys()];
+    const beforeBountyfac0 = before.strings.get('bountyfac0');
+    const beforeBountyfac1 = before.strings.get('bountyfac1');
+    const beforeExp0 = before.ints.get('bountyexp0');
+    const beforeExp1 = before.ints.get('bountyexp1');
+    const beforeClaim0 = before.ints.get('claim0');
+    const beforeCrimes0 = before.ints.get('crimes0');
+
+    const result = await mutation.mutate(scratch.dir, 'test: clear all bounties',
+      (staging) => saveService.clearBounties(staging, target.platoonFile, target.sid, { amount: 1 }));
+
+    assert.deepStrictEqual(result.changedFiles, [path.join('platoon', target.platoonFile)]);
+    assert.strictEqual(result.receipts.length, 1);
+
+    const after = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.state;
+    assert.strictEqual(after.ints.get('amount0'), 1);
+    assert.strictEqual(after.ints.get('amount1'), 1);
+    // bountyexp/claim/crimes and both bountyfac strings are untouched.
+    assert.strictEqual(after.ints.get('bountyexp0'), beforeExp0);
+    assert.strictEqual(after.ints.get('bountyexp1'), beforeExp1);
+    assert.strictEqual(after.ints.get('claim0'), beforeClaim0);
+    assert.strictEqual(after.ints.get('crimes0'), beforeCrimes0);
+    assert.strictEqual(after.strings.get('bountyfac0'), beforeBountyfac0);
+    assert.strictEqual(after.strings.get('bountyfac1'), beforeBountyfac1);
+    assert.deepStrictEqual([...after.ints.keys()], beforeIntKeys, 'ints key order must be unchanged');
+  } finally {
+    fs.rmSync(scratch.root, { recursive: true, force: true });
+    paths.setOverrides({});
+  }
+});
+
+test('clearBounties is rejected as a no-op on a character with no bounty keys', async (t) => {
+  const scratch = scratchSave();
+  if (!scratch) return t.skip(fixture.NO_FIXTURE);
+  const target = findNoBountyCharacter();
+  if (!target) { fs.rmSync(scratch.root, { recursive: true, force: true }); return t.skip('every character in the fixture carries a bounty'); }
+
+  try {
+    await assert.rejects(
+      mutation.mutate(scratch.dir, 'test: clear bounties no-op',
+        (staging) => saveService.clearBounties(staging, target.platoonFile, target.sid)),
+      /produced no change/,
+    );
   } finally {
     fs.rmSync(scratch.root, { recursive: true, force: true });
     paths.setOverrides({});

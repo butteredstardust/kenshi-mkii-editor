@@ -329,6 +329,30 @@ router.put('/saves/:name/platoons/:file/characters/:sid/personality', handle(asy
       { allowUnknown: !!allowUnknown }));
 }));
 
+// Bounties (TODO.md 3.6): amount<n> only. Reduces or clears an existing
+// bounty; there is deliberately no "add a bounty" route — see
+// saveService.setBountyAmount()'s comment for why (the key is absent
+// entirely on an unbountied character, and this editor never mints one).
+router.put('/saves/:name/platoons/:file/characters/:sid/bounties/:n', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const amount = Number(req.body?.amount);
+  return mutation.mutate(save.dir, `set bounty ${req.params.n} on ${req.params.sid} to ${amount}`,
+    (staging) => saveService.setBountyAmount(staging, req.params.file, req.params.sid, req.params.n, amount));
+}));
+
+// Reduce every bounty on a character to the same small positive value (default
+// 1) in ONE staged edit — the guide's documented safe removal method.
+router.post('/saves/:name/platoons/:file/characters/:sid/bounties/clear', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { amount } = req.body || {};
+  if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount))) {
+    const e = new Error('"amount", if given, must be a number'); e.status = 400; throw e;
+  }
+  return mutation.mutate(save.dir, `reduce all bounties on ${req.params.sid}`,
+    (staging) => saveService.clearBounties(staging, req.params.file, req.params.sid,
+      amount === undefined ? {} : { amount }));
+}));
+
 function findSaveOr404(name) {
   const save = paths.findSave(name);
   if (!save) { const e = new Error(`no save named "${name}"`); e.status = 404; throw e; }
@@ -406,16 +430,53 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quali
     (staging) => saveService.setItemQuality(staging, req.params.file, req.params.sid, req.params.itemSid, { level, quality }));
 }));
 
+// Gear (TODO.md 3.1): colour scheme. Empty string clears it — the key always
+// exists on a type-42 record, so this never mints.
+router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/color', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { colorSid } = req.body || {};
+  if (typeof colorSid !== 'string') { const e = new Error('body must include "colorSid" (string, "" to clear)'); e.status = 400; throw e; }
+  return mutation.mutate(save.dir, `set item ${req.params.itemSid} colour`,
+    (staging) => saveService.setItemColor(staging, req.params.file, req.params.sid, req.params.itemSid, colorSid));
+}));
+
+// Gear (TODO.md 3.2): uniform faction tag. Refused on an item whose template
+// shape carries no `uniform` key at all — see saveService.updateItem().
+router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/uniform', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { uniformSid } = req.body || {};
+  if (typeof uniformSid !== 'string') { const e = new Error('body must include "uniformSid" (string, "" to clear)'); e.status = 400; throw e; }
+  return mutation.mutate(save.dir, `set item ${req.params.itemSid} uniform`,
+    (staging) => saveService.setUniform(staging, req.params.file, req.params.sid, req.params.itemSid, uniformSid));
+}));
+
+// Gear (TODO.md 3.3): clear stolen flags.
+router.post('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/clear-stolen', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  return mutation.mutate(save.dir, `clear stolen flags on item ${req.params.itemSid}`,
+    (staging) => saveService.clearStolen(staging, req.params.file, req.params.sid, req.params.itemSid));
+}));
+
 // Unified per-item edit: slot, level, quality and/or quantity in ONE staged
 // edit (one mutation-gate pass, one backup). This is what the Gear row's
 // single "Apply" button calls; the narrower /section and /quality routes above
 // remain as thin wrappers over the same primitive.
 router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
-  const { section, level, quality, quantity, materialSid, gradeId } = req.body || {};
+  const {
+    section, level, quality, quantity, materialSid, gradeId, colorSid, uniformSid, clearStolen,
+  } = req.body || {};
   for (const [key, value] of Object.entries({ section, materialSid, gradeId })) {
     if (value !== undefined && (typeof value !== 'string' || !value)) {
       const e = new Error(`"${key}", if given, must be a non-empty string`); e.status = 400; throw e;
+    }
+  }
+  // colorSid/uniformSid are string but MAY legitimately be empty — that is
+  // how each is cleared (TODO.md 3.1/3.2), unlike section/materialSid/gradeId
+  // above, so they get their own, less strict, check.
+  for (const [key, value] of Object.entries({ colorSid, uniformSid })) {
+    if (value !== undefined && typeof value !== 'string') {
+      const e = new Error(`"${key}", if given, must be a string ("" to clear)`); e.status = 400; throw e;
     }
   }
   for (const [key, value] of Object.entries({ level, quality, quantity })) {
@@ -423,9 +484,14 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
       const e = new Error(`"${key}", if given, must be a number`); e.status = 400; throw e;
     }
   }
+  if (clearStolen !== undefined && clearStolen !== true) {
+    const e = new Error('"clearStolen", if given, must be true'); e.status = 400; throw e;
+  }
   if (section === undefined && level === undefined && quality === undefined
-    && quantity === undefined && materialSid === undefined && gradeId === undefined) {
-    const e = new Error('body must include at least one of section, level, quality, quantity, materialSid, gradeId');
+    && quantity === undefined && materialSid === undefined && gradeId === undefined
+    && colorSid === undefined && uniformSid === undefined && clearStolen === undefined) {
+    const e = new Error('body must include at least one of section, level, quality, quantity, materialSid, '
+      + 'gradeId, colorSid, uniformSid, clearStolen');
     e.status = 400;
     throw e;
   }
@@ -439,6 +505,9 @@ router.put('/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid', han
   if (quantity !== undefined) patch.quantity = quantity;
   if (materialSid !== undefined) patch.materialSid = materialSid;
   if (gradeId !== undefined) patch.gradeId = gradeId;
+  if (colorSid !== undefined) patch.colorSid = colorSid;
+  if (uniformSid !== undefined) patch.uniformSid = uniformSid;
+  if (clearStolen !== undefined) patch.clearStolen = clearStolen;
   return mutation.mutate(save.dir, `update item ${req.params.itemSid}`,
     (staging) => saveService.updateItem(staging, req.params.file, req.params.sid, req.params.itemSid, patch));
 }));

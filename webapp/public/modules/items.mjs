@@ -73,6 +73,47 @@ export function raceFitWarnings(template, character, section) {
   return out;
 }
 
+/**
+ * Colour scheme picker (TODO.md 3.1). Options come from `it.allowedColors`
+ * (services/colorsService.js) — armour with no `extra['color']` allow-list
+ * (the common case) is offered the WHOLE catalogue rather than nothing, per
+ * that service's permissive posture. `state.colors` resolves a sid to a
+ * display name and a swatch; a sid this install cannot resolve (a mod's
+ * scheme this sweep missed) still gets a `<option>`, showing the raw sid,
+ * because `allowedColors` always includes the item's OWN current value.
+ */
+function colorSelect(it) {
+  const bySid = new Map((state.colors || []).map((c) => [c.sid, c]));
+  const current = it.colorSid || '';
+  const sids = it.allowedColors || [];
+  return `<select class="item-field" data-field="colorSid" data-initial="${esc(current)}" aria-label="Colour" ${dis()}>
+    <option value="">— none —</option>
+    ${sids.map((sid) => {
+    const c = bySid.get(sid);
+    return `<option value="${esc(sid)}" ${sid === current ? 'selected' : ''}>${esc(c ? c.name : sid)}</option>`;
+  }).join('')}
+  </select>`;
+}
+
+/**
+ * Uniform faction picker (TODO.md 3.2). Only ever called when `it.hasUniform`
+ * is true — the caller's job, since the underlying `uniform` key is absent on
+ * some template shapes entirely (type-4/46/102, AGENTS.md §3) and this editor
+ * never mints it. A current value that doesn't resolve (e.g. the literal
+ * `defaultEmpireFactionSID`) is kept as its own selected option showing the
+ * raw string, so Apply never silently changes it just by rendering the row.
+ */
+function uniformSelect(it) {
+  const catalogue = state.factionCatalogue || [];
+  const current = it.uniformSid || '';
+  const resolved = current ? catalogue.some((f) => f.sid === current) : true;
+  return `<select class="item-field" data-field="uniformSid" data-initial="${esc(current)}" aria-label="Uniform faction" ${dis()}>
+    <option value="">— none —</option>
+    ${current && !resolved ? `<option value="${esc(current)}" selected>${esc(current)} (unresolved)</option>` : ''}
+    ${catalogue.map((f) => `<option value="${esc(f.sid)}" ${f.sid === current ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}
+  </select>`;
+}
+
 export function itemSlotSelect(it) {
   // Options come straight from the server's allowedSections (services/itemSlots.js)
   // — the client never recomputes compatibility itself. Fall back to the full
@@ -145,9 +186,21 @@ export function itemRow(it) {
   // ALREADY on the wrong character — nothing would ever surface it otherwise.
   const fit = it.fitWarnings || [];
 
+  // Colour (TODO.md 3.1): offered on armour, or on anything that already
+  // carries a value (a modded kind this editor's type check misses should
+  // still be able to clear a colour it can see) — never on a kind that plainly
+  // can't wear one, per colorsService's permissive-but-not-nonsensical rule.
+  const showColor = it.kindType === 3 || !!it.colorSid;
+  // Uniform (TODO.md 3.2): the underlying key is absent on some template
+  // shapes entirely (type-4/46/102) — `hasUniform` is what decides this, never
+  // whether `uniformSid` happens to be empty.
+  const showUniform = !!it.hasUniform;
+
   return `<tr data-sid="${esc(it.sid)}">
     <td class="col-item"><span class="item-name">${icon(glyph, it.section)}<span>${esc(it.name)}</span>
-      ${fit.length ? '<span class="badge badge--warn" title="Race fit">race</span>' : ''}</span>
+      ${fit.length ? '<span class="badge badge--warn" title="Race fit">race</span>' : ''}
+      ${it.stolen ? '<span class="badge badge--warn" title="Ownership flags set">stolen</span>' : ''}
+      ${showColor && it.colorHex ? `<span class="dot" title="${esc(it.colorName || it.colorSid)}" style="background:${esc(it.colorHex)}"></span>` : ''}</span>
       ${fit.map((w) => `<div class="note-warn">${esc(w.text)}</div>`).join('')}
       ${it.blueprint
     // Every blueprint is called "Blueprints", so without this a stack of five
@@ -163,7 +216,7 @@ export function itemRow(it) {
       ${isWorn(it.section) ? `<button class="btn btn--ghost btn--xs unequip-item-btn" data-sid="${esc(it.sid)}"
         title="Move this back to Carried" ${dis()}>Unequip</button>` : ''}
       <button class="btn btn--ghost btn--xs more-item-btn" aria-expanded="false"
-        title="Raw level and quality values">More</button>
+        title="Raw level and quality values, colour, uniform${it.stolen ? ' and stolen flags' : ''}">More</button>
     </span></td>
   </tr>
   <tr class="item-advanced" data-advanced-for="${esc(it.sid)}" hidden>
@@ -175,8 +228,14 @@ export function itemRow(it) {
         <label class="field">Quality
           <input type="number" class="item-field w-sm" data-field="quality" step="0.1" min="0"
             value="${esc(inputNum(it.quality))}" data-initial="${esc(inputNum(it.quality))}" ${dis()}></label>
+        ${showColor ? `<label class="field">Colour ${colorSelect(it)}</label>` : ''}
+        ${showUniform ? `<label class="field">Uniform ${uniformSelect(it)}</label>` : ''}
+        ${it.stolen ? `<label class="field-check">
+          <input type="checkbox" class="item-stolen-clear" data-sid="${esc(it.sid)}" ${dis()}>
+          Clear stolen flags</label>` : ''}
         <span class="hint">Raw save fields. For armour, Level is the same value the tier above sets.
-          ${isWeapon ? 'For weapons, choosing a Grade already sets Level to that grade\'s rank — type a number here only to override it.' : ''}</span>
+          ${isWeapon ? 'For weapons, choosing a Grade already sets Level to that grade\'s rank — type a number here only to override it.' : ''}
+          ${showColor && it.colorsWidened ? ' This item\'s kind carries no colour allow-list, so the whole catalogue is offered.' : ''}</span>
       </div>
     </td>
   </tr>`;

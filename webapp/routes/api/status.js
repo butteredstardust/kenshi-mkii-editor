@@ -14,6 +14,7 @@ const personalities = require('../../services/personalities');
 const vendors = require('../../services/vendorsService');
 const research = require('../../services/researchService');
 const racesService = require('../../services/racesService');
+const colorsService = require('../../services/colorsService');
 const itemCatalog = require('../../services/itemCatalogService');
 const itemSlots = require('../../services/itemSlots');
 const pkg = require('../../package.json');
@@ -289,5 +290,15 @@ router.get('/races', handle(async (req) => {
 }));
 
 router.post('/races/rebuild', handle(async () => { racesService.rebuild(); return racesService.stats(); }));
+
+// The type-55 colour-scheme catalogue (TODO.md 3.1), resolved in load order
+// like races/factions. `hex1`/`hex2` are `color 1`/`color 2` rendered as
+// `#RRGGBB` for a swatch. Save-independent.
+router.get('/colors', handle(async () => ({
+  colors: colorsService.catalogue(),
+  stats: colorsService.stats(),
+})));
+
+router.post('/colors/rebuild', handle(async () => { colorsService.rebuild(); return colorsService.stats(); }));
 
 module.exports = router;

@@ -65,6 +65,10 @@ async function boot() {
   } catch {
     state.weaponGrades = []; // ladder is an enhancement; rows fall back to raw fields
   }
+  // The Gear row's colour and uniform <select>s are rendered synchronously too
+  // (TODO.md 3.1/3.2), so both catalogues are fetched here rather than lazily.
+  state.colors = await API.colors().then((r) => r.colors).catch(() => []);
+  state.factionCatalogue = await API.factionCatalogue().then((r) => r.factions).catch(() => []);
   render();
 }
 
@@ -287,6 +291,31 @@ function wire() {
       return run(limbs, 'limbs flag cleared', () => API.restoreLimbs(state.save, file, sid), true);
     };
 
+    // Bounties (TODO.md 3.6): one Apply per row, sending only that row's
+    // amount. There is no "add" control here to wire — see
+    // saveService.setBountyAmount()'s comment for why that path doesn't exist.
+    card.querySelectorAll('.apply-bounty-btn').forEach((b) => {
+      b.onclick = () => {
+        const row = b.closest('tr');
+        const input = row.querySelector('.bounty-amount-input');
+        const amount = Number(input.value);
+        if (input.value === input.dataset.initial) {
+          return showReceipt(receipt, new Error('Enter a different amount first.'));
+        }
+        return run(b, `bounty ${b.dataset.index} reduced to ${amount}`,
+          () => API.setBountyAmount(state.save, file, sid, b.dataset.index, amount), true);
+      };
+    });
+
+    const reduceBounties = card.querySelector('.reduce-bounties-btn');
+    if (reduceBounties) reduceBounties.onclick = () => {
+      if (!confirm('Reduce every bounty on this character to 1? This is the safe removal method — '
+        + 'it lets each bounty expire on its own rather than setting it to 0, which the guide warns '
+        + 'against. bountyexp/claim/crimes and who wants them are left untouched.')) return undefined;
+      return run(reduceBounties, 'bounties reduced to 1',
+        () => API.clearBounties(state.save, file, sid), true);
+    };
+
     // Gear: "More" reveals the raw level/quality fields for one row.
     card.querySelectorAll('.more-item-btn').forEach((b) => {
       b.onclick = () => {
@@ -305,6 +334,10 @@ function wire() {
     // reporting a confusing error for what looked like a valid action).
     const gearChar = findCharacter(file, sid);
 
+    // These carry a string value straight through (a stringID or a composite
+    // grade key) — every other `.item-field` is a plain number.
+    const STRING_ITEM_FIELDS = new Set(['gradeId', 'colorSid', 'uniformSid']);
+
     const collectPatch = (row) => {
       const patch = {};
       // A row's advanced `level` input and its quality <select> both target
@@ -316,11 +349,22 @@ function wire() {
         ...card.querySelectorAll(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-field`),
       ];
       for (const el of fields) {
-        if (el.value === '' || el.value === el.dataset.initial) continue;
-        patch[el.dataset.field] = el.dataset.field === 'gradeId' ? el.value : Number(el.value);
+        if (el.value === el.dataset.initial) continue;
+        // A blank value on a plain number input means "nothing typed, leave
+        // alone". A blank value on a <select> — colorSid's/uniformSid's
+        // "— none —" — is a real, selectable state (how each is CLEARED,
+        // TODO.md 3.1/3.2) and must be sent, or Apply could never clear one.
+        if (el.tagName !== 'SELECT' && el.value === '') continue;
+        patch[el.dataset.field] = STRING_ITEM_FIELDS.has(el.dataset.field) ? el.value : Number(el.value);
       }
       const slot = row.querySelector('.item-slot-select');
       if (slot && slot.value !== slot.dataset.initial) patch.section = slot.value;
+      // Stolen: a checkbox, not a diffable value — ticking it means "clear",
+      // and it is only ever rendered (items.mjs) when the item IS stolen, so
+      // there is nothing to represent by unchecking it.
+      const stolenBox = row.querySelector('.item-stolen-clear')
+        || card.querySelector(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-stolen-clear`);
+      if (stolenBox && stolenBox.checked) patch.clearStolen = true;
       return patch;
     };
 
@@ -347,7 +391,8 @@ function wire() {
       const itemSid = row.dataset.sid;
       const controls = [
         ...row.querySelectorAll('.item-field, .item-slot-select'),
-        ...card.querySelectorAll(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-field`),
+        ...card.querySelectorAll(`tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-field, `
+          + `tr[data-advanced-for="${CSS.escape(itemSid)}"] .item-stolen-clear`),
       ];
       controls.forEach((el) => {
         el.oninput = () => refreshRowState(row);

@@ -11,6 +11,21 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ### Added
 
+- **Bounties, on the Squad tab** (TODO.md 3.6). A "wanted" badge and a
+  Bounties section appear on a character carrying one, showing who wants
+  them, the amount (editable), and expiry/claimed/crimes as reference-only
+  text. This can only ever reduce or clear a bounty, never add one — the
+  save has no bounty keys at all on a character who isn't wanted, and this
+  editor never invents a key that isn't already on the record. Reducing an
+  amount to a small positive value (never 0, which the guide warns against)
+  is the documented safe way to let a bounty expire on its own.
+- **Armour colour, uniform faction tag and stolen flags** on the Gear row
+  (TODO.md 3.1/3.2/3.3). A colour `<select>` (with a swatch) and a uniform
+  faction `<select>` join the row's "More" panel — the uniform control only
+  appears on items whose record shape actually carries the field, since a
+  large share of items (backpacks, maps, trade goods) never do. A "stolen"
+  badge appears on flagged items, with a checkbox to clear the ownership
+  flags. All three join the row's existing single "Apply".
 - **29 Meitou-wielder loadouts.** One per named character the game hands a
   Meitou-grade weapon — General Hat-12, Mad Cat-Lon, Esata, Emperor Tengu, the
   Crab Queen, Bugmaster, Eyegore and the rest — grouped by weapon class. Their

@@ -1319,47 +1319,127 @@ Ordered by dependency; independent items can be done in any order within.
 
 ### 3.1 Armour colour (type 42 — ITEM)
 
-- [ ] **Set/clear an item's colour scheme.** Field: `strings['color sid']`
-  (guide: "color sid" near top-left of INVENTORY_ITEM_STATE — confirm literal
-  key spelling, likely `color sid` not `colour sid` given American-English
-  internal naming seen elsewhere, e.g. `unconcious`). Function:
-  `saveService.setItemColor(saveDir, platoonFile, itemSid, colorSid |
-  null)` — null/empty clears it (guide: "you can clear colors by erasing the
-  value and leaving it blank"). Route: `PUT
-  .../characters/:sid/inventory/:itemSid/color`. UI: text input or, better, a
-  picker sourced from `gamedataService` filtered to colour-scheme records —
-  needs the colour-scheme record typecode identified first (not in the
-  current typecode table in `docs/save-format.md` §5 — investigate by parsing
-  `gamedata.base` and grepping record names for known scheme names, or by
-  finding one via the `color sid` value already present on some real item and
-  resolving its sid through the name index).
-  Test: round-trip, set then clear, assert the string key is set/removed and
-  nothing else on the record changes.
+- [x] **Set/clear an item's colour scheme.** Field: `strings['color sid']`
+  (confirmed lowercase `color`, American spelling). A non-empty value is a
+  **typecode-55** record's stringID — `services/colorsService.js` builds that
+  catalogue in load order (like `racesService`/`factionsService`): each row is
+  `{ sid, name, color1, color2, hex1, hex2 }`, `hexN` being `ints['color N']`
+  (a packed `0xRRGGBB`) rendered as `#RRGGBB`. A type-3 armour template's own
+  `extra['color']` category, if it carries one (15 of this install's
+  templates do), is UNIONED across every definition of the sid — the same
+  rule as the material index and the racial `races`/`races exclude` rows.
+  `colorsService.allowedColors(baseSid, currentColorSid)` returns
+  `{ sids, widened }`: the template's own list when it has one, else the
+  WHOLE catalogue with `widened: true` — never a block, per AGENTS.md §3.
+  Function: `saveService.setItemColor(saveDir, platoonFile, characterSid,
+  itemSid, colorSid)` — a thin wrapper over `updateItem({ colorSid })`;
+  `colorSid: ''` clears it (the key exists on every type-42 record, empty or
+  not, so this never mints). A non-empty value that doesn't resolve through
+  `colorsService` is a WARNING on the receipt (`warnings[]`), never a
+  refusal — mods define schemes this install may not have indexed. Route:
+  `PUT .../characters/:sid/inventory/:itemSid/color`, plus `colorSid` on the
+  unified `PUT .../inventory/:itemSid`. Catalogue: `GET /api/colors` +
+  `POST /api/colors/rebuild`. Read side: `itemOf()` now carries `colorSid`,
+  `colorName` (null on a miss), `colorHex` (for a swatch, null on a miss),
+  `allowedColors`, `colorsWidened`. UI: a `<select data-field="colorSid">` in
+  the Gear row's "More" panel (a coloured `.dot` swatch — the existing status
+  indicator class, colour overridden inline — appears next to the item name
+  when it has a colour), joining the existing diff-then-Apply mechanism; a
+  blank `<select>` value is a real, selectable state (how a colour is
+  cleared), which needed a small fix in `shell.mjs`'s `collectPatch()` — a
+  blank value on a `<select>` is sent, while a blank value on a plain number
+  input still means "nothing typed, leave alone".
+  Test: `webapp/test/mutation.test.js` — set then clear, asserting the string
+  key stays present (never deleted) and every other string/int/float on the
+  record is untouched; a combined test applying colour + uniform + stolen +
+  section in one `updateItem()` call.
 
 ### 3.2 Uniform tag (type 42 — ITEM)
 
-- [ ] **Set/clear the uniform faction tag.** Field: `strings.uniform`
-  ("StringID for the desired faction", blank to clear). Function:
-  `saveService.setUniform(saveDir, platoonFile, itemSid, factionSid | null)`.
-  Route + UI mirrors 3.1. Validation: if setting (not clearing), the faction
-  sid should resolve via `gamedataService.lookup` — warn but don't hard-block
-  if it doesn't (mods may define custom factions not in the currently-loaded
-  index).
-  Test: round-trip, set/clear.
+- [x] **Set/clear the uniform faction tag.** Field: `strings.uniform` — a
+  typecode-10 faction stringID, the SAME catalogue `services/factionsService.js`
+  already builds (`GET /api/factions` for the full list). **Confirmed:
+  5219 of 8300 type-42 records in the fixture have NO `uniform` key at all**
+  — the non-equippable string order (type-4/46/102 templates, TODO.md 2.2(a))
+  — so this is refused outright on those, never minted, exactly like the
+  existing missing-`level`/`quality` refusals. `itemOf()` carries `hasUniform`
+  (does the record carry the key at all) separately from `uniformSid` (its
+  value, which can legitimately be `''`) — the UI decides whether to offer the
+  control on `hasUniform`, never on whether the value happens to be empty.
+  Function: `saveService.setUniform(saveDir, platoonFile, characterSid,
+  itemSid, uniformSid)`, a thin wrapper over `updateItem({ uniformSid })`;
+  `''` clears. A non-empty value that doesn't resolve via
+  `factionsService.templateOf()` is a WARNING, not a refusal — the literal
+  string `defaultEmpireFactionSID` is a legitimate live value (TODO.md Phase 0
+  §2.2(a)) and, in this install, actually resolves to a real type-10 record
+  (one of the ~23 gamedata records whose sid is a literal name rather than the
+  usual `<id>-<file>` form, AGENTS.md §3's Research-template case), so it is
+  not even guaranteed to be a miss everywhere. Route:
+  `PUT .../characters/:sid/inventory/:itemSid/uniform`, plus `uniformSid` on
+  the unified `PUT .../inventory/:itemSid`. UI: a `<select data-field=
+  "uniformSid">` in the Gear row's "More" panel, rendered **only when
+  `hasUniform` is true**; a current value that doesn't resolve is kept as its
+  own selected option showing the raw string, so simply opening the row and
+  clicking Apply on something else can never silently blank it.
+  Test: set on an item that has the key (only that string changes); refused
+  on an item that doesn't (byte-identical); covered again in the combined
+  section/colour/uniform/stolen test.
 
 ### 3.3 Stolen tag (type 42 — ITEM)
 
-- [ ] **Clear stolen flags.** Fields: `ownedbyC`, `ownedbyCS`, `ownedbyI`,
-  `ownedbyS` set to 0, `ownedbyTYPE` set to 11 — confirm which sections these
-  live in (guide doesn't say if int or float; likely `ints` given they're
-  small integer codes, confirm via Phase-0-style dump before writing).
-  Function: `saveService.clearStolen(saveDir, platoonFile, itemSid)`. Route:
-  `POST .../inventory/:itemSid/clear-stolen`. UI: a "clear stolen" button on
-  items flagged as stolen (need a read-side `itemOf()` addition first: surface
-  `ownedbyTYPE` so the UI can show a "stolen" badge before this write feature
-  exists — do that as a small read-only sub-task before the write).
-  Test: round-trip, assert all five fields changed to their documented values
-  and nothing else.
+- [x] **Clear stolen flags.** Fields confirmed in `ints`: `ownedbyC`,
+  `ownedbyCS`, `ownedbyI`, `ownedbyS`, `ownedbyTYPE` — all present on every
+  type-42 record. **`ownedbyTYPE` is 11 on 100% of the fixture's records, so
+  it is NOT the stolen signal**; the signal is a nonzero `ownedbyCS` or
+  `ownedbyS` (`ownedbyC`/`ownedbyI` were 0 on every sampled record). Read
+  side landed first, per the task's own note: `itemOf()` now carries `stolen`
+  (boolean) and `owner` (`{ C, CS, I, S, TYPE }` raw). Function:
+  `saveService.clearStolen(saveDir, platoonFile, characterSid, itemSid)`, a
+  thin wrapper over `updateItem({ clearStolen: true })` — `true` is the only
+  accepted value, and all five keys must already exist or the write is
+  refused (none observed missing them, but the "never mint" rule applies
+  uniformly). Sets `ownedbyC/CS/I/S` to 0 and `ownedbyTYPE` to 11 — the
+  observed "unowned" shape (6371 of the fixture's 8300 records). Route:
+  `POST .../characters/:sid/inventory/:itemSid/clear-stolen`, plus
+  `clearStolen: true` on the unified `PUT .../inventory/:itemSid`. UI: a
+  `badge badge--warn` reading "stolen" on the item name cell (only rendered
+  when `it.stolen`), and a "Clear stolen flags" checkbox in the Gear row's
+  "More" panel (also only rendered when stolen — nothing to clear otherwise),
+  joining the same diff-then-Apply Apply button rather than a separate write
+  path.
+  Test: clearing a record with nonzero `ownedbyS`/`ownedbyCS` (asserts all
+  four zeroed, `ownedbyTYPE` 11, and `ints` key insertion order otherwise
+  unchanged); clearing an already-clean record rejected by the mutation
+  gate's existing "edit produced no change" rule (mirrors the `restoreLimbs`
+  no-op test); covered again in the combined test.
+
+**What shipped across all three, and what did not:**
+
+- One new service, `services/colorsService.js`, modelled on
+  `racesService`/`factionsService` — load-order resolution, disk cache at
+  `webapp/.cache/colors.json`, `rebuild()`. 155 colour schemes resolved on
+  this install (only 15 base-game armour templates carry an allow-list; the
+  rest are `widened`).
+- `updateItem()` gained three fields (`colorSid`, `uniformSid`, `clearStolen`)
+  in `UPDATE_ITEM_FIELDS`, validated BEFORE any write (AGENTS.md §4) and
+  applied in the SAME staged edit as `section`/`level`/`quality`/`gradeId` —
+  no second write path, per AGENTS.md §2's explicit rule.
+  `setItemColor()`/`setUniform()`/`clearStolen()` are thin wrappers, the same
+  shape as `setItemQuality()`.
+- Deliberately did NOT add a second, independent "colour compatibility" gate
+  the way `itemSlots.js` gates `section` — colour is advisory everywhere per
+  the task brief, so `allowedColors()` only ever WIDENS, never restricts a
+  write.
+- Deliberately did NOT attempt to interpret the nonzero `ownedby*` values
+  themselves (they read as reinterpreted float bits or runtime handles,
+  e.g. `-1351759424`) — only detect-nonzero-and-clear, exactly as scoped.
+- The frontend fix worth flagging: `shell.mjs`'s row-level `collectPatch()`
+  previously treated ANY blank control value as "nothing changed, skip it".
+  That was correct for the plain number inputs it was written for, but wrong
+  for a `<select>` whose blank option is a real state (colour/uniform's
+  "— none —") — fixed by branching on `el.tagName` rather than widening the
+  blank-value skip to cover selects, which would have made colour/uniform
+  impossible to ever clear via Apply.
 
 ### 3.4 Weapon and armour quality (type 42 — ITEM)
 
@@ -1432,10 +1512,41 @@ Ordered by dependency; independent items can be done in any order within.
   unchanged, then sets `quality` alone in a second write, confirms `level`
   held the first write's value.
 
-- [ ] **Weapon manufacturer/model (`company sid`, `material sid`) — NOT
-  attempted this pass; this is where actual weapon grade (Meitou etc.) lives,
-  per the finding above, not `ints.level`.** Still blocked on the same
-  caution as before this investigation: mismatched company/material pairs
+- [x] **Weapon manufacturer/model (`company sid`, `material sid`) — SHIPPED,
+  during the Phase 2 gear work rather than here.** This entry sat unticked
+  long after the thing it describes was built; the checkbox was stale, not the
+  work. What exists today: `services/itemFactory.js` owns
+  `resolveGrade()` and `defaultLevelForGrade()`,
+  `gamedataService.weaponGrades()` builds the 38-row ladder,
+  `GET /api/gamedata/weapon-grades` serves it, and `gradeId` is an accepted
+  field on `updateItem()`, `addItem()` and `regradeMany()` alike. The Gear
+  row's grade `<select>` and the bulk re-grade panel are the UI.
+  The task's core worry — that a mismatched (company, material) pair resets the
+  weapon on load — was answered by making the pair unsplittable rather than by
+  warning about it: **the grade IS the pair**, callers pass the ladder row's
+  composite `id` (`"<companySid>|<modelSid>"`), and the two strings are always
+  written in lockstep. A model sid alone is deliberately not a key, because 14
+  of this install's 24 model sids appear under two different companies —
+  resolving by model alone silently writes a manufacturer the user did not
+  choose. AGENTS.md §3 carries the full rule. Bare `materialSid` still works
+  for compatibility and resolves to the lowest-ranked matching row.
+  Also settled here: a grade chosen without an explicit `level` now supplies
+  one from the ladder row's own `rank`, because a player has one word for the
+  concept ("a Meitou katana") and a level defaulting to 0 behind the grade was
+  producing Meitou weapons at level 0. They remain two independent fields and
+  an explicit `level` always wins; `defaultLevelForGrade()` is the single place
+  that decision lives. Scoped to type 2 only — a crossbow (107) takes a level
+  but has no manufacturer ladder, so it is *refused* a grade rather than
+  silently ignoring one.
+  Tests: `webapp/test/regrade.test.js` plus the grade cases in
+  `mutation.test.js` and `equip.test.js`.
+  **The one thing still not verified, and unverifiable from here:** whether the
+  game actually accepts a given pair on load. No offline editor can observe
+  that, exactly as this task's own last line predicted. What replaced the
+  proposed "warn loudly" UI copy is the stronger guarantee that the editor
+  cannot emit a pair that isn't a real ladder row in the first place.
+
+  Original task detail, kept for the record: mismatched company/material pairs
   reset the weapon to a default on load, and a real pairing table needs
   cross-referencing `gamedata.base`'s faction/weapon records, not a single
   save's dump. Full original task detail below, unchanged. Fields:
@@ -1463,7 +1574,34 @@ Ordered by dependency; independent items can be done in any order within.
 
 ### 3.5 Faction relations (type 37 — FACTION, in `quick.save`)
 
-- [ ] **Read-side first**: surface faction list + relation values in the
+**Both tasks below SHIPPED** — as a dedicated `services/factionsService.js` and
+a Factions tab (`public/modules/features/factions.mjs`), not as the
+`saveService.factionsOf()` reader and World-tab row this entry imagined. The
+checkboxes were stale, not the work. Covered by `webapp/test/factions.test.js`.
+Three things the implementation learned that this task did not anticipate, all
+now in AGENTS.md §3:
+
+- **Relations live on the OTHER faction's record.** The player's own type-37
+  record carries *no* relation rows at all — it is the only one of the 114 with
+  none, and the only one with `floats['global trust']` and `extra['known']`. So
+  "my standing with the Holy Nation" is a float on the Holy Nation's record.
+  The task's plan of "find whichever `relationSID<n>` equals the player's own
+  faction sid" is therefore the right shape but pointed at the wrong record.
+- **A faction's identity is `strings['gamedata stringID']`, not its sid or its
+  header name.** Save-side sids are runtime handles worthless across saves, and
+  matching by header `name` looks fine but breaks on the 7 of 114 whose name
+  gamedata never uses — plus the player's own, which carries whatever they
+  renamed their squad to.
+- **Relations are not symmetric** (458 of 11449 reciprocal pairs disagree), so
+  a change is directional and touches exactly one float. Every slot already
+  exists, so `setRelations()` **never mints a key** — a missing row is refused,
+  not invented. The -100..100 clamp landed as specified. Standing labels are
+  derived from each faction's own `enemy classification`/`business relations`,
+  never from bands this editor invented.
+
+Original task detail, kept for the record:
+
+- [x] **Read-side first**: surface faction list + relation values in the
   World tab. `docs/roadmap.md`'s "Next" list already flags this as cheap
   read-only work ("faction relations (type 37) with resolved names... already
   parsed, just needs surfacing") — do this before the write task since it
@@ -1478,7 +1616,7 @@ Ordered by dependency; independent items can be done in any order within.
   `saveService`-focused test file; if none, this is a good place to start one)
   asserting the reader returns plausible relation values for the sample save.
 
-- [ ] **Write relation value.** Given a faction record and the index `n` whose
+- [x] **Write relation value.** Given a faction record and the index `n` whose
   `relationSID<n>` matches the player's own faction sid (guide: identify by
   "204-gamedata.base" in the sample — **do not hardcode that sid**, resolve
   the player's own faction the same way `worldSummary()` already does via
@@ -1495,27 +1633,85 @@ Ordered by dependency; independent items can be done in any order within.
 
 ### 3.6 Bounties (type 36 — CHAR_STATE, per the guide; verify)
 
-- [ ] **Investigate bounty field layout** before implementing: guide lists
-  `amount#`, `bountyexp#`, `bountyfac#`, `claim#`, `crimes#` as indexed field
-  families (`#` = an index, similar to `relation<n>`) on GAMESTATE_CHARACTER
-  (type 36) — but `saveService.js`'s current `T.CHAR_STATE = 36` reader only
-  pulls `name`/`is leader`/`personality`/`age`; these bounty fields are
-  unconfirmed against a real record with an actual bounty. Needs a save with
-  a bountied character to dump against (Phase 0-style). If no such character
-  exists in the available sample save, this task should produce a documented
-  best-guess field map plus an explicit "unverified — no test fixture
-  available" note rather than shipping a write path with zero test coverage.
-  Test: only proceed to a write function once a real bountied character's
-  record can be dumped and round-tripped; otherwise this stays a read-only /
-  documentation task.
+- [x] **Investigate bounty field layout** — confirmed against a real record
+  (`platoon/Cannibals_3.platoon`, sid `84-Cannibals_3.platoon-INGAME`, name
+  "Cannibal"): `ints.amount<n>`, `ints.bountyexp<n>`, `ints.claim<n>`,
+  `ints.crimes<n>` and `strings.bountyfac<n>` all present together, e.g.
+  `amount0: 502, bountyexp0: 40, claim0: 0, crimes0: 0,
+  bountyfac0: "1083-gamedata.base"` (The Holy Nation, a real typecode-10
+  faction sid the existing `factionsService.js` catalogue resolves), with a
+  second index carrying the same amount under `bountyfac1:
+  "defaultEmpireFactionSID"` — a literal string, not a `<id>-<file>` stringID,
+  same caution as `relationSID<n>` (AGENTS.md §3): never assumed to resolve,
+  never a throw on a miss. **The caution is about coping with a miss, not about
+  that shape being unresolvable** — this pass assumed the literal string could
+  not resolve and the test asserting so is what caught it: it DOES resolve, to
+  the United Cities, being one of the literal-name sids AGENTS.md §3 documents
+  (`PLAYER_WEAPONS`, `RESEARCH_TEMPLATE`, `blank squad`, ...).
+  `locationsService.js` had already hardcoded that exact mapping in its
+  `FACTION_ALIASES`, which is corroboration nobody looked for at the time.
+  Indices are per-character and small (0/1 observed); a character
+  commonly carries the same amount twice, once per faction that wants them.
+  **`saveService.bountiesOf(charStateRec)` walks the `amount<n>` keys that
+  actually exist** (never assumes 0..1) and returns `[]`, never `null`, for an
+  unbountied character. Wired into `readPlatoon()`, so every character in
+  `GET /api/saves/:name/status` carries a `bounties[]`.
+  **The fixture's 26 bountied characters are ALL NPCs** in non-player
+  `.platoon` files (Cannibals, Outlaw Farmers, ...) — the fixture's only
+  player squad, `Nameless_0.platoon`, has not one bounty key across its 13
+  characters. So the service function and route are exercised against real
+  records by the test suite, but the Squad-tab UI could not be driven against
+  this fixture end to end; it is built and correct, just unverified live.
 
-- [ ] **Clear/reduce a bounty**, once fields are confirmed: set `amount#` to
-  a small positive value (guide's "safest" method — let it expire) or a
-  caller value. Function: `saveService.setBountyAmount(saveDir, platoonFile,
-  characterSid, bountyIndex, amount)`. Route + UI straightforward.
-  Validation: amount > 0 (guide explicitly warns against 0; a small positive
-  number is the "safe" removal method, not zero).
-  Test: round-trip. **Blocked on the investigation task above.**
+- [x] **Clear/reduce a bounty**. Two functions, both following
+  `setPlayerMoney()`'s reference shape (compute, return `{ file, bytes }`;
+  `mutationService` installs):
+  `saveService.setBountyAmount(saveDir, platoonFile, characterSid,
+  bountyIndex, amount)` sets one `ints.amount<bountyIndex>`, and
+  `saveService.clearBounties(saveDir, platoonFile, characterSid, { amount =
+  1 })` sets **every** `amount<n>` present on the record to the same value in
+  ONE staged edit. Both reject `amount <= 0` or non-integer with a message
+  that names the reasoning (the guide's explicit warning against 0, and that
+  a small positive value which expires on its own is the documented safe
+  removal path) rather than a bare "must be positive" someone might later
+  "fix" away. No upper clamp.
+  **There is no "add a bounty" function, and there never can be**: the whole
+  `amount<n>`/`bountyexp<n>`/`claim<n>`/`crimes<n>`/`bountyfac<n>` key family
+  is absent entirely — not present-and-zero — on an unbountied character, and
+  this editor never mints a key that isn't already on the record (AGENTS.md
+  §3). So this feature can only ever reduce or clear a bounty that already
+  exists.
+  **`bountyexp<n>`/`claim<n>`/`crimes<n>`/`bountyfac<n>` are deliberately left
+  untouched by `clearBounties()`** — the guide's safe method is about the
+  amount alone, and nothing here has established what the other four
+  families do or whether writing them is safe.
+  Routes: `PUT .../characters/:sid/bounties/:n` (`{ amount }`) and
+  `POST .../characters/:sid/bounties/clear` (`{ amount? }`, default 1).
+  UI (Squad tab, `public/modules/features/squad.mjs`): a `badge badge--warn`
+  reading "wanted" next to the character's name when `bounties.length > 0`; a
+  "Bounties" section rendered **only** when there is at least one bounty (an
+  unbountied character shows nothing, not an empty section) — one row per
+  bounty with the resolved faction name (or the raw string on a miss, never
+  hidden), a `min="1"` amount input with its own Apply, and
+  `bountyexp`/`claim`/`crimes` as read-only muted text; one "Reduce all to 1"
+  action for `clearBounties()`; a hint explaining the mechanic cannot remove
+  a bounty outright and why 0 is refused. **Built but not exercised against
+  the fixture** (see the note above) — a real player's save with a bountied
+  squad member will hit this path, but this pass could not click through it.
+  Test (`webapp/test/mutation.test.js`): `bountiesOf()` resolves a known
+  faction sid, and asserts `defaultEmpireFactionSID` resolves to "United
+  Cities" rather than missing (this assertion started out backwards, asserting
+  a miss, and failing it is how the literal-name-sid finding above surfaced —
+  it now pins the resolution so a future change that drops literal-name sids
+  fails here); `setBountyAmount` changes only `amount<n>`, leaving the
+  other three int families, both `bountyfac<n>` strings and key order
+  untouched; rejects 0, a negative value and a non-integer, save
+  byte-identical; rejects an index with no `amount<n>` key, save
+  byte-identical (never mints); `clearBounties` sets both `amount0`/`amount1`
+  on a two-bounty character in ONE staged edit (`changedFiles` length 1),
+  leaving the other four families untouched; a no-bounty character is
+  rejected by the mutation gate's "edit produced no change" rule (mirrors the
+  `restoreLimbs` no-op test).
 
 ### 3.7 Advanced settings (type 56 — GAME_STATE, camera entry)
 
@@ -1537,9 +1733,40 @@ Ordered by dependency; independent items can be done in any order within.
   do not ship the write, only the investigation notes.
   Test: round-trip once fields are confirmed and a function exists.
 
+  **Investigation re-run 2026-08-06 against the test fixture. Still blocked,
+  and now blocked for a reason that no amount of reading saves on this machine
+  will clear.** The type-56 record's full `floats` Map was dumped again. Seven
+  keys are exactly `1`, which is what a default multiplier looks like:
+  `ht`, `nnm`, `rs`, `gdm`, `ps`, `cod`, `bs`. Everything else on the record is
+  plainly something else — sky/cloud state, `zoom`, `alt`, `biome_text_timer`,
+  and a long tail of `<sid>: <float>` dialogue-cooldown entries keyed by
+  stringID.
+
+  `rs` reads as "research speed" and `ht` as "hunger…something", but **reading
+  as** is not evidence, and two of the seven could be swapped without this save
+  showing any difference. Phase 0 already compared `save1` against `autosave1`
+  and found these floats byte-identical; this pass adds that all four saves on
+  this machine (`save1`, `autosave0/1/2`) are one playthrough with default
+  settings, so the whole corpus available here has **zero variance** in exactly
+  the fields that need to vary to be identified. A seventh candidate observed at
+  the same value is not seven times the evidence — it is the same non-evidence
+  seven times.
+
+  What would actually resolve it, in rough order of cost: a save from a
+  playthrough where the player moved the hunger-rate or research-speed slider
+  off default (diff the two, one key moves); failing that, creating such a save
+  in-game and diffing against a default one. Both need a human at the game, not
+  another sweep of these files.
+
+  **Do not guess which of `rs`/`ht`/`gdm`/`ps`/`cod`/`nnm`/`bs` is which, and
+  do not ship a write against a guess.** A wrong guess here silently rewrites a
+  world rule the player never asked to change, and the round-trip test cannot
+  catch it — a byte-perfect write of the wrong field is still byte-perfect.
+  This entry stays unticked deliberately; it is not an oversight.
+
 ### 3.8 Player money
 
-- [ ] Already implemented (`saveService.setPlayerMoney`,
+- [x] Already implemented (`saveService.setPlayerMoney`,
   `PUT /api/saves/:name/money`, World tab). No further work — listed here
   only so this file is a complete cross-reference against
   `docs/fcs-capabilities.md`.
