@@ -7,7 +7,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Because this app writes to save files, one rule sits above the changelog: no
 release ships unless `npm test` — the byte-identical codec round trip — passes.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-06
 
 ### Added
 
@@ -30,7 +30,6 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   `ranger`, which had become two-thirds katana users under a heading people
   pick for crossbows), and 66 loadouts became 148, every one now filed under
   one of 11 ordered categories.
-
 - **Recruit provisioning.** Adding a new squad member now equips them in the
   SAME staged edit as the character itself — armour, weapon(s), a medical kit
   (a robotics repair kit rather than bandages for a Skeleton, which does not

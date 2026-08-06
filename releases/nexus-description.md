@@ -47,8 +47,16 @@ comfortable with that.
 - Faction, region, in-game clock, cats, position — and teleport to any town.
 
 **Your recruits**
-- 50 grouped recruits with names drawn from Kenshi's own name pools, and 37
-  loadouts read off the game's own NPCs.
+- 144 recruits in 11 groups and 148 gear loadouts in 11 categories, each with
+  its own browsable page: what a recruit's role trains, the numbers their
+  experience tier writes, where they're found, and every item in a kit with its
+  slot, quality and racial restrictions.
+- New members arrive equipped, not naked — Specialist armour, a Catun No.3
+  weapon, a medical kit suited to their race, food and a few thousand cats,
+  matched to their role. You see exactly what they'll bring before you add
+  them, and can pick a different kit or none at all.
+- Names drawn from Kenshi's own name pools, and the named Meitou wielders' gear
+  read off their own character templates rather than invented.
 
 ## Your save is not at risk
 
