@@ -580,8 +580,17 @@ cd webapp
 npm install          # once
 npm start            # http://127.0.0.1:3080
 npm test             # round-trip + model tests
+npm run lint         # eslint, both module systems (see eslint.config.mjs)
 node scripts/status.js [saveName]
 ```
+
+The lint config is deliberately small and bug-focused, not stylistic — there is
+no formatter here, and a stylistic pack would flag thousands of lines of
+reviewed code and train everyone to run `--fix` without reading. Two things it
+does enforce that are worth knowing before you trip them: `confirm()` is
+allowed (it is the destructive-write gate, §2 of the style guide) while
+`alert()`/`prompt()` are not, and `document.write` is banned outright — a
+feature module renders into `page.innerHTML` like every other one.
 
 No hot reload: restart node after editing `services/`, `routes/` or `server.js`.
 `public/*` needs only a browser refresh.

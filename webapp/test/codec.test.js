@@ -34,7 +34,7 @@ test('quick.save round-trips byte-identically', (t) => {
   assert.ok(parsed.records.length > 0);
 });
 
-test('a signalling NaN float survives the round trip', (t) => {
+test('a signalling NaN float survives the round trip', () => {
   // Kenshi writes NaN floats into saves (hundreds per quick.save, nearly all in
   // a type-108 spatial cache's instance positions). A float32 -> double ->
   // float32 trip through a JS number preserves a NaN's sign and payload but

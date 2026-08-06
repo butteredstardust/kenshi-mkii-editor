@@ -10,11 +10,18 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test \"test/*.test.js\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "gamedata:rebuild": "node -e \"console.log(require('./services/gamedataService').rebuild().size, 'stringIDs indexed')\"",
     "status": "node scripts/status.js",
     "fixture:create": "node scripts/make-fixture.js"
   },
   "dependencies": {
     "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.0",
+    "globals": "^17.9.0"
   }
 }

@@ -123,9 +123,10 @@ node webapp/scripts/status.js save1    # a named save
 ```bash
 cd webapp
 npm test
+npm run lint
 ```
 
-183 tests. The one that matters reads every file in a real save and writes it
+214 tests. The one that matters reads every file in a real save and writes it
 back in memory, then asserts SHA-256 equality. **No release ships unless it
 passes** — if the codec cannot reproduce a file exactly, it does not understand
 it, and writing to it would be corruption.

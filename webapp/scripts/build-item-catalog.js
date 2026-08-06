@@ -139,7 +139,7 @@ async function crawlCategories(opts) {
   const pages = new Map();
   const visited = new Set();
   const categories = [];
-  let queue = [{ title: opts.root, depth: 0, trail: [] }];
+  const queue = [{ title: opts.root, depth: 0, trail: [] }];
 
   while (queue.length) {
     const { title, depth, trail } = queue.shift();

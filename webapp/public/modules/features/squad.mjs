@@ -526,7 +526,7 @@ function renderGearPreview(data) {
   const resolved = resolvePreviewItems(data);
   return `<div class="stack">
     <p class="hint">${data.loadoutLabel ? `Arrives as <b>${esc(data.loadoutLabel)}</b> — ` : ''}${esc(plural(resolved.length, 'item'))}, ${esc(data.cats)} cats.</p>
-    ${loadoutItems({ items: resolved })}
+    ${loadoutItems({ items: resolved }, { narrow: true })}
     ${(data.warnings || []).map((w) => `<p class="hint note-warn">${esc(w)}</p>`).join('')}
   </div>`;
 }

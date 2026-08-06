@@ -53,6 +53,6 @@ app.use((err, req, res, next) => {
 app.use('/api', apiRoutes);
 
 app.listen(PORT, '127.0.0.1', () => {
-  // eslint-disable-next-line no-console -- boot confirmation; no logger in this app
+   
   console.log(`Kenshi MKII Editor on http://127.0.0.1:${PORT} (loopback only)`);
 });

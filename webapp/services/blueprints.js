@@ -174,6 +174,7 @@ function describeEntry(teaches) {
   if (typeof teaches !== 'string' || !teaches.trim()) {
     throw new Error('teaches must be a non-empty research-ledger entry string');
   }
+  // eslint-disable-next-line no-control-regex -- rejecting control characters IS the check
   if (/[\x00-\x1f]/.test(teaches)) throw new Error('teaches must not contain control characters');
   const m = /^(.*)\.TECH\.(\d+)$/.exec(teaches);
   const subjectSid = m ? m[1] : teaches;

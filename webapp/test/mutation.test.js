@@ -432,7 +432,7 @@ test('setHunger sets hung and fed independently, in both directions', async (t) 
     // Set only hung; fed must stay untouched.
     await mutation.mutate(scratch.dir, 'test: set hung only',
       (staging) => saveService.setHunger(staging, target.platoonFile, target.sid, { hung: 1.5 }));
-    let mid = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.medical;
+    const mid = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).records.medical;
     assert.strictEqual(mid.floats.get('hung'), 1.5);
     assert.strictEqual(mid.floats.get('fed'), originalFed);
 
@@ -1041,7 +1041,7 @@ test('setItemQuality sets level and quality on an item independently', async (t)
     // Set only level; quality must stay untouched.
     await mutation.mutate(scratch.dir, 'test: set item level',
       (staging) => saveService.setItemQuality(staging, target.platoonFile, target.sid, itemSid, { level: 60 }));
-    let mid = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).bySid.get(itemSid);
+    const mid = saveService.resolveCharacter(scratch.dir, target.platoonFile, target.sid).bySid.get(itemSid);
     assert.strictEqual(mid.ints.get('level'), 60);
     const qualityAfterFirstWrite = mid.floats.get('quality');
 
@@ -2121,7 +2121,7 @@ test('restoreBackup refuses while an edit is in progress', async (t) => {
   }
 });
 
-test('a dot-prefixed directory in the save root is never offered as a save', (t) => {
+test('a dot-prefixed directory in the save root is never offered as a save', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kenshi-mkii-saveroot-'));
   try {
     for (const name of ['realsave', '.restoring-realsave-abc']) {

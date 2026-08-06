@@ -153,7 +153,7 @@ function main() {
   const png = path.join(outDir, 'icon_256.png');
   fs.writeFileSync(ico, encodeIco(frames));
   fs.writeFileSync(png, frames.at(-1).png);
-  // eslint-disable-next-line no-console -- this is a CLI generator
+   
   console.log(`Wrote ${ico} (${SIZES.join(', ')}) and ${png}`);
 }
 

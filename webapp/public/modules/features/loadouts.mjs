@@ -20,21 +20,36 @@ import { bulkPanel, wireBulkEquip as wireBulk } from './bulk-equip.mjs';
  * not two.
  */
 
-/** loadoutItems() is exported for recruits.mjs — a recruit's "kit" IS a
- * loadout, read-only, and the app has one item-list renderer, not two that
- * would drift apart the first time someone edits only one of them. */
-export function loadoutItems(loadout) {
+/**
+ * loadoutItems() is exported for recruits.mjs and squad.mjs — a recruit's
+ * "kit" IS a loadout, read-only, and the app has one item-list renderer, not
+ * three that would drift apart the first time someone edits only one of them.
+ *
+ * `narrow` folds the four columns into two, slot under the name instead of
+ * beside it. The Squad tab's add-member preview lives in a 280px sidebar,
+ * where four columns cannot fit at any font size: the table would scroll
+ * inside its `.table-wrap` and push the quality column — "lvl 80", "Catun
+ * No.3", the entire reason the preview exists — out of sight by default.
+ */
+export function loadoutItems(loadout, { narrow = false } = {}) {
   if (!loadout.items.length) return '<p class="hint">No items.</p>';
-  return `<div class="table-wrap"><table class="data-table table--compact"><tbody>
+  const cols = narrow ? 2 : 4;
+  return `<div class="table-wrap"><table class="data-table ${narrow ? '' : 'table--compact'}"><tbody>
     ${loadout.items.map((it) => {
     const note = raceRuleNote(it.raceRule);
+    const name = it.name ? esc(it.name) : `<span class="muted">${esc(it.templateSid)}</span>`;
+    const slot = esc(SLOT_LABELS[it.section] || it.section);
+    const qty = it.quantity > 1 ? `×${esc(it.quantity)}` : '';
     return `<tr>
-      <td class="col-item">${it.name ? esc(it.name) : `<span class="muted">${esc(it.templateSid)}</span>`}</td>
-      <td class="muted">${esc(SLOT_LABELS[it.section] || it.section)}</td>
-      <td class="n shrink">${it.quantity > 1 ? `×${esc(it.quantity)}` : ''}</td>
-      <td class="muted shrink">${qualityCell(it)}</td>
+      ${narrow ? `<td class="col-item">${name}
+        <div class="muted">${slot}${qty ? ` · ${qty}` : ''}</div></td>
+      <td class="muted shrink">${qualityCell(it)}</td>`
+    : `<td class="col-item">${name}</td>
+      <td class="muted">${slot}</td>
+      <td class="n shrink">${qty}</td>
+      <td class="muted shrink">${qualityCell(it)}</td>`}
     </tr>
-    ${note ? `<tr class="item-advanced"><td colspan="4"><span class="note-warn">${esc(note)}</span></td></tr>` : ''}`;
+    ${note ? `<tr class="item-advanced"><td colspan="${cols}"><span class="note-warn">${esc(note)}</span></td></tr>` : ''}`;
   }).join('')}
   </tbody></table></div>`;
 }

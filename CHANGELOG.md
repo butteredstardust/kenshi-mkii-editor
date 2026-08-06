@@ -11,6 +11,9 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
 
 ### Added
 
+- **`npm run lint`.** ESLint over both halves of the app — CommonJS in
+  `services/`/`routes/`/`test/`, ES modules in `public/`. The rule set is
+  deliberately small and bug-focused rather than stylistic.
 - **Recruits and Loadouts tabs.** Two new pages for inspecting the catalogues
   the editor has always used but never shown. Recruits lists all 144 entries
   under their 11 group headings, each expanding to the skills their archetype
@@ -90,6 +93,12 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   categories the page itself is grouped by. It previously grouped by the
   leading tag, which worked at 66 kits but had grown to 52 of them under
   "Light armour" and 8 under "Other".
+- Fixed: expanding **Add member** (or Teleport) stretched the Squad sidebar to
+  the width of its longest dropdown entry — 500px inside a 280px column — so
+  the panel and the roster spilled sideways and slid under the character card.
+  A `<select>` refuses to shrink below its longest option unless told to; now
+  it is told to. The add-member gear preview also folds to two columns at
+  sidebar width, so the quality it is previewing stays on screen.
 - The Add member panel no longer says a recruit "arrives carrying nothing" —
   it shows what they will actually arrive with, before the write, and offers a
   gear override (or "Nothing", which reproduces the old behaviour).

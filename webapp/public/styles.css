@@ -439,6 +439,16 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * edit — a screen down the page while spending 1240px on three collapsed rows.
  * They are squad-scoped, they belong beside the squad list. */
 .side { display: grid; gap: var(--s4); align-content: start; }
+/* Same `min-width: auto` trap as `.workspace > *` above, one level in: a grid
+ * item refuses to shrink below its content's intrinsic width, and a <select>'s
+ * intrinsic width is its LONGEST OPTION. The sidebar holds selects of 145
+ * recruits, 150 loadouts and 293 towns, so the implicit column sized itself to
+ * ~500px inside a 280px track — and because grid items stretch to the column,
+ * the roster and every panel stretched with it and slid under the character
+ * card. Both rules are needed: the item one stops the panel stretching, the
+ * control one stops the option text setting the column's min-content in the
+ * first place. */
+.side > * { min-width: 0; }
 .side .panel { padding: var(--s3); }
 .side .panel-head h2 { font-size: var(--t-md); display: flex; align-items: center; gap: var(--s2); }
 /* A sidebar-width panel has no room for a row of fields side by side. */
@@ -449,7 +459,14 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * HEIGHT. Width is already full-bleed here — the grow factor has nothing left
  * to do. */
 .side .field--grow { flex: none; max-width: none; }
-.side .field select, .side .field input[type=text] { width: 100%; max-width: none; }
+.side .field select, .side .field input[type=text] { width: 100%; max-width: none; min-width: 0; }
+/* `.col-item`'s 11rem floor is there so item names don't wrap to one word per
+ * line in a full-width pane. In the sidebar there is no width to give it, and
+ * the floor is what would force the two-column narrow table to scroll anyway.
+ * `.shrink`'s nowrap is the other half: a grade reads "Catun No.3 (Catun
+ * Scrapmaster)", which on its own is wider than the column it sits in. */
+.side .data-table .col-item { min-width: 0; }
+.side .data-table td.shrink { white-space: normal; }
 .side .btn { width: 100%; }
 .side .actions .btn { width: auto; }
 
