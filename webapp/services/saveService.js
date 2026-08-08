@@ -301,20 +301,79 @@ function itemOf(rec, bySid = null) {
  * 70.7 against 50. Both are reported raw; `damaged` is judged against the
  * character's own highest intact part, which is unambiguous.
  */
+/**
+ * `ints.limbs` IS decoded now: **four 2-bit fields, one per limb slot**, in
+ * MEDICAL part order — slot 3, 4, 5, 6 (left arm, right arm, left leg, right
+ * leg on a humanoid; foreleg/leg on an animal, which is the same slot under
+ * another name, see AGENTS.md §3). Field value 0 is the character's own limb,
+ * 1 is a lost one, 2 is a robotic replacement.
+ *
+ * This replaces the "not decoded, single sample" note that stood here: the
+ * encoding was derived from every MEDICAL (57) record in every save on this
+ * machine — 4995 records, of which 88 carry the key. The evidence, and its
+ * limits, are worth stating because a write goes through it:
+ *
+ *   - Every one of the 88 values fits in eight bits (max 169), and every one
+ *     of those records has exactly four limb slots. Decoded this way the
+ *     fields take only the values 0, 1 and 2 — **never 3**, which a wrong
+ *     split would produce almost immediately.
+ *   - The eight distinct values seen are 1, 4, 5, 16, 64, 65, 68 and 169 —
+ *     i.e. exactly the single-limb flags 1, 4, 16, 64 (slots 3,4,5,6) and
+ *     combinations of them.
+ *   - Field 1 means a LOST limb: 82 of those 93 limbs have negative `flesh`
+ *     (median -86, minimum -188), and in 83 of the 88 records the flagged
+ *     limb is the worst-off limb the character has.
+ *   - Field 2 means a ROBOTIC one, and this is the weakest link in the chain:
+ *     there is exactly **one** character in the corpus with any (a Hive
+ *     Soldier Drone with three, confirmed by the player as prosthetics), and
+ *     all three of his read healthy `flesh` (100, 50, 50) while his one
+ *     field-1 limb reads -98.9. Nothing else distinguishes them — `hitmult`,
+ *     `rig` and `wear` are 0/1 on all four of his limbs, and `bandage` above
+ *     100 turned out to be ordinary (128 such values across 108 records with
+ *     no limb damage at all), so it is not a prosthetic marker either.
+ *
+ * The UI says which of these is solid and which rests on one character.
+ */
+const LIMB_SLOTS = [3, 4, 5, 6];
+const LIMB_STATES = ['own', 'lost', 'robotic'];
+
+/** The state of one limb slot, given the raw `limbs` int. `k` is 0..3. */
+function limbStateOf(limbs, k) {
+  if (limbs == null) return 'own';
+  return LIMB_STATES[(limbs >> (k * 2)) & 3] ?? 'unknown';
+}
+
+/** The raw int for a `{ slot: state }` map — the exact inverse of the above. */
+function encodeLimbs(states) {
+  let out = 0;
+  for (const [k, slot] of LIMB_SLOTS.entries()) {
+    const idx = LIMB_STATES.indexOf(states[slot] || 'own');
+    if (idx < 0) throw new Error(`limb state for part ${slot} must be one of ${LIMB_STATES.join(', ')}`);
+    out |= idx << (k * 2);
+  }
+  return out;
+}
+
 function medicalOf(rec) {
   if (!rec) return null;
   const f = rec.floats; const b = rec.bools;
+  const limbs = rec.ints.get('limbs') ?? null;
   const parts = [];
   for (let i = 0; i < BODY_SLOTS; i++) {
     if (!f.has(`hit${i}`)) continue;
+    const k = LIMB_SLOTS.indexOf(i);
     parts.push({
       part: gamedata.nameOf(rec.strings.get(`sid${i}`), `part ${i}`),
+      index: i,
       current: f.get(`flesh${i}`),
       hitField: f.get(`hit${i}`),
       bandage: f.get(`bandage${i}`) || 0,
       stun: f.get(`stun${i}`) || 0,
       rig: f.get(`rig${i}`) ?? null,
       wear: f.get(`wear${i}`) ?? null,
+      // Only the four limb slots have a state; a head or a chest cannot be
+      // lost or replaced, and `null` says so rather than implying "own".
+      limbState: k < 0 ? null : limbStateOf(limbs, k),
     });
   }
   const intact = Math.max(0, ...parts.map((p) => p.current));
@@ -330,9 +389,10 @@ function medicalOf(rec) {
     bleeding: f.get('bleeding') ?? 0,
     fed: f.get('fed') ?? null,
     hunger: f.get('hung') ?? null,
-    // Raw bitmask, not decoded (see restoreLimbs()'s comment) — surfaced only
-    // so the UI can tell whether there's anything for restoreLimbs() to clear.
-    limbs: rec.ints.get('limbs') ?? null,
+    // The raw int, kept alongside the decoded per-part `limbState` above: the
+    // UI shows it, because a value this editor derived a meaning for should be
+    // checkable against the file by the person whose save it is.
+    limbs,
     parts,
   };
 }
@@ -1074,13 +1134,147 @@ function revive(saveDir, platoonFile, sid, { minFleshPercent = 50 } = {}) {
 }
 
 /**
- * Delete `ints.limbs` if present — no attempt is made to interpret individual
- * bits (the bit-to-body-part encoding is NOT decoded, see TODO.md Phase 0:
- * a comatose Cannibal was observed with `ints.limbs: 16` but which bit maps
- * to which lost part was not determined from a single sample). The FCS
- * guide's "delete the left side, not the right side" almost certainly refers
- * to the FCS UI's key column vs. value column — i.e. delete the key itself,
- * which is exactly what this does and requires no bitmask knowledge.
+ * Set the state of a character's four limbs — own / lost / robotic — in ONE
+ * staged edit, optionally moving each limb's `flesh` to match.
+ *
+ * See `limbStateOf()` above for the encoding and the evidence behind it. Three
+ * decisions worth knowing:
+ *
+ *  - **All four "own" DELETES the key**, rather than writing a 0. That is what
+ *    an undamaged character's record looks like — 4907 of the 4995 MEDICAL
+ *    records swept have no `limbs` key at all — so restoring every limb should
+ *    leave a record shaped like one that never lost any. It is also exactly
+ *    what `restoreLimbs()` does, which stays as the one-click version of this.
+ *  - **The key IS minted** when a state is set on a record that has none.
+ *    Bounties are the opposite case (`setBountyAmount()` refuses to mint) and
+ *    the difference is evidenced: a bounty's whole key family is absent on an
+ *    unbountied character and the game adds them together, whereas `limbs` is
+ *    a single int the game adds to an ordinary record the moment a limb goes.
+ *    Refusing to mint would mean this editor could never GIVE a prosthetic,
+ *    which is the thing it was asked to do.
+ *  - **`flesh` is optional and separate.** The state and the HP are two facts
+ *    the file stores independently — the corpus has both lost limbs reading
+ *    positive flesh and healthy-flagged limbs reading negative — so this
+ *    writes only what it is asked to. The UI defaults to keeping them
+ *    consistent and names the numbers before the write.
+ *
+ * **Fitting a prosthetic** (`install`) mints the limb ITEM in the same edit.
+ * What the editor can honestly do here is bounded by what the format records,
+ * and the boundary is worth stating because it is not obvious:
+ *
+ *   - The limb's STATE lives in `ints.limbs` (above). That is the field the
+ *     one character in the corpus with prosthetics has set, and it is what
+ *     this writes.
+ *   - The limb ITEM is a type-111 template whose own `ints.slot` (50..53) says
+ *     which limb it is — left arm, right arm, left leg, right leg — and whose
+ *     `HP`/`HP 1` are its condition at the bottom and top of the quality
+ *     ladder, exactly the shape armour's `ints.level` scales over. A fitting
+ *     is refused when the template's side does not match the part.
+ *   - **A fitted limb is not an item record anywhere in this player's saves.**
+ *     A sweep of every save and of the install's own level files finds ZERO
+ *     type-111-backed items, while the character with three prosthetics has
+ *     none of them in his inventory — so the game consumes the item when the
+ *     limb goes on. This therefore puts the limb in the character's inventory
+ *     (`main`, Carried) and sets the state; it does not claim to reproduce
+ *     whatever the game does with the object itself. The UI says so.
+ *
+ * @param {object} opts
+ * @param {Record<number,string>} opts.states  part index -> 'own'|'lost'|'robotic'
+ * @param {Record<number,number>} [opts.flesh] part index -> new flesh value
+ * @param {Record<number,{templateSid: string, level?: number}>} [opts.install]
+ *   part index -> the limb to fit there
+ */
+function setLimbs(saveDir, platoonFile, sid, { states, flesh, install } = {}) {
+  if (!states || typeof states !== 'object') throw new Error('setLimbs: states is required');
+
+  const {
+    relFile, parsed, bySid, records,
+  } = resolveCharacter(saveDir, platoonFile, sid);
+  const rec = records.medical;
+  if (!rec) throw new Error(`${platoonFile}: character "${sid}" has no MEDICAL record (type 57)`);
+
+  const before = { limbs: rec.ints.get('limbs') ?? null, parts: {} };
+  const current = {};
+  for (const [k, slot] of LIMB_SLOTS.entries()) {
+    if (!rec.floats.has(`hit${slot}`)) throw new Error(`${platoonFile}: character "${sid}" has no body part ${slot}`);
+    current[slot] = limbStateOf(before.limbs, k);
+  }
+
+  const next = { ...current };
+  for (const [slot, state] of Object.entries(states)) {
+    const n = Number(slot);
+    if (!LIMB_SLOTS.includes(n)) throw new Error(`part ${slot} is not a limb — only ${LIMB_SLOTS.join(', ')} can be lost or replaced`);
+    if (!LIMB_STATES.includes(state)) throw new Error(`limb state must be one of ${LIMB_STATES.join(', ')}`);
+    next[n] = state;
+  }
+
+  const value = encodeLimbs(next);
+  if (value === 0) rec.ints.delete('limbs');
+  else rec.ints.set('limbs', value);
+
+  const after = { limbs: rec.ints.get('limbs') ?? null, parts: {} };
+  for (const [slot, v] of Object.entries(flesh || {})) {
+    const n = Number(slot);
+    if (!LIMB_SLOTS.includes(n)) throw new Error(`flesh may only be set here for a limb (${LIMB_SLOTS.join(', ')})`);
+    const value2 = Number(v);
+    if (!Number.isFinite(value2)) throw new Error(`flesh for part ${n} must be a finite number`);
+    before.parts[n] = rec.floats.get(`flesh${n}`);
+    // No lower clamp: the negative-of-max value IS how the file records a lost
+    // limb, the same mechanic damagePart() exists for.
+    rec.floats.set(`flesh${n}`, value2);
+    after.parts[n] = value2;
+  }
+
+  // Fit the limbs last, so a refusal here cannot leave a half-applied edit —
+  // and in the SAME parsed file, so the state and the limb it describes are
+  // one staged write and one backup, never two.
+  const fitted = [];
+  for (const [slot, spec] of Object.entries(install || {})) {
+    const n = Number(slot);
+    if (!LIMB_SLOTS.includes(n)) throw new Error(`part ${slot} is not a limb — nothing can be fitted to it`);
+    if (next[n] !== 'robotic') {
+      throw new Error(`part ${n} must be set to "robotic" to fit a limb there (it is "${next[n]}")`);
+    }
+    const { templateSid, level } = spec || {};
+    if (!templateSid) throw new Error(`no limb template given for part ${n}`);
+    const limb = gamedata.limbTemplates().find((l) => l.sid === templateSid);
+    if (!limb) throw new Error(`"${templateSid}" is not a robotic limb template in this install`);
+    // A left arm cannot be fitted to a right leg. The template's own `slot`
+    // says which limb it is, so this is the game's data refusing, not an
+    // editorial rule (see gamedataService.limbTemplates()).
+    if (limb.partIndex !== n) {
+      throw new Error(`"${limb.name}" fits part ${limb.partIndex}, not part ${n}`);
+    }
+    const bag = records.inventory;
+    if (!bag) throw new Error(`${platoonFile}: character "${sid}" has no INVENTORY record (type 41)`);
+    const { record, meta } = attachNewItem(parsed, bag, bySid, templateSid, {
+      // Carried, because that is the only section a type-111 item has ever
+      // been observed in — itemSlots.js gives the kind no equip slot at all.
+      section: 'main',
+      level,
+      quantity: 1,
+    });
+    fitted.push({
+      partIndex: n, templateSid, name: limb.name, sid: record.sid, level: meta.level ?? level ?? null,
+    });
+  }
+
+  return {
+    file: relFile,
+    bytes: writeFile(parsed),
+    before,
+    after,
+    states: next,
+    fitted,
+  };
+}
+
+/**
+ * Delete `ints.limbs` if present — the blunt version of `setLimbs()` above,
+ * kept because it is what the FCS guide describes and because "put every limb
+ * back" should not require naming four states. The guide's "delete the left
+ * side, not the right side" refers to the FCS UI's key column vs. value
+ * column — i.e. delete the key itself, which is exactly what this does.
  *
  * A no-op (key absent) is left to mutationService.mutate()'s existing
  * "edit produced no change" rejection — that is correct behavior here (there
@@ -3229,7 +3423,9 @@ module.exports = {
   renameCharacter, renamePlayerFaction, addSquadMember, applyStatSpread, setPersonality, dialogueOf,
   setRace, previewRaceChange, mapBodyPlan,
   resolveCharacter, setStats, setStat, trainCharacter,
-  healPart, damagePart, setHunger, revive, restoreLimbs,
+  healPart, damagePart, setHunger, revive, restoreLimbs, setLimbs,
+  // The limb encoding itself, exported for the tests that pin it down.
+  LIMB_SLOTS, LIMB_STATES, limbStateOf, encodeLimbs,
   setItemSection, setItemQuality, updateItem, addItem,
   setItemColor, setUniform, clearStolen,
   bountiesOf, setBountyAmount, clearBounties,

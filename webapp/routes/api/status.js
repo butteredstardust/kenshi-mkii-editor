@@ -180,6 +180,18 @@ router.get('/gamedata/weapon-grades', handle(async () => ({
   grades: gamedata.weaponGrades(),
 })));
 
+/**
+ * The robotic limbs this install offers, for the Limbs page's "fit a
+ * prosthetic" picker. Each row carries the MEDICAL part it fits (`partIndex`
+ * 3..6, resolved from the template's own `ints.slot` 50..53 in load order) and
+ * its `HP`/`HP 1` band — the condition it has at the bottom and the top of the
+ * quality ladder, which is what makes an armour-style level control the right
+ * one. Save-independent.
+ */
+router.get('/gamedata/limbs', handle(async () => ({
+  limbs: gamedata.limbTemplates(),
+})));
+
 // Non-mutating catalogue for the "train as archetype" UI dropdowns — the
 // mapping lives once in services/archetypes.js, not duplicated client-side.
 router.get('/archetypes', handle(async () => archetypes.catalogue()));

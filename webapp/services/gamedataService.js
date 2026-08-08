@@ -31,6 +31,12 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
 //
+// 9: the weapon-grade ladder resolves its names AND its ranks in the game's
+// own load order (last definition wins) instead of first-definition-wins. Both
+// were wrong against the player's screen: "Edge Type 5" is "Edge Type 3" once
+// the installed mods are applied, and all 11 re-defined grade pairs carry a
+// different rank — the number this app writes into a weapon's `ints.level`.
+//
 // 8: `raceRuleIndex` — the `races` / `races exclude` rows that ARE Kenshi's
 // racial armour restrictions (see raceRules() below).
 //
@@ -42,7 +48,7 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 //
 // 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
 // every weapon-grade row.
-const CACHE_VERSION = 8;
+const CACHE_VERSION = 9;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
 // 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
@@ -76,6 +82,7 @@ let stats = null;
 let materialIndex = null;
 // Ordered, de-duplicated weapon grade ladder (TODO.md 2.2(i)) — see build().
 let weaponGradeList = null;
+let limbList = null;
 // sid -> { only: string[], exclude: string[] } — Kenshi's own racial armour
 // restrictions, unioned across every definition. See raceRules().
 let raceRuleIndex = null;
@@ -138,7 +145,21 @@ function build() {
   // with v0 as that grade's rank. Resolved to names after the full sweep, since
   // a type-50 record's own name may be defined in a file visited later than its
   // company's.
-  const gradeRows = []; // { companySid, companyName, modelSid, rank }
+  const gradeRows = []; // { companySid, companyName, modelSid, rank, file }
+  // Per-file names for the record types whose DISPLAY name the player sees
+  // resolved in load order rather than first-definition-wins. Collected here,
+  // in the one pass, and resolved against `data/mods.cfg` after it — see
+  // `resolveInLoadOrder()` below for why this is not optional for grades.
+  const gradeNames = new Map(); // sid -> Map<fileBasename, name>
+  // Robotic limbs (type 111), for the Limbs page's "fit a prosthetic" picker.
+  // Their `ints.slot` is 50/51/52/53 = left arm / right arm / left leg / right
+  // leg, which lines up exactly with MEDICAL part slots 3/4/5/6 — and it is
+  // collected per file for the same reason the grades are: 24 of this
+  // install's 32 limb templates are defined more than once, and the FIRST
+  // definition of several (Newwworld.mod's KLR Series, Economy and Stealth
+  // limbs) carries no `slot` at all while a later one does. First-definition-
+  // wins therefore reported "no slot" for a limb whose side the game knows.
+  const limbDefs = new Map(); // sid -> Map<fileBasename, { name, slot, hp, hpMax, value }>
   const skipped = [];
   let files = 0;
   for (const file of dataFiles()) {
@@ -229,12 +250,41 @@ function build() {
       // Weapon grade ladder: type-51 (company/manufacturer) records carry an
       // extra['weapon models'] category whose rows point at type-50 (grade)
       // sids, with v0 as the grade's rank.
+      //
+      // EVERY definition is kept, tagged with the file it came from, because
+      // both halves of a grade row are re-stated by mods and the game obeys the
+      // last one. Keeping only the first produced a ladder that disagreed with
+      // the player's own game on both the name and the number.
+      if (rec.type === 50 || rec.type === 51) {
+        let byFile = gradeNames.get(rec.sid);
+        if (!byFile) { byFile = new Map(); gradeNames.set(rec.sid, byFile); }
+        byFile.set(path.basename(file), asText(rec.name));
+      }
+      if (rec.type === 111) {
+        let byFile = limbDefs.get(rec.sid);
+        if (!byFile) { byFile = new Map(); limbDefs.set(rec.sid, byFile); }
+        byFile.set(path.basename(file), {
+          name: asText(rec.name),
+          slot: rec.ints.has('slot') ? rec.ints.get('slot') : null,
+          // A limb's own HP band: `HP` at level 0, `HP 1` at the top of the
+          // ladder — the same shape armour's stats scale over, which is what
+          // makes an armour-style quality control the right control here.
+          hp: rec.ints.has('HP') ? rec.ints.get('HP') : null,
+          hpMax: rec.ints.has('HP 1') ? rec.ints.get('HP 1') : null,
+          value: rec.ints.has('value') ? rec.ints.get('value') : null,
+        });
+      }
       if (rec.type === 51) {
         const modelRows = rec.extra.get('weapon models');
         if (modelRows) {
           for (const row of modelRows) {
             if (!row.target) continue;
-            gradeRows.push({ companySid: rec.sid, companyName: asText(rec.name), modelSid: row.target, rank: row.v0 });
+            gradeRows.push({
+              companySid: rec.sid,
+              modelSid: row.target,
+              rank: row.v0,
+              file: path.basename(file),
+            });
           }
         }
       }
@@ -267,37 +317,106 @@ function build() {
     }
   }
 
-  // De-dupe by (companySid, modelSid) — the same pair can appear more than
-  // once across data files (e.g. a mod re-stating a vanilla company's row).
-  // Resolve modelName from `map` now that the whole sweep is complete; a
-  // model sid that never resolves (never seen as any record's own sid) falls
-  // back to the raw sid rather than being dropped, since it's still a usable
-  // value to write even without a display name.
-  const seenGrades = new Set();
-  const grades = [];
+  /*
+   * The grade ladder, resolved in the game's own load order — LAST definition
+   * wins, for the name and for the rank alike.
+   *
+   * This is the same trap race names fell into (AGENTS.md §3), and the ladder
+   * was sitting in it. Two things were wrong, both reported by a player who
+   * could see the difference on his own screen:
+   *
+   *  - The NAME. `1069-gamedata.base` is "Edge Type 5" in `gamedata.base` and
+   *    "Edge Type 3" in `rebirth.mod` (and in three other installed mods);
+   *    `1071-gamedata.base` is "Edge Type 4" then "Edge Type 2". The base
+   *    names are why this app offered an "Edge Type 5" the game has never
+   *    heard of, and no Edge Type 2 or 3 at all.
+   *  - The RANK, which matters more, because `itemFactory.defaultLevelForGrade()`
+   *    writes it into a weapon's `ints.level`. All 11 grade pairs that are
+   *    defined more than once carry a DIFFERENT rank in `rebirth.mod`:
+   *    "Homemade / Industrial 005" is 30 in base and 55 in the mod. First
+   *    definition wins meant handing out weapons at the wrong level.
+   *
+   * A file that is not in the load order at all (an installed-but-inactive
+   * workshop mod) keeps its place at the end of `filesInLoadOrder()`, which is
+   * where `loadOrder.js` already puts unlisted files. A sid nothing in the
+   * order defines falls back to the flat index, then to the raw sid — never
+   * dropped, since it is still a usable value to write.
+   */
+  const orderRank = new Map();
+  // Required HERE, not at module scope: `loadOrder` reads `dataFiles()` from
+  // this module, so a top-level import would close a cycle.
+  const { filesInLoadOrder } = require('./loadOrder');
+  filesInLoadOrder().forEach((f, i) => orderRank.set(path.basename(f), i));
+  const lastRank = (file) => (orderRank.has(file) ? orderRank.get(file) : -1);
+
+  const nameInLoadOrder = (sid) => {
+    const byFile = gradeNames.get(sid);
+    if (!byFile) return (map.get(sid) || {}).name || sid;
+    let best = null;
+    for (const [file, name] of byFile) {
+      if (best === null || lastRank(file) >= lastRank(best.file)) best = { file, name };
+    }
+    return best ? best.name : sid;
+  };
+
+  // One row per (companySid, modelSid) PAIR — `modelSid` alone is NOT a key:
+  // 14 of this install's 24 model sids appear under two different companies
+  // (1069-gamedata.base is both "Homemade" and "Edgewalkers"). Anything
+  // selecting a grade must carry this `id`, or it is silently choosing
+  // whichever row happens to sort first. See itemFactory.resolveGrade().
+  const byPair = new Map();
   for (const row of gradeRows) {
     const key = `${row.companySid}|${row.modelSid}`;
-    if (seenGrades.has(key)) continue;
-    seenGrades.add(key);
-    const modelEntry = map.get(row.modelSid);
+    const held = byPair.get(key);
+    if (!held || lastRank(row.file) >= lastRank(held.file)) byPair.set(key, row);
+  }
+  const grades = [];
+  for (const [key, row] of byPair) {
     grades.push({
-      // The (company, model) PAIR is the grade — `modelSid` alone is NOT a key:
-      // 14 of this install's 24 model sids appear under two different companies
-      // (1069-gamedata.base is both "Homemade" and "Edgewalkers"). Anything
-      // selecting a grade must carry this `id`, or it is silently choosing
-      // whichever row happens to sort first. See itemFactory.resolveGrade().
       id: key,
       companySid: row.companySid,
-      companyName: row.companyName,
+      companyName: nameInLoadOrder(row.companySid),
       modelSid: row.modelSid,
-      modelName: modelEntry ? modelEntry.name : row.modelSid,
+      modelName: nameInLoadOrder(row.modelSid),
       rank: row.rank,
     });
   }
-  grades.sort((a, b) => a.rank - b.rank);
+  grades.sort((a, b) => a.rank - b.rank || a.modelName.localeCompare(b.modelName));
+
+  /*
+   * Robotic limbs, resolved the same way — last definition wins per FIELD it
+   * actually carries, which is the rule the research tree already uses: a mod
+   * re-stating a limb purely to change its mesh must not blank the `slot` the
+   * base definition gave it, and a later definition that DOES carry a slot
+   * must win. All 32 of this install's limb templates resolve to a slot this
+   * way, eight per limb, where the flat index left 20 of them sideless.
+   */
+  const SLOT_TO_PART = new Map([[50, 3], [51, 4], [52, 5], [53, 6]]);
+  const limbs = [];
+  for (const [sid, byFile] of limbDefs) {
+    const merged = { name: null, slot: null, hp: null, hpMax: null, value: null };
+    const ordered = [...byFile.entries()].sort((a, b) => lastRank(a[0]) - lastRank(b[0]));
+    for (const [, def] of ordered) {
+      for (const key of Object.keys(merged)) {
+        if (def[key] !== null && def[key] !== undefined) merged[key] = def[key];
+      }
+    }
+    limbs.push({
+      sid,
+      name: merged.name || sid,
+      slot: merged.slot,
+      // The MEDICAL part index this limb fits, which is the whole point of
+      // reading `slot`: 50..53 line up with parts 3..6 in body order.
+      partIndex: SLOT_TO_PART.has(merged.slot) ? SLOT_TO_PART.get(merged.slot) : null,
+      hp: merged.hp,
+      hpMax: merged.hpMax,
+      value: merged.value,
+    });
+  }
+  limbs.sort((a, b) => (a.partIndex ?? 9) - (b.partIndex ?? 9) || a.name.localeCompare(b.name));
 
   stats = { files, skipped: skipped.length, stringIds: map.size, builtAt: new Date().toISOString() };
-  return { map, materialIdx, grades, raceRuleIdx };
+  return { map, materialIdx, grades, raceRuleIdx, limbs };
 }
 
 function load() {
@@ -308,6 +427,7 @@ function load() {
     index = new Map(Object.entries(cached.index));
     materialIndex = new Map(Object.entries(cached.materialIndex || {}));
     weaponGradeList = cached.weaponGrades || [];
+    limbList = cached.limbs || [];
     raceRuleIndex = new Map(Object.entries(cached.raceRules || {}));
     stats = cached.stats;
     return index;
@@ -317,6 +437,7 @@ function load() {
   index = built.map;
   materialIndex = built.materialIdx;
   weaponGradeList = built.grades;
+  limbList = built.limbs;
   raceRuleIndex = built.raceRuleIdx;
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
@@ -326,6 +447,7 @@ function load() {
       index: Object.fromEntries(index),
       materialIndex: Object.fromEntries(materialIndex),
       weaponGrades: weaponGradeList,
+      limbs: limbList,
       raceRules: Object.fromEntries(raceRuleIndex),
     }));
   } catch { /* cache is an optimisation, not a requirement */ }
@@ -336,6 +458,7 @@ function rebuild() {
   index = null;
   materialIndex = null;
   weaponGradeList = null;
+  limbList = null;
   raceRuleIndex = null;
   try { fs.unlinkSync(CACHE_FILE); } catch { /* nothing cached */ }
   return load();
@@ -428,7 +551,17 @@ function raceRules(sid) {
   return raceRuleIndex.get(sid) || null;
 }
 
+/**
+ * The robotic limbs this install offers, each already resolved to the MEDICAL
+ * part it fits (`partIndex` 3..6) via its own `ints.slot` (50..53). See
+ * build()'s comment for why this cannot be read off the flat index.
+ */
+function limbTemplates() {
+  load();
+  return limbList || [];
+}
+
 module.exports = {
   nameOf, lookup, rebuild, indexStats, dataFiles, itemTemplates, ITEM_TEMPLATE_TYPES,
-  materialCandidates, weaponGrades, raceRules,
+  materialCandidates, weaponGrades, raceRules, limbTemplates,
 };

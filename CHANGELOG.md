@@ -7,6 +7,82 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Because this app writes to save files, one rule sits above the changelog: no
 release ships unless `npm test` — the byte-identical codec round trip — passes.
 
+## [Unreleased]
+
+### Added
+
+- **Recruit straight from the Recruits page.** Every row now carries a
+  "Recruit" button, which opens one shared hire card at the top of the page:
+  who they are, the name they join under (with a reroll from Kenshi's own name
+  pool), which squad they join, the race they are cloned from — preselected to
+  match the character, with a plain warning when this save has nobody of that
+  race — their experience tier, and the kit they arrive in, defaulting to their
+  own. The kit is previewed item by item before you commit, and adding them is
+  one staged edit and one backup: the character and everything they carry are
+  written together.
+- **A Limbs page — and the limb field is decoded.** Pick a character and see
+  their four limbs: which are their own, which are lost, and which are
+  prosthetics, with each limb's HP beside it. Change any of them in one edit.
+  A change that severs a limb turns the button red and asks first, because a
+  severed limb does not grow back in game.
+
+  Setting a limb to **Prosthetic** offers the robot limbs this install actually
+  has for that limb — filtered by the template's own left/right, arm/leg slot,
+  so a right leg is never offered for a left arm — at a quality on the same
+  ladder armour uses, defaulting to Specialist and showing what that buys in
+  the limb's own HP ("about 220 HP of 250"). The state and the limb are written
+  together, one edit and one backup. The limb goes into Carried rather than
+  onto the body, and the page says why: no save on this machine contains a
+  single robot-limb item, including the character who has three fitted, so the
+  game appears to consume the object and the editor does not invent a slot for
+  it.
+
+  This rests on `ints.limbs`, which the editor previously could only delete
+  wholesale because nothing had established what its bits meant. It is four
+  2-bit fields, one per limb — derived from all 4995 medical records across
+  every save on the development machine, and confirmed by writing "left leg
+  lost" onto a healthy character and getting back exactly the value 29 injured
+  characters already carry. The page says which half of that reading is solid
+  (lost: 93 limbs across 88 records) and which rests on a single character
+  (prosthetic), because a save editor asserting a meaning for an undocumented
+  number should say how sure it is.
+- **An Acknowledgements page.** The attribution the item catalogue owes the
+  Kenshi Wiki under CC BY-SA 3.0 used to be one footer line pointing at a file
+  in the install folder. It is now a tab: game-data attribution, the
+  format-documentation provenance, the MIT licence, every third-party
+  dependency and the trademark disclaimer, plus the version, Node runtime and
+  dependency set worth quoting in a bug report. It renders the real
+  `ACKNOWLEDGEMENTS.md` off disk rather than a copy — the same file the
+  installer shows — and the footer line now leads to it from every page.
+- **Apply a kit from the Loadouts catalogue.** Each kit's "Equip…" button
+  points the bulk panel at that kit and opens roster multi-select, so the flow
+  is kit → characters → Apply instead of "scroll past 148 kits and find a
+  second dropdown". The chosen kit is named in the bar, on the card and in the
+  empty state, and the bar's count no longer disagrees with the panel's.
+
+### Fixed
+
+- **Weapon grades were named and ranked from the wrong definition.** The editor
+  offered "Edge Type 4" and "Edge Type 5", which this install's mods rename to
+  Edge Type 2 and Edge Type 3 — the names the game shows. It also took each
+  grade's rank from the base game, and that number is what gets written into a
+  weapon's level: every one of the 11 grades re-defined by a mod carries a
+  different rank there, so weapons were being handed out at the wrong level.
+  Both now resolve in the game's own load order, last definition wins. **Run
+  `npm run gamedata:rebuild`** (or just start the app — the cache version was
+  bumped, so it rebuilds itself).
+- **`docs/save-format.md` claimed `hitmult<n>` identified robotic limbs.** It
+  does not: 938 medical records have one off 1, only 37 of those record any limb
+  damage at all, and the one character with confirmed prosthetics reads ~1.0 on
+  every part. Corrected, with the measurement.
+- **Page blocks no longer touch.** Only `.panel + .panel` had a gap, so a card
+  under a panel (the Recruits hire card) or a bar under a panel (the Loadouts
+  bulk section) met the surface above it at 0px and read as one box drawn
+  wrong. Every page-level surface now keeps the same single gap.
+- **The tab strip no longer scrolls the page sideways** on a narrow window. It
+  is sticky, so it could not scroll itself; it wraps onto a second line
+  instead.
+
 ## [0.3.0] — 2026-08-06
 
 ### Added

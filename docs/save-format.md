@@ -245,11 +245,74 @@ character's own highest intact part, which is unambiguous.
 The real per-part maximum lives in the race, not the save: it is the second
 number (`v1`) on that part's `combat anatomy` row (§5, "Reading a character").
 It is a *natural* maximum rather than a hard ceiling — 39 live Hive Worker
-Drones read up to 125 against a `v1` of 75, and they are the characters whose
-`hitmult<n>` is not 1, i.e. the ones wearing robotic limbs.
+Drones read up to 125 against a `v1` of 75.
 
-The other per-part floats are per-CHARACTER, not per-race: `hitmult<n>` is 1,
-`rig<n>` and `wear<n>` are 0 on every character without prosthetics.
+The other per-part floats are per-CHARACTER, not per-race: `hitmult<n>` is 1 and
+`rig<n>`/`wear<n>` are 0 on the overwhelming majority of characters.
+
+**`hitmult<n>` is not a prosthetic marker, and this file used to say it was.**
+The claim here was that the characters reading above their race's `v1` are "the
+ones whose `hitmult<n>` is not 1, i.e. the ones wearing robotic limbs". Measured
+over all 4995 MEDICAL records on the development machine: 938 have some
+`hitmult<n>` off 1, only 37 of those carry a `limbs` key at all, and the one
+character in the corpus whose `limbs` value says he has three prosthetics reads
+`hitmult` 0.9993–1.0000 on all seven parts. Whatever `hitmult<n>` varies with,
+it is not the presence of a robotic limb. What *does* record one is `ints.limbs`:
+
+### `ints.limbs` — which limbs are lost, and which are replaced
+
+One integer on the MEDICAL record, present only when something has happened to
+a limb (88 of those 4995 records have it). It is **four 2-bit fields, one per
+limb slot**, in part order — slot 3, 4, 5, 6, i.e. left arm, right arm, left
+leg, right leg on a humanoid, and the foreleg/leg pairs on an animal (the same
+slots under other names, see §5):
+
+```
+bits:  7 6   5 4   3 2   1 0
+       leg6  leg5  arm4  arm3      0 = the character's own limb
+                                   1 = lost
+                                   2 = robotic replacement
+```
+
+Derivation, and where it is thin:
+
+- Every one of the 88 values fits in eight bits, and every one of those records
+  has exactly four limb slots. Decoded this way the fields take only 0, 1 and 2
+  — **never 3**, which a wrong split would produce almost immediately.
+- The eight distinct values observed are `1, 4, 5, 16, 64, 65, 68, 169`: the
+  single-limb flags for slots 3/4/5/6 and combinations of them.
+- **Field 1 = lost** is solid. 82 of those 93 limbs have negative `flesh`
+  (median −86, minimum −188), and the flagged limb is the character's worst-off
+  limb in 83 of the 88 records. It was also confirmed from the other direction:
+  writing "left leg lost" onto a healthy character through
+  `saveService.setLimbs()` produces `limbs: 16`, which is exactly the value 29
+  injured characters in the corpus carry.
+- **Field 2 = robotic** rests on **one character** — a Hive Soldier Drone whose
+  player confirms three prosthetics, reading `limbs: 169` = lost left arm plus
+  three field-2 limbs, all with healthy `flesh` (100, 50, 50) against the lost
+  arm's −98.9. Nothing else in the record separates a prosthetic from a healthy
+  limb: `hitmult`/`rig`/`wear` are 1/0/0 on all four of his limbs, and
+  `bandage<n>` above 100 turned out to be ordinary (128 such values across 108
+  records with no limb damage at all). Treat this half as the editor's best
+  reading rather than as documentation.
+- The state and the HP are stored **independently** and the corpus contains
+  both combinations of disagreement — lost limbs reading positive `flesh` (11 of
+  93) and unflagged limbs reading negative (27 of 256). Nothing should infer one
+  from the other; `saveService.setLimbs()` writes only what it is asked to and
+  the UI offers to keep them consistent.
+- A record with no lost limb has **no `limbs` key at all** rather than a 0,
+  which is why setting every limb back to "own" deletes the key.
+
+**A fitted limb is not an item record.** The robot limb itself is a type-111
+template whose `ints.slot` is 50/51/52/53 — left arm, right arm, left leg, right
+leg, the same four slots in the same order — and whose `HP`/`HP 1` are its
+condition at the bottom and the top of the quality ladder. But a sweep of every
+save on this machine and of the install's own `.level`/`.zone` files finds
+**zero** type-42 items backed by one, and the character with three prosthetics
+fitted carries none: the game appears to consume the object when the limb goes
+on, leaving only the two bits. `saveService.setLimbs()` therefore writes the
+state and puts the limb in the character's inventory as a carried item; it does
+not claim to reproduce whatever the game does with the object.
 
 ---
 

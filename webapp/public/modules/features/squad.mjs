@@ -6,9 +6,9 @@ import { state, dis } from '../state.mjs';
 import { icon, sectionSummary } from '../icons.mjs';
 import { EQUIP_SLOTS, SLOT_LABELS } from '../slots.mjs';
 import { inventorySection } from '../items.mjs';
+import { gearPreviewBlock, loadGearPreview } from '../gear-preview.mjs';
 import { render, refresh, savePicker } from '../nav.mjs';
 import { buildRoster, rosterNav } from './roster.mjs';
-import { loadoutItems } from './loadouts.mjs';
 import { loadoutGroups } from './bulk-equip.mjs';
 
 /**
@@ -489,66 +489,6 @@ function suggestName() {
   return pick;
 }
 
-/**
- * Resolve the preview endpoint's RAW items (templateSid only, plus whatever
- * numeric field the server derived) against the loadout the preview says it
- * picked, so `loadoutItems()` — the one item-list renderer in this app — can
- * render them without a second implementation.
- *
- * A provisioned recruit's item list is never exactly its source kit: the
- * server layers a med/repair kit, food and a cats stack on top, none of which
- * are in that kit's own `items`. So the source kit is only the FIRST place a
- * templateSid is looked for — the whole catalogue is the second, and it
- * happens to name every one of those extras (first aid kit, Foodcube, Ration
- * Pack, Cats), because some other kit does carry them. Without that second
- * pass the preview showed a recruit arriving with "43959-rebirth.mod ×9".
- *
- * Anything neither pass resolves still falls through with `name: null`, which
- * `loadoutItems()` renders as the raw templateSid in a muted span — never
- * dropped, just honestly unresolved.
- */
-function resolvePreviewItems(preview) {
-  const rows = state.loadouts || [];
-  const kit = preview.loadoutId ? rows.find((l) => l.id === preview.loadoutId) : null;
-  const byTemplate = new Map();
-  // Catalogue first, source kit last, so the kit's own row wins the key —
-  // a piece's `raceRule` is per-template and identical either way, but the
-  // kit is the definition this preview actually came from.
-  for (const l of rows) for (const it of l.items) if (it.name) byTemplate.set(it.templateSid, it);
-  for (const it of (kit ? kit.items : [])) byTemplate.set(it.templateSid, it);
-  return (preview.items || []).map((it) => {
-    const known = byTemplate.get(it.templateSid);
-    return { ...it, name: known ? known.name : null, raceRule: known ? known.raceRule : (it.raceRule || null) };
-  });
-}
-
-function renderGearPreview(data) {
-  const resolved = resolvePreviewItems(data);
-  return `<div class="stack">
-    <p class="hint">${data.loadoutLabel ? `Arrives as <b>${esc(data.loadoutLabel)}</b> — ` : ''}${esc(plural(resolved.length, 'item'))}, ${esc(data.cats)} cats.</p>
-    ${loadoutItems({ items: resolved }, { narrow: true })}
-    ${(data.warnings || []).map((w) => `<p class="hint note-warn">${esc(w)}</p>`).join('')}
-  </div>`;
-}
-
-/**
- * The preview panel's content, purely from `state.addMember.preview` — never
- * fetches. The fetch itself is imperative (wireSquadPanel's refreshGearPreview,
- * same reasoning as the bulk-equip pre-flight: it must not tear down the form
- * mid-choice) and writes its result into that same field, so this same
- * function renders both the first paint (from whatever was cached across the
- * last re-render) and every subsequent imperative repaint.
- */
-function gearPreviewBlock(form) {
-  const p = form.preview;
-  if (!p) return '<p class="hint">Choose a race, specialisation and gear above to preview what they arrive with.</p>';
-  if (p.none) return '<p class="hint">Arrives empty-handed — no gear, no cats.</p>';
-  if (p.loading) return '<p class="hint">Loading preview…</p>';
-  if (p.error) return `<p class="hint note-warn">Could not preview starting gear: ${esc(p.error)}</p>`;
-  if (p.data) return renderGearPreview(p.data);
-  return '';
-}
-
 function addMemberSection(groups) {
   const races = (state.races && state.races.races) || [];
   const form = state.addMember || {};
@@ -642,7 +582,7 @@ function addMemberSection(groups) {
             </optgroup>`).join('')}
           </select></label>
       </div>
-      <div id="member-gear-preview">${gearPreviewBlock(form)}</div>
+      <div id="member-gear-preview">${gearPreviewBlock(form.preview)}</div>
 
       <p class="hint">Cloned from a living character of that race in this save (the number beside each race is
         how many). Provisioned on arrival with Specialist-grade armour, a Catun No.3 weapon, a med or repair kit,
@@ -653,8 +593,10 @@ function addMemberSection(groups) {
 }
 
 // Power tiers, mirroring services/recruits.js TIERS. Display only — the id is
-// what gets sent, and the server rejects one it doesn't know.
-const TIER_OPTIONS = [
+// what gets sent, and the server rejects one it doesn't know. Exported for the
+// Recruits tab's hire card, which offers the same four rungs — a tier meaning
+// one thing here and another there would be a lie the server cannot catch.
+export const TIER_OPTIONS = [
   ['green', 'Green'], ['capable', 'Capable'], ['veteran', 'Veteran'], ['legend', 'Legend'],
 ];
 
@@ -866,50 +808,21 @@ export function wireSquadPanel() {
   };
 
   /**
-   * Fetch the read-only provisioning preview and paint it into
-   * `#member-gear-preview`, imperatively — like every other picker preview in
-   * this app, a full render() here would tear down the form (and the name
-   * field) mid-choice. This is a GET with no mutation-gate involvement at all,
-   * so it runs regardless of `state.env.gameRunning`; only the Add member
-   * button itself is blocked from writing.
-   *
-   * Skips the fetch entirely when the params haven't actually changed (the
-   * cache key below), so re-wiring after an unrelated re-render of this panel
-   * doesn't re-hit the network for a preview it already has.
+   * The read-only provisioning preview, painted into `#member-gear-preview`.
+   * The fetch, its cache key and its stale-response guard all live in
+   * `modules/gear-preview.mjs` — the Recruits tab's hire card asks the same
+   * question of the same route, and one implementation is what keeps the two
+   * previews from drifting.
    */
-  const previewEl = () => document.getElementById('member-gear-preview');
-  const refreshGearPreview = async () => {
-    const el = previewEl();
-    if (!el) return;
-    const gearId = gearSel ? gearSel.value : '';
-    if (gearId === 'none') {
-      state.addMember = { ...form(), preview: { none: true } };
-      el.innerHTML = gearPreviewBlock(state.addMember);
-      return;
-    }
-    const key = [archSel.value, subSel.value, tierSel.value, raceSel.value, gearId].join('|');
-    const cached = form().preview;
-    if (cached && cached.key === key && (cached.data || cached.error)) {
-      el.innerHTML = gearPreviewBlock(form());
-      return;
-    }
-    state.addMember = { ...form(), preview: { key, loading: true } };
-    el.innerHTML = gearPreviewBlock(state.addMember);
-    const query = { archetype: archSel.value, sub: subSel.value, tier: tierSel.value, raceSid: raceSel.value };
-    if (gearId) query.loadoutId = gearId;
-    try {
-      const data = await API.provisioningPreview(query);
-      // A slower earlier request must not clobber a newer one — same
-      // discipline the item search picker uses (bulk-equip.mjs's runSearch).
-      if (form().preview.key !== key) return;
-      state.addMember = { ...form(), preview: { key, data } };
-    } catch (err) {
-      if (form().preview.key !== key) return;
-      state.addMember = { ...form(), preview: { key, error: err.message || 'request failed' } };
-    }
-    const stillThere = previewEl();
-    if (stillThere) stillThere.innerHTML = gearPreviewBlock(form());
-  };
+  const refreshGearPreview = () => loadGearPreview({
+    elOf: () => document.getElementById('member-gear-preview'),
+    query: {
+      archetype: archSel.value, sub: subSel.value, tier: tierSel.value, raceSid: raceSel.value,
+    },
+    gearId: gearSel ? gearSel.value : '',
+    get: () => form().preview,
+    set: (p) => { state.addMember = { ...form(), preview: p }; },
+  });
 
   archSel.onchange = () => { populateSubs(); remember(); refreshGearPreview(); };
   [raceSel, subSel, tierSel, gearSel].forEach((el) => {

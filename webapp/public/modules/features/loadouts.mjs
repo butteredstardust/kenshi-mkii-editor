@@ -146,10 +146,22 @@ function loadoutFilters(rows) {
     </div>`;
 }
 
-function loadoutCard(l) {
+/**
+ * A kit's "Equip…" button lives in the `<summary>`, so choosing a kit works
+ * whether or not you have opened it to read what is in it. It writes nothing:
+ * it points the bulk panel below at this kit and turns on roster selection, so
+ * the flow is kit → characters → Apply, in that order, rather than "scroll past
+ * 148 kits, find a second dropdown, re-pick the one you were just reading".
+ *
+ * `preventDefault()` because a click inside a `<summary>` would otherwise also
+ * toggle the disclosure shut under the cursor.
+ */
+function loadoutCard(l, chosenId) {
   return `<details class="list-row">
     <summary><span class="item-name">${esc(l.label)}</span>
-      <span class="muted">${esc(plural(l.items.length, 'item'))}</span></summary>
+      <span class="muted">${esc(plural(l.items.length, 'item'))}</span>
+      <button class="btn btn--xs equip-loadout-btn" data-loadout="${esc(l.id)}"
+        ${l.id === chosenId ? 'aria-pressed="true"' : ''}>${l.id === chosenId ? 'Chosen' : 'Equip…'}</button></summary>
     <div class="section-body stack">
       <p class="hint">${esc(l.description)}</p>
       ${l.tags.length ? `<div class="chips">${l.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join('')}</div>` : ''}
@@ -167,15 +179,20 @@ export function renderLoadouts() {
 
   const r = buildRoster();
   const picked = r ? r.all.filter(({ c, file }) => state.selection.has(keyOf(file, c.sid))) : [];
+  // The kit the bulk panel is pointed at — set either by a card's "Equip…"
+  // button above or by the panel's own <select>. Named in three places (the
+  // card, the bar, the empty state) so the answer to "which kit am I about to
+  // apply?" is never off-screen.
+  const chosen = (state.loadouts || []).find((l) => l.id === (state.bulk || {}).loadoutId) || null;
 
   // Bulk equip needs a roster to pick targets from — a save with a squad — so
   // the whole section is absent rather than shown empty when there is none.
   // Same summary-bar + workspace shape gear.mjs used to render this in, so the
   // move doesn't also change how it looks.
   const bulkSection = r && r.all.length ? `
-    <section class="summary-bar">
+    <section class="summary-bar" id="bulk-section">
       <span><b>Equip several at once</b></span>
-      <span class="muted">${esc(plural(state.selection.size, 'character'))} selected</span>
+      <span class="muted" id="bulk-count">${chosen ? `${esc(chosen.label)} · ` : ''}${esc(plural(state.selection.size, 'character'))} selected</span>
       <span class="actions">
         <button class="btn btn--xs" id="toggle-select">${state.selectMode ? 'Done selecting' : 'Select characters'}</button>
       </span>
@@ -183,15 +200,17 @@ export function renderLoadouts() {
     ${state.selectMode ? `<div class="workspace">
           ${rosterNav(r.groups, { selectable: true, races: rosterRaces(r.all) })}
           <div id="detail">${picked.length ? bulkPanel(picked)
-    : '<div class="empty-state"><strong>Nothing selected</strong>Tick characters in the roster to equip them together in one edit.</div>'}</div>
+    : `<div class="empty-state"><strong>Nothing selected</strong>Tick characters in the roster to
+        ${chosen ? `give them <b>${esc(chosen.label)}</b>` : 'equip them'} together in one edit.</div>`}</div>
         </div>` : '<p class="hint">Pick a kit above, then select characters here to apply it to several at once.</p>'}` : '';
 
   return `${savePicker()}
     <section class="panel" id="loadouts-panel">
       <div class="panel-head"><h2>${icon('bag', 'Loadouts')} Loadouts</h2>
         <span class="muted">${esc(shown.length)} of ${esc(rows.length)} shown</span></div>
+      ${r && r.all.length ? '<p class="hint">Browse the 148 named gear sets, then hit <b>Equip…</b> on one to apply it to as many of your squad as you like — one staged edit, one backup.</p>' : ''}
       ${loadoutFilters(rows)}
-      ${groups.length ? groups.map((g) => `<h3 class="group-label">${esc(g.label)}</h3>${g.rows.map(loadoutCard).join('')}`).join('')
+      ${groups.length ? groups.map((g) => `<h3 class="group-label">${esc(g.label)}</h3>${g.rows.map((l) => loadoutCard(l, chosen && chosen.id)).join('')}`).join('')
     : '<div class="empty-state"><strong>Nothing matches</strong>No loadout matches this search and filter.</div>'}
     </section>
     ${bulkSection}`;
@@ -210,6 +229,29 @@ export function wireLoadouts() {
   };
   const cat = document.getElementById('loadout-cat');
   if (cat) cat.onchange = () => { state.loadoutFilter = { ...state.loadoutFilter, category: cat.value }; render(); };
+
+  // "Equip…" on a card: point the bulk panel at this kit and open the roster.
+  // It writes nothing, so it is a neutral `.btn` (style guide §3) — the write
+  // is still the panel's own Apply, after characters have been ticked.
+  document.querySelectorAll('.equip-loadout-btn').forEach((b) => {
+    b.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.bulk = { ...(state.bulk || {}), loadoutId: b.dataset.loadout };
+      state.selectMode = true;
+      state.bulkFocus = true;
+      render();
+    };
+  });
+
+  // One-shot scroll to the panel the button above just pointed at — never on an
+  // ordinary re-render, which would yank the page around on every tick of a
+  // checkbox.
+  if (state.bulkFocus) {
+    state.bulkFocus = false;
+    const target = document.getElementById('bulk-section');
+    if (target) target.scrollIntoView({ block: 'start' });
+  }
 }
 
 // Bulk equip's own wiring (roster multi-select, the three panels, the toggle

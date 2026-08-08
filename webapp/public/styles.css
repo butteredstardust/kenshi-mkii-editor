@@ -110,9 +110,14 @@ body {
 }
 .env { font-size: var(--t-sm); color: var(--muted); }
 
+/* `flex-wrap` because the strip is the one thing on the page that cannot
+ * scroll itself: it is sticky, so an overflowing row of tabs made the whole
+ * PAGE scroll sideways (style guide §2.7) and hid the last tabs behind the
+ * edge. Ten tabs fit on one line at any normal width and wrap onto a second
+ * only when the window is genuinely narrow. */
 .tabs {
   position: sticky; top: 2.9rem; z-index: 2;
-  display: flex; gap: var(--s1); padding: var(--s2) var(--shell-pad);
+  display: flex; flex-wrap: wrap; gap: var(--s1); padding: var(--s2) var(--shell-pad);
   border-bottom: 1px solid var(--line); background: var(--bg);
 }
 .tabs button {
@@ -140,6 +145,33 @@ main { padding: var(--s5) var(--shell-pad); }
   box-shadow: var(--elev-1);
 }
 .panel + .panel { margin-top: var(--s4); }
+
+/* Stacked surfaces keep ONE gap between them, whatever kind each one is and
+ * WHEREVER they are stacked.
+ *
+ * `.panel + .panel` was the only rule here, which held for as long as every
+ * page was a stack of panels. It stopped holding the moment a page put a card
+ * under a panel (the Recruits hire card) or a bar under a panel (the Loadouts
+ * bulk section): two elevated surfaces met at 0px and read as one box drawn
+ * wrong, with a doubled border down the seam.
+ *
+ * The first fix scoped this to `#page > …`, and the bug came straight back on
+ * the next page built — the Limbs page stacks its card and its evidence panel
+ * inside `#detail`, not at page level. So the rule is no longer scoped by
+ * ancestor at all: two of these surfaces adjacent to each other get a gap,
+ * full stop. Containers that space their own children (`.workspace`, `.side`
+ * and `.cards` are grids with `gap`) are unaffected — a grid item's margin
+ * does not stack with the grid's gap in any way that shows.
+ *
+ * Listing the surfaces rather than using `* + *` is deliberate: `.picker` is
+ * an inline-flex label whose own trailing margin already spaces it, and a
+ * `.hint` following a bar is that bar's caption, not a block of its own.
+ * Sibling margins collapse, so the margin-bottom `.summary-bar` and `.picker`
+ * carry does not add to this. */
+:is(.panel, .card, .cards, .summary-bar, .workspace, .empty-state)
+  + :is(.panel, .card, .cards, .summary-bar, .workspace, .empty-state) {
+  margin-top: var(--s4);
+}
 .panel-head {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: var(--s3); margin-bottom: var(--s3);
@@ -779,6 +811,31 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
  * readable measure. */
 .shell-footer > p { margin: 0; max-width: 70ch; }
 .shell-footer code { color: var(--ink); }
+/* The footer's link to the Acknowledgements page sits INSIDE a sentence, so it
+ * takes the surrounding type size and baseline rather than a control's height —
+ * the one place a `.btn` is not a box in a row of boxes. */
+.shell-footer .btn--xs { font-size: inherit; min-height: 0; padding: 0 var(--s1); }
+
+/* ------------------------------------------------------- prose (notices) --
+ * The Acknowledgements page renders a real markdown document, which is the
+ * only long-form prose in the app. Everything here is scoped to that: the rest
+ * of the interface is fields, tables and rows, and none of it should inherit a
+ * document's link colour or measure.
+ *
+ * Links get `--accent`, not the browser's blue — a hardcoded blue on this
+ * background is both off-palette and low-contrast (style guide §2.3). They are
+ * underlined because in a wall of text colour alone is not a reliable
+ * affordance. */
+#about-panel :is(p, li, blockquote) { max-width: 90ch; }
+#about-panel li + li { margin-top: var(--s1); }
+a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--ink); }
+blockquote {
+  margin: var(--s2) 0; padding-left: var(--s3);
+  border-left: 2px solid var(--line); color: var(--ink-dim);
+}
+blockquote p { margin: 0; }
+blockquote p + p { margin-top: var(--s2); }
 
 /* ---------------------------------------------------------------- combo --
  * A long <select> with a filter box above it (public/modules/combo.mjs). The

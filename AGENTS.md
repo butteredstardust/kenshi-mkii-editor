@@ -71,8 +71,11 @@ imports `start()` from the shell and calls it. Everything else lives under
 | `modules/features/gear.mjs` | Gear tab: the single-character gear card only — the bulk panel lives in `bulk-equip.mjs` now |
 | `modules/features/bulk-equip.mjs` | The multi-select roster + bulk panel (equip / re-grade / unequip / give-one-item), rendered by the Loadouts tab, with their wiring and receipt formatters |
 | `modules/features/roster.mjs` | The roster sidebar — shared by Squad, Gear and Loadouts, which is why it is its own module |
-| `modules/features/loadouts.mjs` | Loadouts tab: the 148-kit catalogue, grouped/filterable, plus `loadoutItems()` (shared with Recruits) and the bulk-equip section |
-| `modules/features/recruits.mjs` | Recruits tab: the 144-entry "roll a recruit" catalogue, grouped/filterable, read-only |
+| `modules/features/loadouts.mjs` | Loadouts tab: the 148-kit catalogue, grouped/filterable, plus `loadoutItems()` (shared with Recruits) and the bulk-equip section. A kit's **"Equip…"** button points the bulk panel at that kit and opens roster multi-select — the catalogue and the apply flow are one thing, not two |
+| `modules/features/recruits.mjs` | Recruits tab: the 144-entry "roll a recruit" catalogue, grouped/filterable, plus the **hire card** — a row's "Recruit" button opens one shared form (name, squad, race, tier, kit) over `POST .../characters`, the same single staged edit the Squad tab's "Add member" makes |
+| `modules/gear-preview.mjs` | The provisioning preview (`GET /api/provisioning/preview`) both of those forms show: `gearPreviewBlock()` renders, `loadGearPreview()` fetches with a cache key, a stale-response guard and imperative painting |
+| `modules/features/limbs.mjs` | Limbs tab: the four limb slots of one character — own / lost / prosthetic — with their HP beside them, one Apply per character, and a panel stating how solid each half of the decode is. `.btn--danger` + `confirm()` the moment a change severs a limb |
+| `modules/features/about.mjs` | Acknowledgements tab: renders the **real** `ACKNOWLEDGEMENTS.md` from `/api/about`, through a documented Markdown subset. `esc()` runs on every raw line **before** any markup is produced — that ordering is the whole safety argument. Never hold a second copy of the notices here: the CC BY-SA attribution is a licence obligation, and a copy is what goes stale |
 | `modules/features/vendors.mjs`, `research.mjs`, `factions.mjs`, `world.mjs`, `backups.mjs` | One tab each, `render*` + `wire*` |
 | `modules/items.mjs` | The item vocabulary shared by Squad, Gear and Vendors: `itemRow`/`itemTable`/`itemSlotSelect`, the add-item picker, `packBlock`, `raceFitWarnings`, `fitNotice` |
 | `modules/slots.mjs` | Slot vocabulary: `EQUIP_SLOTS`/`ITEM_SLOTS`/`SLOT_LABELS`, `isWorn`, `carryFirst`/`wearFirst` |
@@ -172,6 +175,24 @@ Full detail in `docs/save-format.md`. The non-negotiables:
 - **`hit<n>` in medical records is not a reliable maximum** (undamaged arms read
   100 against a `hit` of 80). Judge damage against the character's own highest
   intact part.
+- **`ints.limbs` IS decoded now — four 2-bit fields, one per limb slot (3,4,5,6),
+  0 own / 1 lost / 2 robotic.** This overturns what this file and
+  `restoreLimbs()` used to say ("no bitmask interpretation, a single sample").
+  Derived from all 4995 MEDICAL records on this machine, 88 of which carry the
+  key: every value fits in 8 bits, every such record has exactly four limb
+  slots, and decoded this way no field ever reads 3. The eight distinct values
+  are the single-limb flags 1/4/16/64 and combinations. **Lost is solid** — 82
+  of 93 flagged limbs have negative `flesh`, the flagged limb is the worst-off
+  one in 83 of 88 records, and writing "left leg lost" produces `limbs: 16`,
+  the exact value 29 injured characters already carry. **Robotic rests on one
+  character** (the Hive Soldier Drone the feature was built from), so the UI
+  says so rather than presenting it as fact. `hitmult<n>` is **not** a
+  prosthetic marker — 938 records have one off 1, only 37 of those have a
+  `limbs` key at all, and that one prosthetic-carrying character reads ~1.0
+  throughout; `docs/save-format.md` carried the opposite claim and is corrected.
+  State and HP are stored independently and genuinely disagree in the corpus, so
+  nothing infers one from the other. A record with no lost limb has **no key**
+  rather than a 0, which is why setting every limb to "own" deletes it.
 - **stringIDs are not paths.** `changes_otto.mod` and `gamedata.quack` do not
   exist on disk; their records live in `gamedata.base`. Resolve through the flat
   index, never the filename.
@@ -306,6 +327,21 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   picks whichever row sorts first and writes a different manufacturer than the
   user chose. `itemFactory.resolveGrade()` is the one place that resolution
   happens.
+- **The grade ladder resolves in LOAD ORDER — the name and the rank alike.**
+  The same trap race names fell into, and the ladder sat in it until a player
+  noticed his game said "Edge Type 3" where this app said "Edge Type 5".
+  `1069-gamedata.base` is "Edge Type 5" in `gamedata.base` and "Edge Type 3" in
+  `rebirth.mod` (and three other installed mods); `1071-gamedata.base` is "Edge
+  Type 4" then "Edge Type 2" — so first-definition-wins offered two grades the
+  game has never heard of and hid the two it uses. The **rank** is worse than
+  the label: `itemFactory.defaultLevelForGrade()` writes it into a weapon's
+  `ints.level`, and **all 11 grade pairs defined more than once carry a
+  different rank in `rebirth.mod`** ("Homemade / Industrial 005" is 30 in base
+  and 55 in the mod). Both are resolved last-definition-wins in
+  `gamedataService.build()`; `test/grades.test.js` re-derives the answer
+  straight from the files and fails if it drifts back. The flat name index is
+  still first-definition-wins for everything else, and 483 of 62624 sids are
+  renamed by a later definition — this is not the last place that will bite.
   **`ints.level` is still a SEPARATE field — but a grade chosen without one now
   supplies it.** Nothing in the format links the two, and nothing here has
   changed about that: they are written independently and an explicit `level`
@@ -505,6 +541,7 @@ round-tripping the player's current save and refusing to write to it at all.
 | Method | Route | Purpose |
 |---|---|---|
 | GET | `/api/health` | Liveness |
+| GET | `/api/about` | The Acknowledgements page's payload: `ACKNOWLEDGEMENTS.md` read off disk (`markdown` + the `source` path it came from), plus `version`/`node`/`dependencies`. The file is probed next to `server.js` first (where `releases/build.ps1` puts it in a packaged install), then at the repo root. Serving the real file rather than a copy is deliberate — see `routes/api/about.js` |
 | GET | `/api/status` | Save root, install dir, save list, game-running, writability |
 | GET | `/api/gamedata` | Name-index stats |
 | POST | `/api/gamedata/rebuild` | Rebuild the name index from disk |
@@ -543,7 +580,9 @@ round-tripping the player's current save and refusing to write to it at all.
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/parts/:n/damage` | Limb loss (destructive, no lower clamp on `flesh`); same body shape as heal, UI must confirm before calling |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/hunger` | Set `hung` (0-3) and/or `fed` (0-10) independently; `{ hung?, fed? }` |
 | POST | `/api/saves/:name/platoons/:file/characters/:sid/revive` | Clear dead/coma/incapacitated/unconscious + zero KO, and raise any flesh below `minFleshPercent`% of the character's own max — one combined write |
-| POST | `/api/saves/:name/platoons/:file/characters/:sid/medical/restore-limbs` | Delete `ints.limbs` if present (no bitmask interpretation); no-op is rejected by the mutation gate |
+| GET | `/api/gamedata/limbs` | The robotic limbs this install offers (32 here): `{ sid, name, slot, partIndex, hp, hpMax, value }[]`. `slot` is the template's own `ints.slot` — **50/51/52/53 = left arm / right arm / left leg / right leg**, i.e. MEDICAL parts 3/4/5/6, which is what `partIndex` carries. Resolved in load order per field, because 24 of the 32 are defined more than once and several carry no `slot` in their FIRST definition. `hp`/`hpMax` are the limb's condition at the bottom and top of the quality ladder |
+| PUT | `/api/saves/:name/platoons/:file/characters/:sid/medical/limbs` | **Set which limbs a character has, has lost, or has replaced — and fit one.** `{ states: { "<partIndex>": "own"\|"lost"\|"robotic" }, flesh?: { "<partIndex>": n }, install?: { "<partIndex>": { templateSid, level? } } }` — one staged edit over `ints.limbs` (§3), each limb's `flesh<n>`, and the limb ITEM. Only parts 3–6 are limbs; anything else is refused, as is a limb whose template `partIndex` doesn't match the part, or a fitting onto a part not ending up `robotic`. All four "own" **deletes** the key rather than writing 0. The key IS minted when absent — unlike a bounty, `limbs` is a single int the game adds to an ordinary record, and refusing to mint would mean never being able to give a prosthetic. A fitted limb lands in `main` (Carried): **zero** type-111-backed items exist across every save and level file here, including on the character with three prosthetics, so the game appears to consume the object and this editor does not invent a slot for it. See `saveService.setLimbs()` |
+| POST | `/api/saves/:name/platoons/:file/characters/:sid/medical/restore-limbs` | Delete `ints.limbs` outright — the one-click "put every limb back", equivalent to setting all four states to `own`; no-op is rejected by the mutation gate |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/section` | Move an item into a slot (`strings.section` on type 42); `{ section }`. If the target slot is already occupied by another of this character's items, that item's `section` is flipped back to `main` in the same write. Rejects a slot not in the documented list, an item that isn't in this character's own inventory, or a slot incompatible with the item's kind (see `services/itemSlots.js`) — the latter check is skipped (permissive) when the item's kind can't be resolved via `gamedataService`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/quality` | Set `ints.level` and/or `floats.quality` on an item, independently; `{ level?, quality? }`. Both keys must already exist on the record. Thin wrapper over `updateItem()`. |
 | PUT | `/api/saves/:name/platoons/:file/characters/:sid/inventory/:itemSid/color` | Set/clear an item's colour scheme (`strings['color sid']`, TODO.md 3.1); `{ colorSid }`, `''` clears. The key always exists, so this never mints; an unresolved sid is a `warnings[]` entry, never a refusal. Thin wrapper over `updateItem()`. |

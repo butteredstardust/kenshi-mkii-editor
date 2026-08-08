@@ -16,11 +16,19 @@ export const state = {
   // "Add member" form state, kept here so the re-render after a successful add
   // doesn't wipe what the user typed for the next one (same reason as trainChoice).
   addMember: null,
+  // The Recruits tab's hire card: which catalogue entry is open, and the form
+  // over it. `{ recruitId, name, raceSid, tier, gearId, file, preview, focus }`
+  // — kept here for the same reason as addMember, since a successful add
+  // re-renders the page and the next recruit usually goes to the same squad.
+  // `focus` is a one-shot "scroll the card into view", set by the row button
+  // that opened it and cleared as soon as it fires.
+  hire: null,
   // Receipt for whichever PANEL-level (not card-level) mutation just ran — the
-  // Squad tab's rename/add-member panel or the Loadouts tab's bulk equip. Both
-  // re-render on success, which replaces the .receipt element the result was
-  // just written into, so it is stashed here and re-attached by the next wire().
-  // Only one of those panels exists at a time (they are on different tabs).
+  // Squad tab's rename/add-member panel, the Recruits tab's hire card or the
+  // Loadouts tab's bulk equip. All re-render on success, which replaces the
+  // .receipt element the result was just written into, so it is stashed here
+  // and re-attached by the next wire(). Only one of those panels exists at a
+  // time (they are on different tabs).
   panelReceipt: null,
   loadouts: [], // named gear sets — the Loadouts catalogue AND bulk equip's source (editorial — services/loadouts.js)
   loadoutFilter: { q: '', category: '' }, // Loadouts tab's own search/category filter
@@ -69,6 +77,10 @@ export const state = {
   // group that isn't open, which hands control back. See rosterGroupsOpen().
   rosterOpen: null,
   bulk: null, // { loadoutId, skipIfSlotFilled } — survives the re-render after a write
+  // One-shot "scroll the bulk panel into view", set by a loadout card's
+  // "Equip…" button and cleared the moment it fires. A flag rather than a
+  // scroll at the click site because the panel only exists after the re-render.
+  bulkFocus: false,
   // The bulk panel's OTHER half: one item picked once and given to everyone
   // selected ("equip the whole squad with Blackened Chainmail"). Same shape as
   // `addItem` minus the per-character key, because the whole point is that it
@@ -85,6 +97,15 @@ export const state = {
   bulkUnequip: null, // { slot, templateSid }
   pendingReceipt: null, // survives the re-render a mutation triggers (see wire())
   trainChoice: null, // { key, archetype, sub } — likewise survives the re-render
+  // The Limbs page's pending edit for ONE character:
+  // { key, states: {partIndex: 'own'|'lost'|'robotic'}, flesh: {partIndex: n}, keepFlesh }.
+  // Keyed like trainChoice so selecting someone else starts a fresh body
+  // rather than carrying the last person's half-made changes onto them.
+  limbEdit: null,
+  // The robotic limbs this install offers (gamedataService.limbTemplates()),
+  // each already resolved to the body part it fits. Save-independent, fetched
+  // once when the Limbs page is first opened.
+  limbTemplates: null,
   // "Add item" picker state, keyed like trainChoice so it survives the
   // re-render a successful add triggers — otherwise adding one of something
   // would clear the search and force the user to start over to add a second.
@@ -94,6 +115,10 @@ export const state = {
   weaponGrades: null, // fetched once, lazily — only needed when a weapon is picked
   colors: null, // the type-55 colour-scheme catalogue (TODO.md 3.1), fetched once
   factionCatalogue: null, // the full type-10 faction catalogue — the uniform picker's source (TODO.md 3.2)
+  // The Acknowledgements page's payload — ACKNOWLEDGEMENTS.md itself plus the
+  // version/runtime/dependency set (routes/api/about.js). Fetched on first view
+  // rather than at boot, and save-independent, so it is never cleared.
+  about: null,
   // Backups accumulate one per edit and never expire, so the list is long and
   // mostly about saves you are not looking at. Both filters are view-only.
   backupFilter: { allSaves: false, showAll: false },

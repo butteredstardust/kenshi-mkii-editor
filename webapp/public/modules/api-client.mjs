@@ -82,6 +82,16 @@ export const API = {
   revive: (name, file, sid, body) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/revive`,
     body),
+  // The robotic limbs this install offers, each already resolved to the body
+  // part it fits. Save-independent, fetched once when the Limbs page opens.
+  limbTemplates: () => request('GET', '/api/gamedata/limbs'),
+  // Which limbs a character still has, has lost, or has replaced with a
+  // prosthetic: `{ states: { "<partIndex>": "own"|"lost"|"robotic" }, flesh?, install? }`,
+  // one staged edit. The states map is the WHOLE limb int — see
+  // saveService.setLimbs().
+  setLimbs: (name, file, sid, body) => request('PUT',
+    `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/medical/limbs`,
+    body),
   restoreLimbs: (name, file, sid) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/medical/restore-limbs`),
   setItemSection: (name, file, sid, itemSid, section) => request('PUT',
@@ -187,6 +197,10 @@ export const API = {
   clearBounties: (name, file, sid, amount) => request('POST',
     `/api/saves/${encodeURIComponent(name)}/platoons/${encodeURIComponent(file)}/characters/${encodeURIComponent(sid)}/bounties/clear`,
     amount === undefined ? undefined : { amount }),
+  // The real ACKNOWLEDGEMENTS.md off disk, plus the version and dependency set
+  // the Acknowledgements page reports. Never a copy of the notices held in the
+  // frontend — see routes/api/about.js for why that matters.
+  about: () => request('GET', '/api/about'),
   backups: () => request('GET', '/api/backups'),
   createBackup: (save, label) => request('POST', '/api/backups', { save, label }),
   restoreBackup: (id) => request('POST', `/api/backups/${encodeURIComponent(id)}/restore`),

@@ -13,6 +13,7 @@ import {
 import { defaultGradeId, defaultLevelFor } from '../grades.mjs';
 import { renderSquad, wireSquadPanel, loadRaces } from '../features/squad.mjs';
 import { renderGear, fitDetails } from '../features/gear.mjs';
+import { renderLimbs, wireLimbs } from '../features/limbs.mjs';
 import { renderVendors, wireVendors } from '../features/vendors.mjs';
 import { renderResearch, wireResearch } from '../features/research.mjs';
 import { renderFactions, wireFactions } from '../features/factions.mjs';
@@ -20,6 +21,7 @@ import { renderRecruits, wireRecruits } from '../features/recruits.mjs';
 import { renderLoadouts, wireLoadouts, wireBulkEquip } from '../features/loadouts.mjs';
 import { renderWorld } from '../features/world.mjs';
 import { renderBackups } from '../features/backups.mjs';
+import { renderAbout, wireAbout } from '../features/about.mjs';
 
 /*
  * Reference implementation for docs/ui-style-guide.md. New features compose the
@@ -83,14 +85,16 @@ function savePicker() {
 
 async function render() {
   page.innerHTML = state.current === 'squad' ? renderSquad()
-    : state.current === 'gear' ? renderGear()
-      : state.current === 'vendors' ? renderVendors()
-        : state.current === 'factions' ? await renderFactions()
-          : state.current === 'research' ? await renderResearch()
-            : state.current === 'recruits' ? renderRecruits()
-              : state.current === 'loadouts' ? renderLoadouts()
-                : state.current === 'world' ? renderWorld()
-                  : await renderBackups();
+    : state.current === 'limbs' ? renderLimbs()
+      : state.current === 'gear' ? renderGear()
+        : state.current === 'vendors' ? renderVendors()
+          : state.current === 'factions' ? await renderFactions()
+            : state.current === 'research' ? await renderResearch()
+              : state.current === 'recruits' ? renderRecruits()
+                : state.current === 'loadouts' ? renderLoadouts()
+                  : state.current === 'world' ? renderWorld()
+                    : state.current === 'about' ? renderAbout()
+                      : await renderBackups();
   wire();
 }
 
@@ -104,6 +108,7 @@ function wire() {
   if (sel) sel.onchange = async () => {
     state.save = sel.value;
     state.addMember = null; // race sids and platoon files are per-save
+    state.hire = null; // ditto — the hire card names a race sid and a platoon file
     state.research = null; // research state belongs to the save, not the app
     state.researchSel.clear();
     // Faction relations are per-save too, and a pending edit names a faction by
@@ -118,12 +123,14 @@ function wire() {
   };
 
   wireSquadPanel();
+  wireLimbs();
   wireBulkEquip();
   wireVendors();
   wireFactions();
   wireResearch();
   wireRecruits();
   wireLoadouts();
+  wireAbout();
 
   const money = document.getElementById('save-money');
   if (money) money.onclick = () => runMutation(
@@ -676,14 +683,26 @@ export function start() {
   // import of app.mjs would create) get the real implementations.
   setNav({ render, refresh, savePicker });
 
+  // Switching tabs lives in one function because two things do it now: the tab
+  // strip, and the footer's link to the Acknowledgements page. A second copy
+  // would be the one that forgets to move the `.active` marker.
+  const openTab = (name) => {
+    document.querySelectorAll('.tabs button').forEach((x) => {
+      x.classList.toggle('active', x.dataset.page === name);
+    });
+    state.current = name;
+    render();
+  };
+
   document.querySelectorAll('.tabs button').forEach((b) => {
-    b.onclick = () => {
-      document.querySelectorAll('.tabs button').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      state.current = b.dataset.page;
-      render();
-    };
+    b.onclick = () => openTab(b.dataset.page);
   });
+
+  // The CC BY-SA attribution has to be reachable from every page, not only
+  // from a tab someone thinks to click — so the footer line that carries it
+  // also leads to the full notices.
+  const footerAbout = document.getElementById('footer-about');
+  if (footerAbout) footerAbout.onclick = () => openTab('about');
 
   // Long <select>s get a filter box. Started ONCE, before boot, as an observer
   // on the page root rather than a call at the end of wire(): render() replaces

@@ -187,6 +187,24 @@ The same shape applies to any future collection (items, factions, bounties).
   in its own `.table-wrap` — breaking §2.7. `.workspace > *` already sets this;
   any new grid must too.
 
+### Stacked surfaces space themselves
+
+`.panel`, `.card`, `.cards`, `.summary-bar`, `.workspace` and `.empty-state`
+get one gap between them from a single rule in `styles.css`, whatever kind each
+one is and wherever they are stacked. **Do not add a margin to a feature's own
+block to fix a seam.**
+
+This has now been got wrong twice, in the same way. First the rule was
+`.panel + .panel`, which held only while every page was a stack of panels — the
+first card under a panel met it at 0px and the two elevated surfaces read as one
+box with a doubled border down the middle. Then the fix was scoped to
+`#page > …`, and the bug reappeared on the next page built, because that one
+stacks its card and its panel inside `#detail`. The rule is therefore scoped by
+**nothing** now: two of those surfaces adjacent to each other get a gap. If you
+add a new surface component, add it to that selector rather than giving it a
+margin of its own — and if you find yourself writing `margin-top` on a card to
+fix a gap, that is the smell this note exists for.
+
 ### Pickers
 
 A search that can match hundreds of rows (the "Add item" template picker sees

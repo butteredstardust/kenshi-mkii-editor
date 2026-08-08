@@ -442,6 +442,19 @@ router.put('/saves/:name/platoons/:file/characters/:sid/medical/hunger', handle(
     (staging) => saveService.setHunger(staging, req.params.file, req.params.sid, { hung, fed }));
 }));
 
+/**
+ * Set which limbs a character still has, has lost, or has replaced with a
+ * prosthetic — `{ states: { "3": "own"|"lost"|"robotic", ... }, flesh?: { "3": n } }`,
+ * one staged edit. See saveService.setLimbs() for the encoding this writes and
+ * the evidence behind it.
+ */
+router.put('/saves/:name/platoons/:file/characters/:sid/medical/limbs', handle(async (req) => {
+  const save = findSaveOr404(req.params.name);
+  const { states, flesh, install } = req.body || {};
+  return mutation.mutate(save.dir, `set limbs on ${req.params.sid}`,
+    (staging) => saveService.setLimbs(staging, req.params.file, req.params.sid, { states, flesh, install }));
+}));
+
 router.post('/saves/:name/platoons/:file/characters/:sid/revive', handle(async (req) => {
   const save = findSaveOr404(req.params.name);
   const minFleshPercent = req.body?.minFleshPercent;

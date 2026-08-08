@@ -538,11 +538,23 @@ export function wireBulkEquip() {
   let refreshRegradePanel = () => {};
   let refreshUnequipPanel = () => {};
 
+  // The bar above the workspace names the kit and the count. Both change
+  // without a re-render (a tick, or a different kit in the <select>), and a bar
+  // reading "0 characters selected" over a panel headed "Equip 2 characters"
+  // is the kind of disagreement that makes a user doubt the write.
+  const syncBar = () => {
+    const bar = document.getElementById('bulk-count');
+    if (!bar) return;
+    const lo = currentLoadout();
+    bar.textContent = `${lo ? `${lo.label} · ` : ''}${plural(state.selection.size, 'character')} selected`;
+  };
+
   // Everything a tick changes, patched in place — see onTick() above.
   syncSelectionUi = () => {
     const n = state.selection.size;
     const count = page.querySelector('.roster-select-bar span');
     if (count) count.textContent = `${n} selected`;
+    syncBar();
     const heading = card.querySelector('h3');
     if (heading) heading.textContent = `Equip ${n} character${n === 1 ? '' : 's'}`;
     if (applyBtn) applyBtn.textContent = `Apply to ${n}`;
@@ -564,10 +576,12 @@ export function wireBulkEquip() {
         <span class="slot">${esc(SLOT_LABELS[it.section] || it.section)}</span></span>`).join('');
     }
     refreshPreflight();
+    syncBar();
   };
   if (loadoutSel) loadoutSel.onchange = redrawLoadout;
   if (skipBox) skipBox.onchange = refreshPreflight;
   refreshPreflight();
+  syncBar();
 
   if (applyBtn) applyBtn.onclick = () => {
     const picked = rosterEntries();

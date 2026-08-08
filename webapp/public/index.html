@@ -16,6 +16,7 @@
   <nav class="tabs">
     <button data-page="squad" class="active">Squad</button>
     <button data-page="gear">Gear</button>
+    <button data-page="limbs">Limbs</button>
     <button data-page="recruits">Recruits</button>
     <button data-page="loadouts">Loadouts</button>
     <button data-page="vendors">Vendors</button>
@@ -23,20 +24,22 @@
     <button data-page="research">Research</button>
     <button data-page="world">World</button>
     <button data-page="backups">Backups</button>
+    <button data-page="about">Acknowledgements</button>
   </nav>
 
   <main id="page">loading…</main>
 
   <!-- The item catalog is derived from the Kenshi Wiki under CC BY-SA 3.0,
        which requires attribution wherever the derived work is used. The
-       installer shows ACKNOWLEDGEMENTS.md once; the app itself showed nothing.
-       Full notices ship as ACKNOWLEDGEMENTS.md in the install folder. -->
+       installer shows ACKNOWLEDGEMENTS.md once and this line is on every page;
+       the full notices are now IN the app, on the Acknowledgements tab, which
+       renders that same file rather than a copy of it. -->
   <footer class="shell-footer">
     <p>
       Unofficial. Not affiliated with or endorsed by Lo-Fi Games — Kenshi and its
       assets belong to them. Item data derived from the Kenshi Wiki on Fandom,
-      used under CC BY-SA 3.0. This editor is MIT-licensed; full notices are in
-      <code>ACKNOWLEDGEMENTS.md</code> in the install folder.
+      used under CC BY-SA 3.0. This editor is MIT-licensed; the full notices are
+      on the <button class="btn btn--ghost btn--xs" id="footer-about">Acknowledgements</button> page.
     </p>
   </footer>
 
