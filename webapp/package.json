@@ -1,6 +1,6 @@
 {
   "name": "kenshi-mkii-editor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Kenshi MKII Editor — read/write editor for Kenshi save directories",
   "main": "server.js",
   "private": true,

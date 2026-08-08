@@ -7,7 +7,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Because this app writes to save files, one rule sits above the changelog: no
 release ships unless `npm test` — the byte-identical codec round trip — passes.
 
-## [Unreleased]
+## [0.4.0] — 2026-08-08
 
 ### Added
 
