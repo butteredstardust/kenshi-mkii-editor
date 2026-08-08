@@ -30,21 +30,24 @@ const { asText } = require('../services/kenshi/binary');
 
 /** Last-definition-wins names and grade rows, read independently of the index. */
 function resolveFromDisk() {
-  const names = new Map(); // sid -> name (last wins)
+  const names = new Map(); // sid -> name (last non-empty definition wins)
+  const firstNames = new Map(); // sid -> name (what first-definition-wins gave)
   const rows = new Map(); // "company|model" -> rank (last wins)
   for (const file of filesInLoadOrder()) {
     let parsed;
     try { parsed = readFile(fs.readFileSync(file)); } catch { continue; }
     for (const rec of parsed.records) {
       if (!rec.sid) continue;
-      if (rec.type === 50 || rec.type === 51) names.set(rec.sid, asText(rec.name));
+      const name = asText(rec.name);
+      if (!firstNames.has(rec.sid)) firstNames.set(rec.sid, name);
+      if (name) names.set(rec.sid, name);
       if (rec.type !== 51) continue;
       for (const row of rec.extra.get('weapon models') || []) {
         if (row.target) rows.set(`${rec.sid}|${row.target}`, row.v0);
       }
     }
   }
-  return { names, rows };
+  return { names, firstNames, rows };
 }
 
 const grades = gamedata.weaponGrades();
@@ -88,11 +91,62 @@ test('the ladder is rank-ascending, so a UI can present it as a ladder', () => {
   }
 });
 
+/*
+ * The same rule, for EVERY name the app displays — not only the grades'.
+ *
+ * The ladder was the reported symptom; the cause is general. 483 of this
+ * install's 62624 sids are renamed by a later definition, and the name on the
+ * player's screen is the last one. Structure fields are deliberately NOT part
+ * of this (see gamedataService.build()): a mod re-defining a record to rename
+ * it usually carries no `slot`/`stackable`/`type` at all.
+ */
+test('every indexed NAME is the last definition the game loads', () => {
+  const wrong = [];
+  for (const [sid, name] of disk.names) {
+    const entry = gamedata.lookup(sid);
+    if (!entry) continue;
+    if (entry.name !== name) wrong.push(`${sid}: index "${entry.name}" != last "${name}"`);
+  }
+  assert.deepEqual(wrong.slice(0, 10), [], `${wrong.length} names disagree with the last definition`);
+});
+
+test('renaming is real here, so the rule above is doing work', () => {
+  const renamed = [...disk.names].filter(([sid, name]) => disk.firstNames.get(sid) !== name);
+  assert.ok(renamed.length > 0,
+    'no record in this install is renamed by a later definition — this test proves nothing here');
+  // And the first-definition answer must now be the WRONG one for those, which
+  // is what makes this a regression test rather than a tautology.
+  for (const [sid, name] of renamed.slice(0, 25)) {
+    assert.equal(gamedata.nameOf(sid), name);
+    assert.notEqual(gamedata.nameOf(sid), disk.firstNames.get(sid));
+  }
+});
+
+test('structure fields still come from the FIRST definition', () => {
+  // The split is the point: names resolve late, structure resolves early,
+  // because a renaming mod carries no structure. `type` is the one every entry
+  // has, so it is what this checks.
+  const typeByFirst = new Map();
+  for (const file of filesInLoadOrder()) {
+    let parsed;
+    try { parsed = readFile(fs.readFileSync(file)); } catch { continue; }
+    for (const rec of parsed.records) {
+      if (rec.sid && !typeByFirst.has(rec.sid)) typeByFirst.set(rec.sid, rec.type);
+    }
+  }
+  const wrong = [];
+  for (const [sid, type] of typeByFirst) {
+    const entry = gamedata.lookup(sid);
+    if (entry && entry.type !== type) wrong.push(`${sid}: type ${entry.type} != ${type}`);
+  }
+  assert.deepEqual(wrong.slice(0, 10), []);
+});
+
 test('the cache is versioned past the first-definition-wins ladder', () => {
   // A cache written before this fix holds the old names and ranks and would be
   // served verbatim; only the version bump forces the rebuild.
   const cache = path.join(__dirname, '..', '.cache', 'nameindex.json');
   if (!fs.existsSync(cache)) return;
   const { version } = JSON.parse(fs.readFileSync(cache, 'utf8'));
-  assert.ok(version >= 9, `stale cache version ${version} — run npm run gamedata:rebuild`);
+  assert.ok(version >= 10, `stale cache version ${version} — run npm run gamedata:rebuild`);
 });

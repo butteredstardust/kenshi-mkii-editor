@@ -57,7 +57,9 @@ const CACHE_FILE = path.join(__dirname, '..', '.cache', 'vendors.json');
 // 1: initial — every row listed, addable or not.
 // 2: blueprint shelves resolve to the BLUEPRINT ITEM rather than to their
 //    subject, so rows carry `key`/`blueprint` and a research tech is addable.
-const CACHE_VERSION = 2;
+// Keyed on the gamedata index version too: this cache bakes in names that
+// come from there, so a change to how names resolve must invalidate it.
+const CACHE_VERSION = `2.${gamedata.INDEX_VERSION}`;
 
 const TOWN = 13;
 const SQUAD = 52;

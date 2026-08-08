@@ -70,20 +70,30 @@ function planOf(medical) {
 
 test('race names are resolved in LOAD ORDER, not first-definition-wins', { skip: !hasInstall && 'no Kenshi install found' }, () => {
   // This is the finding that made the feature worth building. Both sids are
-  // defined ~20 times across this install's data; `gamedataService` (first
-  // definition wins) reports the gamedata.base name, and the running game — and
-  // the player, and the wiki — use rebirth.mod's.
+  // defined ~20 times across this install's data; the base file calls them
+  // "Human" and "Sundemon", and the running game — and the player, and the
+  // wiki — use rebirth.mod's names.
+  //
+  // This test used to also assert that `gamedataService.nameOf()` still
+  // returned the BASE name, as the contrast that made the point. It no longer
+  // does, and that is the fix rather than a regression: the flat index resolves
+  // display names in load order now too (483 of 62624 sids are renamed by a
+  // later definition, and the grade ladder shipping "Edge Type 5" was the same
+  // bug). So the two must now AGREE, which is what is asserted instead —
+  // `racesService` remains the right call for a race because it also carries
+  // the anatomy and the collision-suffixed label, not because it is the only
+  // one that knows the name.
   const cases = [
-    { sid: '17-gamedata.quack', base: 'Human', resolved: 'Greenlander' },
-    { sid: '18019-gamedata.base', base: 'Sundemon', resolved: 'Scorchlander' },
+    { sid: '17-gamedata.quack', resolved: 'Greenlander' },
+    { sid: '18019-gamedata.base', resolved: 'Scorchlander' },
   ];
   for (const c of cases) {
     const race = races.raceBySid(c.sid);
     if (!race) continue; // a different install may not carry this sid at all
-    assert.equal(gamedata.nameOf(c.sid), c.base,
-      `${c.sid}: the first-definition name should still be "${c.base}"`);
     assert.equal(race.name, c.resolved,
       `${c.sid}: load order should resolve this to "${c.resolved}", the name the game shows`);
+    assert.equal(gamedata.nameOf(c.sid), race.name,
+      `${c.sid}: the flat index resolves names in load order too now — the two must agree`);
     assert.ok(race.definitions > 1, `${c.sid}: expected several definitions, got ${race.definitions}`);
   }
 });

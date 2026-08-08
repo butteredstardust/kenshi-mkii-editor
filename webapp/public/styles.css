@@ -93,6 +93,97 @@ body {
   }
 }
 
+/* ---------------------------------------------------------- scrollbars --
+ *
+ * The app was drawing its own dark surfaces and then letting the OS paint a
+ * bright default scrollbar down the side of them — on the roster, the picker
+ * results and the page itself. That is not a taste call: a light 17px bar is
+ * the highest-contrast object on the screen, which puts the eye's attention on
+ * a control that carries no information.
+ *
+ * Thin, palette-matched, and brighter on hover so it still says "you can drag
+ * this". The thumb's spacing comes from a transparent border with
+ * `background-clip: padding-box` rather than a matching border colour, so the
+ * same rule works over `--bg`, `--surface` and `--sunken` alike.
+ *
+ * Firefox takes the two `scrollbar-*` properties; WebKit/Blink takes the
+ * pseudo-elements. Both are stated, neither is required for the app to work. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ------------------------------------------------------ depth & feedback --
+ *
+ * Style guide §1: depth and motion are allowed where they carry meaning, and
+ * §1a limits motion to hover, focus, selection and disclosure. Everything here
+ * is one of those four. It exists because the interface read as one flat sheet:
+ * every surface sat at the same height, and opening a section, focusing a field
+ * or selecting a character all happened with no perceptible change.
+ *
+ * The layering it establishes, lowest to highest:
+ *   page  ->  .panel (elev-1)  ->  .card (elev-2)  ->  .picker-results (inset)
+ * A card is the thing you are editing and sits above the page furniture; a
+ * panel is page furniture. That was already the intent of the tokens — the
+ * cards just never claimed their level, so `.card`'s own rule now sets elev-2
+ * (changing it there rather than here, because a component's elevation belongs
+ * with the component).
+ *
+ * Disclosure. Opening a section now shows its body arriving rather than
+ * teleporting: opacity plus a 2px rise, which is enough to read as "this came
+ * from the summary above" and short enough not to be waited on. Nothing
+ * animates size, so no table reflows mid-frame (§1a). */
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: none; }
+}
+.section[open] > .section-body,
+.list-row[open] > .section-body {
+  animation: reveal var(--motion) var(--ease);
+}
+/* A disclosure summary is a control, so it takes a control's hover — the
+ * colour change alone left the whole 100-row Recruits list feeling inert. */
+.section > summary:hover, .list-row > summary:hover {
+  background: var(--surface-2);
+}
+.section > summary, .list-row > summary {
+  transition: color var(--motion) var(--ease), background var(--motion) var(--ease);
+}
+/* The hover needs somewhere to land: a full-bleed row rather than a tight box
+ * around the text. Negative margin keeps the text on the same line it was. */
+.section > summary, .list-row > summary {
+  padding-inline: var(--s2); margin-inline: calc(var(--s2) * -1);
+}
+
+/* Focus. The outline says which control has focus; this says which FIELD, so
+ * a caption three rows into a dense form is not left looking identical to its
+ * neighbours while you type in it. */
+.field:focus-within, .field-check:focus-within { color: var(--ink); }
+
+/* Selection. The accent edge marks the selected row; this is the surface under
+ * it, so a selected character reads as raised rather than merely tinted. */
+.roster-item[aria-current="true"], .roster-item:has(.roster-check:checked) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* Rows in a long table are read across, so the hover has to arrive without a
+ * flicker on the way. */
+.data-table tbody tr { transition: background var(--motion) var(--ease); }
+
+/* The commit action of a card sits above it, and its shadow says so. Only the
+ * primary tier — a page of equally-raised buttons says nothing at all. */
+.btn--primary:not(:disabled) { box-shadow: var(--elev-2); }
+
 /* ---------------------------------------------------------------- shell -- */
 
 /* The header and tabs stay put while a long character card scrolls — the save
@@ -393,7 +484,10 @@ input[type=checkbox] { width: auto; padding: 0; border: none; background: none; 
 .card {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); padding: var(--s4); min-width: 0;
-  box-shadow: var(--elev-1);
+  /* elev-2, one step above a `.panel`: a card is the record you are editing,
+   * a panel is the page furniture around it. Both sat at elev-1, which is a
+   * large part of why the interface read as one flat sheet. */
+  box-shadow: var(--elev-2);
 }
 .card-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; }
 .card-head h3 { margin: 0; font-size: var(--t-xl); font-weight: 600; letter-spacing: -.01em; }

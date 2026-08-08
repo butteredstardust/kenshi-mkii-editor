@@ -51,6 +51,22 @@ one user on one machine. That drives every decision below:
   tool that runs beside a dark game. If you find yourself hardcoding a colour
   for one theme, you have gone wrong — use the tokens.
 
+### The elevation ladder
+
+Lowest to highest: **page → `.panel` (elev-1) → `.card` (elev-2) →
+`.picker-results` (inset elev-2)**. A card is the record you are editing; a
+panel is the page furniture around it. Both sat at elev-1 for a long time, and
+"everything is the same height" is most of what makes an interface read as one
+flat sheet. Use the tokens, never a hand-written shadow, and only raise
+something that is genuinely a layer above its neighbour.
+
+### Scrollbars are part of the design system
+
+They are styled once, globally, thin and palette-matched. Do not leave a
+default OS scrollbar on a scrolling container: on this dark palette a light
+17px bar is the highest-contrast object on screen, which spends the user's
+attention on a control carrying no information.
+
 ## 1a. Motion
 
 - **≤120ms, ease-out, and only on hover, focus, selection and disclosure.**

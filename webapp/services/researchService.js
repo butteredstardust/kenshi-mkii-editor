@@ -73,7 +73,10 @@ const { filesInLoadOrder } = require('./loadOrder');
  */
 
 const CACHE_FILE = path.join(__dirname, '..', '.cache', 'research.json');
-const CACHE_VERSION = 1;
+// Keyed on the gamedata index version too: this cache bakes in names that come
+// from there (what a tech unlocks), so a change to how names resolve must
+// invalidate it.
+const CACHE_VERSION = `1.${gamedata.INDEX_VERSION}`;
 
 const TECH = 21;
 

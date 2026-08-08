@@ -91,7 +91,13 @@ test('catalogued town positions agree with where the save says those towns are',
   let checked = 0;
   for (const [town, list] of byTown) {
     if (list.length < GARRISON) continue;
-    const loc = locations.findByName(town);
+    // Exact match only. This is an identity check — "is the catalogue's
+    // position for THIS town where the save puts it" — and the substring
+    // fallback would answer it with a different town: the save's squads are
+    // based at "Fishing Village" and this install also has a "Dead Fishing
+    // Village" 233 km away. A town the catalogue does not carry is skipped,
+    // which is what the `checked > 0` assertion below guards against.
+    const loc = locations.findByName(town, { fuzzy: false });
     if (!loc) continue;
     const cx = list.reduce((a, p) => a + p[0], 0) / list.length;
     const cz = list.reduce((a, p) => a + p[2], 0) / list.length;

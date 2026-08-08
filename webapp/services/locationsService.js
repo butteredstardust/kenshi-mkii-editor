@@ -62,7 +62,9 @@ const gamedata = require('./gamedataService');
  */
 
 const CACHE_FILE = path.join(__dirname, '..', '.cache', 'locations.json');
-const CACHE_VERSION = 1;
+// Keyed on the gamedata index version too: this cache bakes in names that
+// come from there, so a change to how names resolve must invalidate it.
+const CACHE_VERSION = `1.${gamedata.INDEX_VERSION}`;
 
 // Two placements of the same name closer than this are the same town listed
 // twice by different mods; further apart they are genuinely different places
@@ -241,14 +243,22 @@ function find(id) { return all().find((l) => l.id === id) || null; }
  * a substring match — a heavily modded install renames and moves towns, so a
  * name from any external list is a hint, never a guarantee. Returns null rather
  * than guessing wildly.
+ *
+ * **The substring fallback is for HINTS only — pass `{ fuzzy: false }` for
+ * anything that has to be the same town.** It is exactly as loose as it looks:
+ * this install has a "Dead Fishing Village" and the save has squads based at a
+ * town the game calls "Fishing Village", 233 km away, and a substring match
+ * happily equates the two. That is fine for "where is this recruit found",
+ * where a near-miss is a better answer than none, and wrong for anything that
+ * resolves a position.
  */
-function findByName(name) {
+function findByName(name, { fuzzy = true } = {}) {
   if (!name) return null;
   const list = all();
   const want = String(name).toLowerCase();
-  return list.find((l) => l.name.toLowerCase() === want)
-    || list.find((l) => l.name.toLowerCase().includes(want))
-    || null;
+  const exact = list.find((l) => l.name.toLowerCase() === want);
+  if (exact || !fuzzy) return exact || null;
+  return list.find((l) => l.name.toLowerCase().includes(want)) || null;
 }
 
 module.exports = { all, find, findByName, stats, rebuild, isPlaced, SAME_PLACE };

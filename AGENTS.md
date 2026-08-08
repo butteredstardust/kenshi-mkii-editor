@@ -339,9 +339,21 @@ Full detail in `docs/save-format.md`. The non-negotiables:
   different rank in `rebirth.mod`** ("Homemade / Industrial 005" is 30 in base
   and 55 in the mod). Both are resolved last-definition-wins in
   `gamedataService.build()`; `test/grades.test.js` re-derives the answer
-  straight from the files and fails if it drifts back. The flat name index is
-  still first-definition-wins for everything else, and 483 of 62624 sids are
-  renamed by a later definition — this is not the last place that will bite.
+  straight from the files and fails if it drifts back.
+- **EVERY display name resolves in load order; everything else does not.** The
+  grade ladder was one case of a general problem — 483 of this install's 62624
+  sids are renamed by a later definition, and the game shows the last one
+  ("Standard first aid kit" is renamed by Unofficial Patches and renamed back
+  by `rebirth.mod`; `2062-gamedata.base` is "Sabres" in base and "Horse
+  Chopper" in `Kenshi_rewritten.mod`). `gamedataService`'s flat index therefore
+  takes the **name** from the last file that carries one, and the **structure**
+  (`type`, `slot`, `stackable`, `itemFunction`, `partCoverage`) from the first
+  — a mod re-defining a record to rename or re-mesh it routinely carries none
+  of those fields, so last-wins wholesale would blank them. Where a later
+  definition genuinely adds structure, merge that field specifically, the way
+  the limb `slot` is merged. One trap in the implementation is worth knowing:
+  the rank must advance even when the name is UNCHANGED, or a mid-order rename
+  beats a later file that restates the original.
   **`ints.level` is still a SEPARATE field — but a grade chosen without one now
   supplies it.** Nothing in the format links the two, and nothing here has
   changed about that: they are written independently and an explicit `level`

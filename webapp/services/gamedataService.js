@@ -17,8 +17,17 @@ const paths = require('./pathService');
  * stringIDs live inside gamedata.base today. Resolution is therefore a lookup
  * across every data file, never a filename-to-path mapping.
  *
- * First definition wins. Load order would decide overrides in-game; for
- * display purposes the base definition is the stable answer.
+ * **Display names resolve in the game's own load order — last definition wins.
+ * Everything else in an entry is first-definition-wins.** This file used to say
+ * "for display purposes the base definition is the stable answer", and that was
+ * simply wrong: 483 of this install's 62624 sids are renamed by a later file,
+ * and what the player sees on their screen is the last one. Structure (`type`,
+ * `slot`, `stackable`, `itemFunction`, `partCoverage`) keeps the first
+ * definition because a mod re-defining a record to rename or re-mesh it
+ * routinely carries none of those fields, and taking the last one wholesale
+ * would blank them. See build() for the rule and gamedataService's
+ * `limbDefs`/grade handling for the per-field merge used where a later
+ * definition genuinely adds structure.
  */
 
 const CACHE_FILE = path.join(__dirname, '..', '.cache', 'nameindex.json');
@@ -30,6 +39,12 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 // `stackable` added for the item picker, TODO.md 2.3; `itemFunction` and the
 // two new top-level `materialIndex`/`weaponGrades` collections added for
 // itemFactory.js, TODO.md 2.2(b)/(h)/(i)).
+//
+// 10: EVERY display name resolves in load order (last definition wins), not
+// just the weapon grades'. 483 of this install's 62624 sids are renamed by a
+// later file, and the name the player sees in game is the last one. Structure
+// fields stay first-definition-wins — see build()'s comment for why the two
+// halves differ.
 //
 // 9: the weapon-grade ladder resolves its names AND its ranks in the game's
 // own load order (last definition wins) instead of first-definition-wins. Both
@@ -48,7 +63,7 @@ const BASE_FILES = ['gamedata.base', 'Newwworld.mod', 'Dialogue.mod', 'rebirth.m
 //
 // 5: `partCoverage` per entry (bulk equip's fit warnings) and a stable `id` on
 // every weapon-grade row.
-const CACHE_VERSION = 9;
+const CACHE_VERSION = 10;
 
 // Item-template typecodes (TODO.md 2.2(g)/2.3): 2 = weapon, 3 = armour,
 // 4 = trade goods/consumable, 46 = backpack, 107 = crossbow. Type 42 is the
@@ -160,6 +175,26 @@ function build() {
   // limbs) carries no `slot` at all while a later one does. First-definition-
   // wins therefore reported "no slot" for a limb whose side the game knows.
   const limbDefs = new Map(); // sid -> Map<fileBasename, { name, slot, hp, hpMax, value }>
+
+  /*
+   * Where in the game's load order each file sits. Needed DURING the sweep,
+   * not after it, because the display name is now resolved with it — see
+   * `nameRank` below.
+   *
+   * Required here rather than at module scope: `loadOrder` reads `dataFiles()`
+   * from this module, so a top-level import would close a cycle.
+   */
+  const { filesInLoadOrder } = require('./loadOrder');
+  const orderRank = new Map();
+  filesInLoadOrder().forEach((f, i) => orderRank.set(path.basename(f), i));
+  // A file the load order does not mention (an installed-but-inactive workshop
+  // mod) ranks below everything the game actually loads, so it can never win a
+  // name from a file that is loaded.
+  const lastRank = (file) => (orderRank.has(file) ? orderRank.get(file) : -1);
+  // Which file the name currently in `map` came from, per sid. Only consulted
+  // when a later definition disagrees, which is 483 of 62624 sids here.
+  const nameRank = new Map(); // sid -> load-order rank of the file that named it
+
   const skipped = [];
   let files = 0;
   for (const file of dataFiles()) {
@@ -173,8 +208,44 @@ function build() {
       continue;
     }
     files++;
+    const fileRank = lastRank(path.basename(file));
     for (const rec of parsed.records) {
       if (!rec.sid) continue;
+
+      /*
+       * The NAME is resolved in load order — last definition wins — while
+       * everything else in the entry stays first-definition-wins.
+       *
+       * The split is deliberate, and both halves are evidenced. A name is what
+       * the player reads off their own screen, and the game shows the last
+       * definition: 483 of this install's 62624 sids are renamed by a later
+       * file, and reporting the first one is how this app came to offer an
+       * "Edge Type 5" that no longer exists under that name. The rest of the
+       * entry is structure (`type`, `slot`, `stackable`, `itemFunction`,
+       * `partCoverage`), and a mod re-defining a record to change its mesh or
+       * its name routinely carries none of those fields — taking the last
+       * definition wholesale would blank them. Where a later definition
+       * genuinely adds structure, the fix is a per-field merge for that field
+       * specifically, as `limbDefs` does for a limb's `slot`.
+       *
+       * Ties go to the earlier file: `>` not `>=`, so two definitions at the
+       * same rank (an unlisted mod, rank -1) keep the base game's name.
+       */
+      if (map.has(rec.sid) && fileRank > (nameRank.get(rec.sid) ?? -1)) {
+        const name = asText(rec.name);
+        // The rank advances even when the name is UNCHANGED, and that is the
+        // whole trick. Advancing only on a difference lets a mid-order rename
+        // win over a later file that restates the original: "Standard first aid
+        // kit" is renamed by Unofficial Patches (rank 15) and restated verbatim
+        // by rebirth.mod (rank 171), and the game shows the latter. Skipping
+        // the update left 11 records — including that one — reading the middle
+        // definition. A blank name is not a definition of the name, so it never
+        // advances anything and can never erase one.
+        if (name) {
+          map.get(rec.sid).name = name;
+          nameRank.set(rec.sid, fileRank);
+        }
+      }
 
       if (!map.has(rec.sid)) {
         // `slot` is the gamedata TEMPLATE's own `ints.slot` field (present on
@@ -227,6 +298,7 @@ function build() {
           ...(dialogueSids && dialogueSids.length ? { dialogueSids } : {}),
           ...(playerDialogueSids && playerDialogueSids.length ? { playerDialogueSids } : {}),
         });
+        nameRank.set(rec.sid, fileRank);
       }
 
       // Material union: collected from EVERY definition, first-definition-wins
@@ -342,13 +414,6 @@ function build() {
    * order defines falls back to the flat index, then to the raw sid — never
    * dropped, since it is still a usable value to write.
    */
-  const orderRank = new Map();
-  // Required HERE, not at module scope: `loadOrder` reads `dataFiles()` from
-  // this module, so a top-level import would close a cycle.
-  const { filesInLoadOrder } = require('./loadOrder');
-  filesInLoadOrder().forEach((f, i) => orderRank.set(path.basename(f), i));
-  const lastRank = (file) => (orderRank.has(file) ? orderRank.get(file) : -1);
-
   const nameInLoadOrder = (sid) => {
     const byFile = gradeNames.get(sid);
     if (!byFile) return (map.get(sid) || {}).name || sid;
@@ -564,4 +629,12 @@ function limbTemplates() {
 module.exports = {
   nameOf, lookup, rebuild, indexStats, dataFiles, itemTemplates, ITEM_TEMPLATE_TYPES,
   materialCandidates, weaponGrades, raceRules, limbTemplates,
+  // Exported so every DERIVED cache can key itself on it. A service that bakes
+  // a name from this index into its own cache file (towns, shops, techs) holds
+  // a copy that goes stale the moment name resolution changes here — which is
+  // exactly what happened when display names moved to load order: the towns
+  // cache kept serving the old names and the save cross-check started matching
+  // the wrong town. Deriving their versions from this one makes that
+  // impossible rather than a thing to remember.
+  INDEX_VERSION: CACHE_VERSION,
 };

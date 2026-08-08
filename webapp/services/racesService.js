@@ -95,7 +95,9 @@ const gamedata = require('./gamedataService');
 const CACHE_FILE = path.join(__dirname, '..', '.cache', 'races.json');
 // 1: initial — load-order names, unioned anatomy, INT32_MAX removal sentinel.
 // 2: `label`, which disambiguates the several races sharing a name.
-const CACHE_VERSION = 2;
+// Keyed on the gamedata index version too: this cache bakes in names that
+// come from there, so a change to how names resolve must invalidate it.
+const CACHE_VERSION = `2.${gamedata.INDEX_VERSION}`;
 
 const RACE = 7;
 const BODY_PART = 16;

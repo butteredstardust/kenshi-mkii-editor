@@ -60,8 +60,38 @@ release ships unless `npm test` — the byte-identical codec round trip — pass
   second dropdown". The chosen kit is named in the bar, on the card and in the
   empty state, and the bar's count no longer disagrees with the panel's.
 
+### Changed
+
+- **Depth, and scrollbars that belong to the app.** Every surface sat at the
+  same elevation and the browser's default light scrollbar ran down the side of
+  each dark panel. Cards now sit a step above panels, scrollbars are thin and
+  palette-matched, opening a section shows its body arriving, a disclosure row
+  highlights under the cursor, a field brightens while you type in it, and the
+  selected roster row reads as raised rather than merely tinted. All of it is
+  hover, focus, selection or disclosure — the four things the style guide
+  allows motion for — and all of it still disappears under
+  `prefers-reduced-motion`.
+
 ### Fixed
 
+- **Every name now reads as the game shows it, not as the base file spells
+  it.** The weapon-grade fix below turned out to be one case of a general one:
+  483 of this install's 62,624 records are renamed by a later mod, and the
+  editor was showing the first definition — "Standard First Aid Kit" for what
+  the game calls a "Standard first aid kit", "Sabres" for a "Horse Chopper".
+  Display names resolve in load order now; the structure behind them (what kind
+  of thing it is, which slot it takes) still comes from the first definition,
+  because a mod that renames a record usually carries none of that.
+- **Every cache built on top of the name index now rebuilds when it changes.**
+  The towns, shops, races and research caches bake in names that come from the
+  index, so the name fix above would have left them serving the old ones — the
+  town cross-check in the test suite caught exactly that. Their versions are
+  derived from the index's, so this class of staleness cannot happen again.
+- **A town lookup by name could return a different town.** It falls back to a
+  substring match, which is right for "where is this recruit found" and wrong
+  for anything that resolves a position: this install has a "Dead Fishing
+  Village" 233 km from the "Fishing Village" the save's squads call home.
+  Callers that need identity now ask for an exact match.
 - **Weapon grades were named and ranked from the wrong definition.** The editor
   offered "Edge Type 4" and "Edge Type 5", which this install's mods rename to
   Edge Type 2 and Edge Type 3 — the names the game shows. It also took each
