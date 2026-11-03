@@ -23,6 +23,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const paths = require('../services/pathService');
 const gamedata = require('../services/gamedataService');
 const { filesInLoadOrder } = require('../services/loadOrder');
 const { readFile } = require('../services/kenshi/codec');
@@ -52,8 +53,10 @@ function resolveFromDisk() {
 
 const grades = gamedata.weaponGrades();
 const disk = resolveFromDisk();
+const hasInstall = !!paths.installDir();
 
-test('the ladder has rows to check at all', () => {
+test('the ladder has rows to check at all', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   assert.ok(grades.length > 0, 'no weapon grades — is the Kenshi install readable?');
   assert.ok(disk.rows.size > 0, 'no grade rows found on disk');
 });
@@ -110,7 +113,8 @@ test('every indexed NAME is the last definition the game loads', () => {
   assert.deepEqual(wrong.slice(0, 10), [], `${wrong.length} names disagree with the last definition`);
 });
 
-test('renaming is real here, so the rule above is doing work', () => {
+test('renaming is real here, so the rule above is doing work', (t) => {
+  if (!hasInstall) return t.skip('no Kenshi install found');
   const renamed = [...disk.names].filter(([sid, name]) => disk.firstNames.get(sid) !== name);
   assert.ok(renamed.length > 0,
     'no record in this install is renamed by a later definition — this test proves nothing here');
